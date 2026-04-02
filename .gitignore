@@ -1,0 +1,15 @@
+.env
+.venv/
+.venv-rpa/
+__pycache__/
+*.pyc
+.DS_Store
+.cursor/
+.claude/
+.vscode/
+
+# Runtime/cache artifacts
+photos-exports/
+*.log
+*.sqlite3
+
