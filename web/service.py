@@ -1401,6 +1401,30 @@ class ExpenseService:
             "openai_model": raw.get("openai_model", "gpt-4.1-mini"),
         }
 
+    def credentials_ready(self) -> bool:
+        """True when all required secrets/credentials have been entered."""
+        s = self.get_settings()
+        return bool(
+            s["oracle_url"]
+            and s["oracle_username"]
+            and s["oracle_password_set"]
+            and s["openai_key_set"]
+        )
+
+    def missing_credentials(self) -> list[str]:
+        """Return human-readable list of credentials still needed."""
+        s = self.get_settings()
+        missing: list[str] = []
+        if not s["openai_key_set"]:
+            missing.append("OpenAI API Key")
+        if not s["oracle_url"]:
+            missing.append("Oracle Portal URL")
+        if not s["oracle_username"]:
+            missing.append("Oracle Username")
+        if not s["oracle_password_set"]:
+            missing.append("Oracle Password")
+        return missing
+
     def save_settings(
         self,
         oracle_url: str | None = None,

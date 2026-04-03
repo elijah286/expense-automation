@@ -65,13 +65,11 @@ git clone https://github.com/elijah286/oracle-expense-automation.git
 cd oracle-expense-automation
 ```
 
-> Replace `YOUR_USERNAME` with the actual GitHub account that owns the repo. If you were given a full URL, use that instead.
-
 ---
 
-### Step 2: Create a virtual environment and install dependencies
+### Step 2: Install dependencies
 
-A "virtual environment" keeps this project's libraries separate from the rest of your computer. Copy and paste the commands for your OS:
+Copy and paste the commands for your OS. This creates an isolated environment and installs everything the app needs:
 
 <details>
 <summary><strong>Mac</strong></summary>
@@ -106,23 +104,7 @@ You will know it worked when you see `(.venv-rpa)` at the beginning of your term
 
 ---
 
-### Step 3: Create your settings file
-
-```bash
-cp .env.example .env
-```
-
-On Windows, use:
-
-```powershell
-copy .env.example .env
-```
-
-Then open the new `.env` file in any text editor (Notepad, TextEdit, VS Code — anything works) and fill in the values described in the **Configuration** section below.
-
----
-
-### Step 4: Launch the app
+### Step 3: Launch the app
 
 Make sure you still see `(.venv-rpa)` in your terminal. If you don't, re-activate the environment first (see Step 2). Then run:
 
@@ -130,9 +112,11 @@ Make sure you still see `(.venv-rpa)` in your terminal. If you don't, re-activat
 python -m web
 ```
 
-A browser window will automatically open to **http://localhost:8080** with the Expense Automator UI.
+A browser window will automatically open to **http://localhost:8080**.
 
-> **Every time you come back later**, open a terminal, `cd` into the `oracle-expense-automation` folder, activate the environment, and run `python -m web`:
+**On first launch the app will ask you to enter your credentials** — Oracle portal URL, username, password, and your OpenAI API key. The rest of the tool stays locked until you do this. Fill them in on the Settings page, click **Save Settings**, and you're ready to go.
+
+> **Every time you come back later**, open a terminal, `cd` into the project folder, activate the environment, and run `python -m web`:
 >
 > Mac:
 > ```bash
@@ -150,31 +134,14 @@ A browser window will automatically open to **http://localhost:8080** with the E
 
 ---
 
-## Configuration
-
-The `.env` file controls how the app behaves. Open it in any text editor to change these values:
-
-| Variable | What it does | Default |
-|----------|-------------|---------|
-| `LEGACY_URL` | The URL of the expense portal login page | *(pre-filled)* |
-| `PHOTOS_LIMIT` | How many receipt photos to export per run | `5` |
-| `PHOTOS_EXPORT_DIR` | Folder where exported photos are temporarily stored | `./photos-exports` |
-| `LLM_REVIEW` | Set to `true` to have an AI double-check receipt amounts | `true` |
-| `OPENAI_MODEL` | Which OpenAI model to use for receipt inspection | `gpt-4.1-mini` |
-| `OPENAI_API_KEY` | Your OpenAI API key (required if `LLM_REVIEW` is `true`) | *(empty — you must fill this in)* |
-| `OPENAI_HTTP_VERIFY` | Path to a corporate CA `.pem` file, if behind SSL inspection | *(optional)* |
-
----
-
 ## How to use the app
 
-Once the UI is open in your browser:
+Once you've entered your credentials, the Dashboard unlocks and the workflow is:
 
-1. **Open the expense portal** from the Activity tab — the app launches a browser you can watch.
-2. **Scrape transactions** — follow the VPN prompts if needed; the app pulls your credit-card lines.
-3. **Import & analyze receipts** — point the app at your receipt photos and it reads amounts/dates.
-4. **Match & review** — the app suggests which receipt goes with which transaction; you approve or adjust.
-5. **Create & submit the report** — one click fills out the expense report in the portal for you.
+1. **Scrape transactions** — the app pulls your credit-card lines from Oracle.
+2. **Import & analyze receipts** — point the app at your receipt photos and it reads amounts/dates.
+3. **Match & review** — the app suggests which receipt goes with which transaction; you approve or adjust.
+4. **Create & submit the report** — one click fills out the expense report in the portal for you.
 
 ---
 
@@ -193,6 +160,6 @@ Once the UI is open in your browser:
 
 ## Notes
 
-- App data (settings, browser profile) is stored in `~/.expense-automator`. If you previously used a build that stored data in `~/.automated-expenses`, copy that folder to `~/.expense-automator` and re-save any secrets in the Settings tab.
+- App data (settings, browser profile) is stored in `~/.expense-automator`.
+- Your credentials are saved securely in your system keychain — they are never stored in plain-text files.
 - The automated browser stays open after each step so you can verify what it did before moving on.
-- LLM-based receipt review requires a valid `OPENAI_API_KEY` in your `.env` file.

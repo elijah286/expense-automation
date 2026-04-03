@@ -1050,6 +1050,57 @@ def report_header_bar(active_page: str, report_id: str = ""):
 _REPORT_PAGES = {"Documents", "Transactions", "Matching", "Submit"}
 
 
+def _setup_required_overlay():
+    """Full-page overlay blocking access until credentials are entered."""
+    missing = svc.missing_credentials()
+    missing_html = "".join(f"<li>{m}</li>" for m in missing)
+    ui.html(f"""
+    <div style="
+        position:fixed;inset:0;z-index:9999;
+        background:rgba(15,23,42,0.75);backdrop-filter:blur(6px);
+        display:flex;align-items:center;justify-content:center;
+    ">
+      <div style="
+          background:#fff;border-radius:20px;padding:48px 40px;
+          max-width:460px;width:90%;text-align:center;
+          box-shadow:0 25px 50px rgba(0,0,0,0.25);
+      ">
+        <div style="
+            width:64px;height:64px;border-radius:16px;
+            background:linear-gradient(135deg,#3b82f6,#8b5cf6);
+            display:flex;align-items:center;justify-content:center;
+            margin:0 auto 20px;
+        ">
+          <span class="material-icons" style="color:#fff;font-size:32px">lock</span>
+        </div>
+        <div style="font-size:1.35rem;font-weight:700;color:#0f172a;margin-bottom:8px">
+          Setup Required
+        </div>
+        <div style="color:#475569;font-size:0.95rem;line-height:1.6;margin-bottom:20px">
+          Before you can use the tool, enter your credentials in <b>Settings</b>.
+        </div>
+        <div style="
+            text-align:left;background:#f8fafc;border-radius:12px;
+            padding:16px 20px;margin-bottom:24px;
+        ">
+          <div style="font-size:0.8rem;font-weight:600;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">
+            Still needed
+          </div>
+          <ul style="margin:0;padding-left:20px;color:#334155;font-size:0.9rem;line-height:1.8">
+            {missing_html}
+          </ul>
+        </div>
+        <a href="/settings" style="
+            display:inline-block;padding:12px 32px;
+            background:linear-gradient(135deg,#3b82f6,#8b5cf6);
+            color:#fff;font-weight:600;font-size:0.95rem;
+            border-radius:12px;text-decoration:none;
+        ">Go to Settings</a>
+      </div>
+    </div>
+    """)
+
+
 def page_frame(active: str, report_id: str = ""):
     ui.add_head_html(f"<style>{CUSTOM_CSS}</style>")
     nav_drawer = shared_nav(active, report_id)
@@ -1057,6 +1108,8 @@ def page_frame(active: str, report_id: str = ""):
     _build_terminal()
     if active in _REPORT_PAGES:
         report_header_bar(active.lower(), report_id)
+    if active != "Settings" and not svc.credentials_ready():
+        _setup_required_overlay()
 
 
 # ---------------------------------------------------------------------------
@@ -3970,10 +4023,32 @@ def page_settings():
     page_frame("Settings")
 
     with ui.element("div").classes("page-container"):
+        current = svc.get_settings()
+        missing = svc.missing_credentials()
+
+        if missing:
+            missing_html = ", ".join(f"<b>{m}</b>" for m in missing)
+            ui.html(f"""
+            <div style="
+                background:linear-gradient(135deg,#eff6ff,#f5f3ff);
+                border:2px solid #3b82f6;border-radius:16px;
+                padding:24px 28px;margin-bottom:24px;max-width:640px;
+            ">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+                <span class="material-icons" style="color:#3b82f6;font-size:1.5rem">info</span>
+                <span style="font-size:1.05rem;font-weight:700;color:#1e3a5f">
+                  Welcome! Enter your credentials to get started.
+                </span>
+              </div>
+              <div style="color:#475569;font-size:0.9rem;line-height:1.6;padding-left:36px">
+                Fill in the fields below and click <b>Save Settings</b>.
+                Still needed: {missing_html}
+              </div>
+            </div>
+            """)
+
         ui.html('<div class="section-title">Settings</div>')
         ui.html('<div class="section-subtitle">Credentials and configuration</div>')
-
-        current = svc.get_settings()
 
         with ui.card().classes("w-full mb-6").style("border-radius:16px;padding:32px;max-width:640px"):
             ui.label("OpenAI").classes("text-base font-bold text-slate-800 mb-4")
@@ -4022,6 +4097,9 @@ def page_settings():
                 for w in warnings:
                     ui.notify(w, type="warning", timeout=8000)
             ui.notify("Settings saved", type="positive")
+            if svc.credentials_ready():
+                ui.notify("All set! Redirecting to Dashboard…", type="positive")
+                ui.timer(1.5, lambda: ui.navigate.to("/"), once=True)
 
         ui.button("Save Settings", icon="save", on_click=_save).props(
             "no-caps unelevated color=primary"
