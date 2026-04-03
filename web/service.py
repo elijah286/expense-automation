@@ -233,15 +233,29 @@ class ExpenseService:
                 match_map.setdefault(best, []).append(lid)
         return match_map
 
+    def _get_pending_deletion_files(self) -> set[str]:
+        """Return the set of receipt file paths scheduled for deferred deletion."""
+        pending = load_pending_deletions(self.app_dir)
+        files: set[str] = set()
+        for entry in pending.values():
+            if not isinstance(entry, dict):
+                continue
+            for sf in entry.get("receipt_files", []):
+                sf_str = str(sf).strip()
+                if sf_str:
+                    files.add(sf_str)
+        return files
+
     def get_receipts(self) -> list[ReceiptDoc]:
         analyses = load_analyses_snapshot(self.app_dir)
         usage_map = self._get_used_receipt_map()
         match_map = self._get_matched_receipt_map()
+        pending_files = self._get_pending_deletion_files()
         analyzed_files: set[str] = set()
         docs: list[ReceiptDoc] = []
         for a in analyses:
             sf = str(a.get("source_file", "")).strip()
-            if not sf:
+            if not sf or sf in pending_files:
                 continue
             analyzed_files.add(sf)
             ext = Path(sf).suffix.lower()
@@ -275,7 +289,7 @@ class ExpenseService:
                 state = {}
             for p in state.get("receipt_paths", []):
                 p_str = str(p).strip()
-                if p_str and p_str not in analyzed_files and Path(p_str).is_file():
+                if p_str and p_str not in analyzed_files and p_str not in pending_files and Path(p_str).is_file():
                     ext = Path(p_str).suffix.lower()
                     docs.append(ReceiptDoc(
                         source_file=p_str,

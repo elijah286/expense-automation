@@ -1436,7 +1436,6 @@ def page_documents(request: Request):
                         "No receipts imported",
                         "Import receipt images or PDFs to get started.",
                     )
-                _render_action_bar()
                 return
 
             search_container.set_visibility(True)
