@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import argparse
 import base64
 import json
 import mimetypes
@@ -12,8 +11,7 @@ import time
 from pathlib import Path
 
 import httpx
-from dotenv import load_dotenv
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
 # Longer connect timeout helps on VPN/corporate networks; read cap matches OpenAI SDK default.
 OPENAI_HTTP_TIMEOUT = httpx.Timeout(600.0, connect=30.0, pool=60.0)
@@ -247,6 +245,39 @@ def normalize_json_text(raw_text: str) -> str:
     return cleaned
 
 
+def _fix_ddmmyy_misparse(date_str: str) -> str:
+    """Correct dates where the LLM returned DD.MM.YY as YYYY-MM-DD.
+
+    European receipts print dates as DD.MM.YY (e.g. "19.03.26" for
+    19-Mar-2026).  LLMs sometimes return "2019-03-26", treating the 2-digit
+    day as a year prefix and the 2-digit year as the day.  When the resulting
+    year is implausibly old and the digits can be rearranged into a recent
+    date, return the corrected ISO string.
+    """
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", (date_str or "").strip())
+    if not m:
+        return date_str
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    from datetime import date as _date
+    now = _date.today()
+    try:
+        parsed = _date(year, month, day)
+    except ValueError:
+        return date_str
+    age_days = (now - parsed).days
+    if age_days <= 365 * 2:
+        return date_str
+    candidate_day = year % 100
+    candidate_year = 2000 + day
+    try:
+        corrected = _date(candidate_year, month, candidate_day)
+    except ValueError:
+        return date_str
+    if abs((now - corrected).days) <= 365 * 2:
+        return corrected.strftime("%Y-%m-%d")
+    return date_str
+
+
 def _normalize_receipt_date_fields(parsed: dict) -> None:
     """Keep receipt_date and transaction_date aligned (purchase date on the receipt, not print time)."""
     rd = parsed.get("receipt_date")
@@ -261,6 +292,10 @@ def _normalize_receipt_date_fields(parsed: dict) -> None:
         v = parsed.get(key)
         if v is not None and not isinstance(v, str):
             parsed[key] = str(v).strip()
+    for key in ("receipt_date", "transaction_date"):
+        v = parsed.get(key)
+        if isinstance(v, str) and v.strip():
+            parsed[key] = _fix_ddmmyy_misparse(v.strip())
 
 
 def normalize_currency_code(val: object | None) -> str:
@@ -589,8 +624,12 @@ def analyze_receipts_with_llm(
             "matched_amount, line_items, card_charged_amount, card_charged_currency, "
             "estimated_usd_total, estimated_usd_fx_note, confidence, notes, display_rotation_quarter_turns. "
             "receipt_date must be the purchase/transaction date printed on the receipt "
-            "(not 'printed on' or server metadata). Prefer ISO 8601 YYYY-MM-DD when the year is clear; "
-            "otherwise use the exact date string as shown. "
+            "(not 'printed on' or server metadata). Return ISO 8601 YYYY-MM-DD. "
+            "IMPORTANT: European receipts commonly print dates as DD.MM.YY (day.month.2-digit-year). "
+            "For example '19.03.26' on a European receipt means 19 March 2026 (day=19, month=03, year=2026), "
+            "NOT 26 March 2019. When the receipt uses DD.MM.YY format, the first number is the day, the "
+            "second is the month, and the last 2-digit number is the year (20xx). Use currency, language, "
+            "and other context on the receipt to determine the date format. "
             "Use numeric values for money fields when possible. "
             "matched_amount must be the overall payable total shown on the receipt (if a single total is shown). "
             "currency must be the ISO 4217 code for the currency of those amounts (EUR, USD, GBP, CHF, JPY, …) "
@@ -671,181 +710,3 @@ def write_analysis_report(analyses: list[dict], output_dir: Path) -> Path | None
     return report_path
 
 
-def run(
-    url: str,
-    plus_selector: str | None,
-    headless: bool,
-    x: int | None,
-    y: int | None,
-    receipt_path: str | None,
-    photos_album: str | None,
-    use_photos_selection: bool,
-    interactive_login: bool,
-    interactive_photos_selection: bool,
-    photos_limit: int,
-    photos_export_dir: str,
-    llm_review: bool,
-    openai_model: str,
-    openai_api_key: str | None,
-) -> None:
-    resolved_receipt_paths = resolve_receipt_paths(
-        receipt_path=receipt_path,
-        photos_album=photos_album,
-        use_photos_selection=use_photos_selection,
-        interactive_photos_selection=interactive_photos_selection,
-        photos_limit=photos_limit,
-        photos_export_dir=photos_export_dir,
-    )
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless, slow_mo=100)
-        context = browser.new_context()
-        page = context.new_page()
-
-        print(f"[info] Opening: {url}")
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)
-        if interactive_login:
-            input("Log into Oracle in the opened browser, then press Enter to continue...")
-
-        clicked = False
-        if plus_selector:
-            clicked = click_with_selector(page, plus_selector)
-
-        if not clicked and x is not None and y is not None:
-            print("[info] Falling back to coordinate click.")
-            click_with_coordinates(page, x, y)
-            clicked = True
-
-        if not clicked:
-            print("[warn] No click performed. Provide a valid selector or x/y coordinates.")
-
-        if resolved_receipt_paths:
-            maybe_upload_receipt(page, resolved_receipt_paths[0])
-
-        analyses: list[dict] = []
-        if llm_review:
-            analyses = analyze_receipts_with_llm(
-                receipt_paths=resolved_receipt_paths,
-                model=openai_model,
-                api_key=openai_api_key,
-            )
-            write_analysis_report(analyses, Path(photos_export_dir).expanduser())
-            if analyses:
-                print("[info] LLM receipt amount matching preview:")
-                for item in analyses:
-                    source = Path(item.get("source_file", "unknown")).name
-                    matched = item.get("matched_amount", "n/a")
-                    confidence = item.get("confidence", "n/a")
-                    print(f"  - {source}: matched_amount={matched}, confidence={confidence}")
-
-        print("[info] Leaving browser open for manual review. Press Ctrl+C to stop.")
-        try:
-            while True:
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            print("\n[info] Shutting down.")
-        finally:
-            context.close()
-            browser.close()
-
-
-def parse_args() -> argparse.Namespace:
-    load_dotenv()
-    parser = argparse.ArgumentParser(
-        description="Automate legacy browser data entry in a visible browser window."
-    )
-    parser.add_argument("--url", default=os.getenv("LEGACY_URL"), help="Target application URL.")
-    parser.add_argument(
-        "--plus-selector",
-        default=os.getenv("PLUS_SELECTOR"),
-        help="CSS selector for the green plus button.",
-    )
-    parser.add_argument("--x", type=int, default=None, help="Fallback click X coordinate.")
-    parser.add_argument("--y", type=int, default=None, help="Fallback click Y coordinate.")
-    parser.add_argument(
-        "--receipt-image-path",
-        default=os.getenv("RECEIPT_IMAGE_PATH"),
-        help="Optional path to a receipt image for upload.",
-    )
-    parser.add_argument(
-        "--photos-album",
-        default=os.getenv("PHOTOS_ALBUM"),
-        help="Apple Photos album name to export receipts from.",
-    )
-    parser.add_argument(
-        "--use-photos-selection",
-        action="store_true",
-        default=as_bool(os.getenv("USE_PHOTOS_SELECTION"), default=False),
-        help="Use currently selected items in Apple Photos as receipt source.",
-    )
-    parser.add_argument(
-        "--interactive-login",
-        action="store_true",
-        default=as_bool(os.getenv("INTERACTIVE_LOGIN"), default=True),
-        help="Pause after page load and wait for manual login confirmation.",
-    )
-    parser.add_argument(
-        "--interactive-photos-selection",
-        action="store_true",
-        default=as_bool(os.getenv("INTERACTIVE_PHOTOS_SELECTION"), default=True),
-        help="Prompt you to select receipts in Photos before export.",
-    )
-    parser.add_argument(
-        "--photos-limit",
-        type=int,
-        default=int(os.getenv("PHOTOS_LIMIT", "5")),
-        help="Number of images to export from Photos (default: 5).",
-    )
-    parser.add_argument(
-        "--photos-export-dir",
-        default=os.getenv("PHOTOS_EXPORT_DIR", "./photos-exports"),
-        help="Directory where Photos exports are staged.",
-    )
-    parser.add_argument(
-        "--llm-review",
-        action="store_true",
-        default=as_bool(os.getenv("LLM_REVIEW"), default=True),
-        help="Analyze receipt images with an LLM and match receipt amounts.",
-    )
-    parser.add_argument(
-        "--openai-model",
-        default=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-        help="Vision-capable OpenAI model for receipt inspection.",
-    )
-    parser.add_argument(
-        "--openai-api-key",
-        default=os.getenv("OPENAI_API_KEY"),
-        help="OpenAI API key; defaults to OPENAI_API_KEY env var.",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        default=as_bool(os.getenv("HEADLESS"), default=False),
-        help="Run browser without a visible window (default: visible).",
-    )
-    args = parser.parse_args()
-    if not args.url:
-        parser.error("Missing URL. Set --url or LEGACY_URL in .env.")
-    return args
-
-
-if __name__ == "__main__":
-    cli_args = parse_args()
-    run(
-        url=cli_args.url,
-        plus_selector=cli_args.plus_selector,
-        headless=cli_args.headless,
-        x=cli_args.x,
-        y=cli_args.y,
-        receipt_path=cli_args.receipt_image_path,
-        photos_album=cli_args.photos_album,
-        use_photos_selection=cli_args.use_photos_selection,
-        interactive_login=cli_args.interactive_login,
-        interactive_photos_selection=cli_args.interactive_photos_selection,
-        photos_limit=cli_args.photos_limit,
-        photos_export_dir=cli_args.photos_export_dir,
-        llm_review=cli_args.llm_review,
-        openai_model=cli_args.openai_model,
-        openai_api_key=cli_args.openai_api_key,
-    )

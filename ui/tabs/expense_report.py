@@ -59,14 +59,45 @@ def build_expense_report_tab(app, parent: ttk.Frame) -> None:
         command=app.on_expense_report_match_selected_lines,
     ).pack(side=tk.LEFT)
 
+    action_row = ttk.Frame(parent)
+    action_row.pack(fill=tk.X, pady=(0, 8))
+    ttk.Button(
+        action_row,
+        text="Rescan selected for match",
+        command=app.on_expense_report_match_selected_lines,
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    ttk.Button(
+        action_row,
+        text="Remove selected from report",
+        command=app._on_matching_remove_from_report,
+    ).pack(side=tk.LEFT, padx=(0, 8))
+
+    review_row = ttk.Frame(parent)
+    review_row.pack(fill=tk.X, pady=(0, 8))
+    ttk.Label(review_row, text="Review queue:", foreground="#555").pack(side=tk.LEFT, padx=(0, 6))
+    ttk.Button(
+        review_row,
+        text="Attention only",
+        command=app.on_expense_report_show_attention_only,
+    ).pack(side=tk.LEFT, padx=(0, 6))
+    ttk.Button(
+        review_row,
+        text="Show all",
+        command=app.on_expense_report_show_all_rows,
+    ).pack(side=tk.LEFT)
+    app._expense_report_filter_label = ttk.Label(review_row, text="", foreground="#0b57d0")
+    app._expense_report_filter_label.pack(side=tk.RIGHT)
+
     paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
     app._expense_report_paned = paned
     paned.pack(fill=tk.BOTH, expand=True)
 
     left = ttk.Frame(paned)
     paned.add(left, weight=3)
+    center = ttk.Frame(paned, width=300)
+    paned.add(center, weight=2)
     right = ttk.Frame(paned, width=340)
-    paned.add(right, weight=1)
+    paned.add(right, weight=2)
 
     cols = (
         "include",
@@ -77,6 +108,7 @@ def build_expense_report_tab(app, parent: ttk.Frame) -> None:
         "currency",
         "expense_type",
         "file",
+        "receipt_missing",
         "conf",
         "reason",
     )
@@ -91,6 +123,7 @@ def build_expense_report_tab(app, parent: ttk.Frame) -> None:
     app.expense_report_tree.heading("currency", text="Cur")
     app.expense_report_tree.heading("expense_type", text="Expense type")
     app.expense_report_tree.heading("file", text="Receipt file")
+    app.expense_report_tree.heading("receipt_missing", text="Receipt Missing")
     app.expense_report_tree.heading("conf", text="Conf.")
     app.expense_report_tree.heading("reason", text="LLM note")
     app.expense_report_tree.column("include", width=56, anchor=tk.CENTER)
@@ -101,6 +134,7 @@ def build_expense_report_tab(app, parent: ttk.Frame) -> None:
     app.expense_report_tree.column("currency", width=44)
     app.expense_report_tree.column("expense_type", width=200)
     app.expense_report_tree.column("file", width=160)
+    app.expense_report_tree.column("receipt_missing", width=100, anchor=tk.CENTER)
     app.expense_report_tree.column("conf", width=44, anchor=tk.CENTER)
     app.expense_report_tree.column("reason", width=140)
     app.expense_report_tree.tag_configure("low_confidence", background="#fff6cc")
@@ -108,6 +142,58 @@ def build_expense_report_tab(app, parent: ttk.Frame) -> None:
     app.expense_report_tree.configure(yscrollcommand=ys.set)
     app.expense_report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ys.pack(side=tk.RIGHT, fill=tk.Y)
+
+    ttk.Label(center, text="Match Decision", font=("SF Pro Text", 11, "bold")).pack(anchor=tk.W, pady=(0, 4))
+    ttk.Label(
+        center,
+        text=(
+            "Inspect confidence and evidence before approval. "
+            "Keyboard: A accept, R reject, M manual pick, N/P next/prev."
+        ),
+        wraplength=290,
+        justify=tk.LEFT,
+        foreground="#666",
+    ).pack(anchor=tk.W, pady=(0, 6))
+    app._matching_line_var = tk.StringVar(value="Line: —")
+    app._matching_conf_var = tk.StringVar(value="Confidence: —")
+    app._matching_receipt_var = tk.StringVar(value="Suggested receipt: —")
+    ttk.Label(center, textvariable=app._matching_line_var, foreground="#333").pack(anchor=tk.W, pady=1)
+    ttk.Label(center, textvariable=app._matching_conf_var, foreground="#333").pack(anchor=tk.W, pady=1)
+    ttk.Label(center, textvariable=app._matching_receipt_var, foreground="#333", wraplength=290).pack(
+        anchor=tk.W, pady=1
+    )
+
+    ttk.Label(center, text="Evidence", font=("SF Pro Text", 10, "bold")).pack(anchor=tk.W, pady=(8, 2))
+    app._matching_reason_text = tk.Text(
+        center,
+        height=10,
+        wrap=tk.WORD,
+        font=("SF Pro Text", 9),
+        foreground="#444",
+        background="#f7f7f7",
+        relief=tk.SOLID,
+        borderwidth=1,
+    )
+    app._matching_reason_text.pack(fill=tk.BOTH, expand=True)
+    app._matching_reason_text.insert("1.0", "Select a row to inspect match rationale.")
+    app._matching_reason_text.configure(state=tk.DISABLED)
+
+    match_btn_row = ttk.Frame(center)
+    match_btn_row.pack(fill=tk.X, pady=(8, 0))
+    ttk.Button(match_btn_row, text="Accept selected", command=app.on_matching_accept_selected).pack(
+        side=tk.LEFT, padx=(0, 6)
+    )
+    ttk.Button(match_btn_row, text="Reject selected", command=app.on_matching_reject_selected).pack(
+        side=tk.LEFT, padx=(0, 6)
+    )
+    ttk.Button(match_btn_row, text="Manual pick file", command=app.on_matching_manual_pick).pack(side=tk.LEFT)
+    bulk_row = ttk.Frame(center)
+    bulk_row.pack(fill=tk.X, pady=(6, 0))
+    ttk.Button(
+        bulk_row,
+        text="Accept all high-confidence",
+        command=app.on_matching_accept_all_high_confidence,
+    ).pack(side=tk.LEFT)
 
     ttk.Label(right, text="Preview", font=("SF Pro Text", 11, "bold")).pack(anchor=tk.W, pady=(0, 4))
     ttk.Label(
@@ -194,6 +280,7 @@ def build_expense_report_tab(app, parent: ttk.Frame) -> None:
     if sys.platform == "darwin":
         app.expense_report_tree.bind("<Command-a>", app._expense_report_select_all)
         app.expense_report_tree.bind("<Command-A>", app._expense_report_select_all)
+    app.expense_report_tree.bind("<KeyPress>", app._matching_workspace_on_keypress)
 
     create_row = ttk.Frame(parent, padding=(0, 10, 0, 0))
     create_row.pack(fill=tk.X)

@@ -1,89 +1,198 @@
-# Expense automator
+# Expense Automator
 
-Browser-backed automation for expense entry: a visible browser session drives the legacy expense portal (instead of raw desktop mouse movement only).
+Automates expense-report entry by driving a real browser against the legacy expense portal. Instead of tedious copy-paste, the tool scrapes your credit-card transactions, matches them to receipt photos, and fills everything in for you.
 
-## 1) Setup
+---
+
+## Quick Start — get the app running in ~5 minutes
+
+### Prerequisites
+
+You need two things installed before you begin:
+
+| What | Why | How to install |
+|------|-----|----------------|
+| **Python 3.10+** | Runs the app | See Step 0 below |
+| **Git** | Downloads the code | See Step 0 below |
+
+### Step 0: Install Python and Git (skip if you already have them)
+
+<details>
+<summary><strong>Mac</strong></summary>
+
+1. Open the **Terminal** app (press `Cmd + Space`, type `Terminal`, hit Enter).
+2. Paste this line and press Enter — it installs Homebrew, a tool manager for Mac:
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+   Follow any on-screen prompts (you may need to type your password).
+3. Once Homebrew is installed, paste these two lines and press Enter:
+   ```bash
+   brew install python@3.12 git
+   ```
+4. Verify both are installed:
+   ```bash
+   python3 --version
+   git --version
+   ```
+   You should see version numbers printed (e.g. `Python 3.12.x` and `git version 2.x.x`).
+
+</details>
+
+<details>
+<summary><strong>Windows</strong></summary>
+
+1. **Install Python**: go to https://www.python.org/downloads/ and click the big yellow **Download Python 3.12** button. Run the installer and **check the box "Add python.exe to PATH"** before clicking Install Now.
+2. **Install Git**: go to https://git-scm.com/download/win and download the installer. Run it and accept all defaults.
+3. Open **PowerShell** (press the Windows key, type `PowerShell`, hit Enter).
+4. Verify both are installed:
+   ```powershell
+   python --version
+   git --version
+   ```
+   You should see version numbers printed.
+
+</details>
+
+---
+
+### Step 1: Download the code
+
+Open a terminal (Mac: **Terminal**, Windows: **PowerShell**) and run:
+
+```bash
+git clone https://github.com/elijah286/oracle-expense-automation.git
+cd oracle-expense-automation
+```
+
+> Replace `YOUR_USERNAME` with the actual GitHub account that owns the repo. If you were given a full URL, use that instead.
+
+---
+
+### Step 2: Create a virtual environment and install dependencies
+
+A "virtual environment" keeps this project's libraries separate from the rest of your computer. Copy and paste the commands for your OS:
+
+<details>
+<summary><strong>Mac</strong></summary>
 
 ```bash
 python3 -m venv .venv-rpa
 source .venv-rpa/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium
+```
+
+</details>
+
+<details>
+<summary><strong>Windows (PowerShell)</strong></summary>
+
+```powershell
+python -m venv .venv-rpa
+.venv-rpa\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+> If you get an error about "execution policies", run this first and try again:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
+</details>
+
+You will know it worked when you see `(.venv-rpa)` at the beginning of your terminal prompt.
+
+---
+
+### Step 3: Create your settings file
+
+```bash
 cp .env.example .env
 ```
 
-## 2) Configure
+On Windows, use:
 
-Edit `.env`:
-
-- `LEGACY_URL`: page where you enter receipts
-- `PLUS_SELECTOR`: CSS selector for the green plus button
-- `RECEIPT_IMAGE_PATH`: optional direct receipt image path (if you already exported)
-- `PHOTOS_ALBUM`: optional Apple Photos album name containing receipts
-- `USE_PHOTOS_SELECTION`: set `true` to use current Photos app selection
-- `INTERACTIVE_LOGIN`: pauses and asks you to login before continuing
-- `INTERACTIVE_PHOTOS_SELECTION`: opens Photos and asks you to select receipts
-- `PHOTOS_LIMIT`: number of photos to export per run (default `5`)
-- `PHOTOS_EXPORT_DIR`: local staging folder for exported Photos files
-- `LLM_REVIEW`: when `true`, sends receipt images to an LLM for amount matching
-- `OPENAI_MODEL`: model used for image inspection (default `gpt-4.1-mini`)
-- `OPENAI_API_KEY`: required for LLM receipt inspection
-- `HEADLESS`: `false` keeps browser visible
-
-## 3) Run
-
-```bash
-source .venv-rpa/bin/activate
-python browser_automation.py
+```powershell
+copy .env.example .env
 ```
 
-## Desktop UI (recommended)
+Then open the new `.env` file in any text editor (Notepad, TextEdit, VS Code — anything works) and fill in the values described in the **Configuration** section below.
 
-Launch the Expense automator desktop app:
+---
 
-```bash
-source .venv-rpa/bin/activate
-python receipt_automation_ui.py
-```
+### Step 4: Launch the app
 
-The UI includes:
-
-- `1) Select Receipts`: opens Apple Photos, exports selected images, and runs LLM review
-- `2) Login to Expense Report Tool`: opens the Oracle login page in browser
-- `3) Assign Images`: lets you map imported images to expense-line labels (UX scaffold)
-- `Settings`: stores URL/model/preferences and saves your OpenAI key in macOS keychain
-
-Default flow now is:
-
-1) load Oracle login page  
-2) pause for your manual login  
-3) prompt you to select receipts in Photos  
-4) export selected photos and run LLM receipt amount matching  
-5) print results and write a JSON report in `PHOTOS_EXPORT_DIR`
-
-Use Apple Photos selection explicitly:
+Make sure you still see `(.venv-rpa)` in your terminal. If you don't, re-activate the environment first (see Step 2). Then run:
 
 ```bash
-python browser_automation.py --use-photos-selection
+python -m web
 ```
 
-Use a specific Apple Photos album:
+A browser window will automatically open to **http://localhost:8080** with the Expense Automator UI.
 
-```bash
-python browser_automation.py --photos-album "Receipts"
-```
+> **Every time you come back later**, open a terminal, `cd` into the `oracle-expense-automation` folder, activate the environment, and run `python -m web`:
+>
+> Mac:
+> ```bash
+> cd oracle-expense-automation
+> source .venv-rpa/bin/activate
+> python -m web
+> ```
+>
+> Windows:
+> ```powershell
+> cd oracle-expense-automation
+> .venv-rpa\Scripts\Activate.ps1
+> python -m web
+> ```
 
-If selector-based click is not possible yet, use fallback coordinates:
+---
 
-```bash
-python browser_automation.py --url "https://your-legacy-app" --x 900 --y 430
-```
+## Configuration
+
+The `.env` file controls how the app behaves. Open it in any text editor to change these values:
+
+| Variable | What it does | Default |
+|----------|-------------|---------|
+| `LEGACY_URL` | The URL of the expense portal login page | *(pre-filled)* |
+| `PHOTOS_LIMIT` | How many receipt photos to export per run | `5` |
+| `PHOTOS_EXPORT_DIR` | Folder where exported photos are temporarily stored | `./photos-exports` |
+| `LLM_REVIEW` | Set to `true` to have an AI double-check receipt amounts | `true` |
+| `OPENAI_MODEL` | Which OpenAI model to use for receipt inspection | `gpt-4.1-mini` |
+| `OPENAI_API_KEY` | Your OpenAI API key (required if `LLM_REVIEW` is `true`) | *(empty — you must fill this in)* |
+| `OPENAI_HTTP_VERIFY` | Path to a corporate CA `.pem` file, if behind SSL inspection | *(optional)* |
+
+---
+
+## How to use the app
+
+Once the UI is open in your browser:
+
+1. **Open the expense portal** from the Activity tab — the app launches a browser you can watch.
+2. **Scrape transactions** — follow the VPN prompts if needed; the app pulls your credit-card lines.
+3. **Import & analyze receipts** — point the app at your receipt photos and it reads amounts/dates.
+4. **Match & review** — the app suggests which receipt goes with which transaction; you approve or adjust.
+5. **Create & submit the report** — one click fills out the expense report in the portal for you.
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `python3: command not found` (Mac) | Re-run `brew install python@3.12` or use `python` instead of `python3`. |
+| `python: command not found` (Windows) | Re-install Python and make sure **"Add python.exe to PATH"** is checked. |
+| `(.venv-rpa)` disappeared from my prompt | You closed the terminal. Re-activate: `source .venv-rpa/bin/activate` (Mac) or `.venv-rpa\Scripts\Activate.ps1` (Windows). |
+| `pip: command not found` | Make sure the virtual environment is activated (see above). |
+| Port 8080 already in use | Another instance is running. Close it, or the app will handle it automatically. |
+| macOS asks for permission to control Photos | Click **OK** — the app needs this to export receipt images from Apple Photos. |
+
+---
 
 ## Notes
 
-- App data lives in `~/.expense-automator` (settings, browser profile). If you used an older build that stored data in `~/.automated-expenses`, copy that folder to `~/.expense-automator` and re-save secrets in Settings if keychain entries do not appear (service name is now `expense-automator`).
-- Selector click is more stable than coordinate click.
-- macOS may ask permission for Terminal/Python to control Photos on first run.
-- LLM review requires `OPENAI_API_KEY` in `.env`.
-- The browser remains open after automation so you can verify each step.
-- Press `Ctrl+C` to stop.
+- App data (settings, browser profile) is stored in `~/.expense-automator`. If you previously used a build that stored data in `~/.automated-expenses`, copy that folder to `~/.expense-automator` and re-save any secrets in the Settings tab.
+- The automated browser stays open after each step so you can verify what it did before moving on.
+- LLM-based receipt review requires a valid `OPENAI_API_KEY` in your `.env` file.

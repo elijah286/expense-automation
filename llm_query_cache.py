@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from persistence.atomic_json import atomic_write_json, load_json_or_quarantine
+
 SCHEMA_VERSION = 1
 
 # Kinds we know how to resolve today. Others are preserved for future steps
@@ -74,10 +76,7 @@ def _iso_now() -> str:
 def load_document(path: Path) -> dict[str, Any]:
     if not path.exists():
         return new_empty_document()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return new_empty_document()
+    raw = load_json_or_quarantine(path, new_empty_document())
     if not isinstance(raw, dict):
         return new_empty_document()
     ver = int(raw.get("version", 0) or 0)
@@ -105,7 +104,7 @@ def save_document(path: Path, doc: dict[str, Any]) -> None:
         "queries": doc.get("queries", {}),
         "responses": doc.get("responses", {}),
     }
-    path.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, out, indent=2, ensure_ascii=False)
 
 
 def register_expense_type_query(

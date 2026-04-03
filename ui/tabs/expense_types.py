@@ -1,4 +1,4 @@
-"""Expense types tab: vendor cache and LLM query queue status."""
+"""Vendor Classification tab: vendor → expense-type mapping with search and sortable columns."""
 
 from __future__ import annotations
 
@@ -24,22 +24,20 @@ def build_expense_types_tab(app, parent: ttk.Frame) -> None:
     )
     app._expense_types_llm_label.pack(anchor=tk.W, pady=(0, 8))
 
-    ttk.Label(
-        parent,
-        text=(
-            "Each row is a unique merchant (normalized name). Rows come from scraped expense lines, "
-            "the Step 3 LLM queue, and your saved vendor cache. "
-            "Vendor → expense type in this table (and the cache file) is the source of truth when filling the report. "
-            "Use Scan new vendors to have the LLM pick from the portal’s expense type list; you can always edit here."
-        ),
-        foreground="#555",
-        wraplength=800,
-        justify=tk.LEFT,
-    ).pack(anchor=tk.W, pady=(0, 4))
     ttk.Label(parent, text=f"Cache file: {VENDOR_CACHE_DISPLAY_PATH}", foreground="#555").pack(
-        anchor=tk.W, pady=(0, 8)
+        anchor=tk.W, pady=(0, 6)
     )
 
+    # --- search-as-you-type ---
+    search_frame = ttk.Frame(parent)
+    search_frame.pack(fill=tk.X, pady=(0, 6))
+    ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT, padx=(0, 6))
+    app._expense_types_search_var = tk.StringVar()
+    search_entry = ttk.Entry(search_frame, textvariable=app._expense_types_search_var, width=40)
+    search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    app._expense_types_search_var.trace_add("write", lambda *_a: app._refill_expense_types_tree())
+
+    # --- treeview with sortable columns ---
     tree_frame = ttk.Frame(parent)
     tree_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -48,17 +46,46 @@ def build_expense_types_tab(app, parent: ttk.Frame) -> None:
         tree_frame,
         columns=cols,
         show="headings",
-        height=14,
+        height=18,
         selectmode=tk.BROWSE,
     )
-    app.expense_types_tree.heading("vendor_key", text="Vendor key (normalized)")
-    app.expense_types_tree.heading("expense_type", text="Expense type")
-    app.expense_types_tree.column("vendor_key", width=260, stretch=True)
-    app.expense_types_tree.column("expense_type", width=380, stretch=True)
+    app.expense_types_tree.heading("vendor_key", text="Merchant \u25b2\u25bc", anchor=tk.W)
+    app.expense_types_tree.heading("expense_type", text="Expense Type \u25b2\u25bc", anchor=tk.W)
+    app.expense_types_tree.column("vendor_key", width=320, stretch=True)
+    app.expense_types_tree.column("expense_type", width=320, stretch=True)
     ys = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=app.expense_types_tree.yview)
     app.expense_types_tree.configure(yscrollcommand=ys.set)
     app.expense_types_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ys.pack(side=tk.RIGHT, fill=tk.Y)
+
+    # Sort state: column key -> ascending boolean
+    app._expense_types_sort_col = "vendor_key"
+    app._expense_types_sort_asc = True
+
+    def _on_heading_click(col: str) -> None:
+        if app._expense_types_sort_col == col:
+            app._expense_types_sort_asc = not app._expense_types_sort_asc
+        else:
+            app._expense_types_sort_col = col
+            app._expense_types_sort_asc = True
+        _update_heading_labels()
+        app._refill_expense_types_tree()
+
+    def _update_heading_labels() -> None:
+        for c, label in (("vendor_key", "Merchant"), ("expense_type", "Expense Type")):
+            if c == app._expense_types_sort_col:
+                arrow = " \u25b2" if app._expense_types_sort_asc else " \u25bc"
+            else:
+                arrow = ""
+            app.expense_types_tree.heading(c, text=f"{label}{arrow}")
+
+    app.expense_types_tree.heading(
+        "vendor_key", command=lambda: _on_heading_click("vendor_key")
+    )
+    app.expense_types_tree.heading(
+        "expense_type", command=lambda: _on_heading_click("expense_type")
+    )
+    _update_heading_labels()
 
     app._expense_types_vendor_var = tk.StringVar()
     app._expense_types_type_var = tk.StringVar()

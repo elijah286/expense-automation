@@ -46,6 +46,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
+from browser.reliability import RetryPolicy, execute_with_retry, is_transient_error
 from browser_automation import (
     analyze_receipts_with_llm,
     build_openai_client,
@@ -55,20 +56,26 @@ from browser_automation import (
     receipt_usd_amount_display,
     write_analysis_report,
 )
+from orchestration.events import JsonlAutomationEventSink
 from expense_lines_cache import (
     approved_match_path,
+    delete_report_with_data,
     expense_lines_cache_path,
+    get_report_submission_status,
     load_analyses_snapshot,
     load_approved_matches,
     load_expense_lines_cache,
+    load_expense_report_groups,
     load_receipt_line_matches,
     persist_expense_line_derived_fields,
     prune_receipt_sidecars_after_step2_scrape,
     receipt_analyses_snapshot_path,
     receipt_line_match_path,
+    record_submitted_receipt,
     remove_expense_lines_by_ids,
     save_analyses_snapshot,
     save_approved_matches,
+    save_expense_report_groups,
     save_expense_lines_cache,
     save_receipt_line_matches,
     validate_approved_for_attach,
@@ -93,6 +100,8 @@ from llm_query_cache import (
     validate_replay_ready,
     llm_pending_file,
 )
+from classification.service import classify_transactions
+from matching.pipeline import match_transactions_to_receipts
 from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS
 from receipt_matching import (
     REVIEW_CONFIDENCE_THRESHOLD,
@@ -364,6 +373,8 @@ class ReceiptAutomationUI:
         self.analyses: list[dict] = []
         self.assignment_map: dict[str, str] = {}
         self._activity_log_max_lines = 500
+        self._run_id = f"run-{int(time.time())}"
+        self._event_sink = JsonlAutomationEventSink(APP_DIR / "automation-events.ndjson")
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.browser_context: BrowserContext | None = None
@@ -428,6 +439,11 @@ class ReceiptAutomationUI:
         self._preview_use_fast_resample: bool = False
         self._preview_macos_pinch_keepalive: list[object] = []
         self._preview_pinch_canvas_ids: set[int] = set()
+        self._run_status_phase: str = "Idle"
+        self._run_status_progress_pct: int = 0
+        self._run_status_attention: str = "None"
+        self._run_status_message: str = "Waiting for next action."
+        self._expense_report_attention_only: bool = False
 
         self._build_layout()
         self._apply_ui_layout()
@@ -457,6 +473,7 @@ class ReceiptAutomationUI:
         self._backfill_expense_line_derived_if_needed()
         self.refresh_all_tabs()
         self._setup_ui_layout_persistence()
+        self._set_run_status()
 
     def _build_layout(self) -> None:
         from ui.shell import build_main_shell
@@ -473,6 +490,10 @@ class ReceiptAutomationUI:
             return
         if name == "Settings":
             self._sync_settings_tab_vars()
+        elif name == "Workflow":
+            self.refresh_workflow_views()
+        elif name == "Vendor Classification":
+            self.refresh_expense_types_tab()
         elif name == "Expense types":
             self.refresh_expense_types_tab()
         elif name == "Expense report":
@@ -485,15 +506,603 @@ class ReceiptAutomationUI:
             self.main_notebook.select(self._frame_settings)
             self._sync_settings_tab_vars()
 
+    def show_workflow_stage(self, stage_key: str) -> None:
+        frames = getattr(self, "_workflow_stage_frames", {})
+        if not isinstance(frames, dict) or stage_key not in frames:
+            return
+        for key, frame in frames.items():
+            if key == stage_key:
+                frame.tkraise()
+        self._workflow_stage_key = stage_key
+        btns = getattr(self, "_workflow_stage_buttons", {})
+        if isinstance(btns, dict):
+            for key, btn in btns.items():
+                try:
+                    btn.configure(state=(tk.DISABLED if key == stage_key else tk.NORMAL))
+                except tk.TclError:
+                    pass
+        if hasattr(self, "_frame_workflow"):
+            self.main_notebook.select(self._frame_workflow)
+        self.refresh_workflow_views()
+
     def focus_expense_report_tab(self) -> None:
+        if hasattr(self, "_workflow_stage_frames"):
+            self.show_workflow_stage("matching")
+            return
         if hasattr(self, "_frame_expense_report"):
             self.main_notebook.select(self._frame_expense_report)
             self.refresh_expense_report_tab()
 
     def focus_expense_types_tab(self) -> None:
+        if hasattr(self, "_workflow_stage_frames"):
+            self.show_workflow_stage("classification")
+            return
         if hasattr(self, "_frame_expense_types"):
             self.main_notebook.select(self._frame_expense_types)
             self.refresh_expense_types_tab()
+
+    def refresh_oracle_transactions_view(self) -> None:
+        tree = getattr(self, "oracle_transactions_tree", None)
+        if tree is None:
+            return
+        for iid in tree.get_children():
+            tree.delete(iid)
+        lines, _ = load_expense_lines_cache(APP_DIR)
+        matches = load_receipt_line_matches(APP_DIR)
+        report_filter = self._get_selected_report_line_ids()
+        if report_filter is not None:
+            lines = [l for l in lines if str(l.get("line_id", "") or "").strip() in report_filter]
+        for line in lines:
+            lid = str(line.get("line_id", "") or "").strip()
+            if not lid:
+                continue
+            block = matches.get(lid) or {}
+            best = str(block.get("best_receipt") or "").strip()
+            match_status = "Matched" if best else "Unmatched"
+            et = self._expense_type_cell_for_line(line)
+            class_status = "Classified" if et and et != "—" else "Pending"
+            tree.insert(
+                "",
+                tk.END,
+                iid=lid,
+                values=(
+                    lid,
+                    str(line.get("merchant_name", "") or "")[:120],
+                    format_date_for_ui(str(line.get("transaction_date", "") or ""))[:24],
+                    str(line.get("amount", "") or "")[:16],
+                    str(line.get("currency", "") or "")[:8],
+                    match_status,
+                    class_status,
+                ),
+            )
+        matched = sum(
+            1
+            for line in lines
+            if str((matches.get(str(line.get("line_id", "") or "").strip()) or {}).get("best_receipt") or "").strip()
+        )
+        summary = getattr(self, "_oracle_stage_summary_var", None)
+        if summary is not None:
+            summary.set(
+                f"Scraped {len(lines)} transaction(s) · matched {matched} · unmatched {max(0, len(lines) - matched)}"
+            )
+
+    def refresh_final_review_view(self) -> None:
+        readiness = getattr(self, "_review_readiness_var", None)
+        summary = getattr(self, "_review_summary_var", None)
+        blockers_list = getattr(self, "_review_blockers_list", None)
+        if readiness is None or summary is None or blockers_list is None:
+            return
+        lines, _ = load_expense_lines_cache(APP_DIR)
+        matches = load_receipt_line_matches(APP_DIR)
+        approved = load_approved_matches(APP_DIR)
+        report_filter = self._get_selected_report_line_ids()
+        if report_filter is not None:
+            lines = [l for l in lines if str(l.get("line_id", "") or "").strip() in report_filter]
+        low_conf = 0
+        missing = 0
+        blockers: list[str] = []
+        blocker_line_ids: list[str] = []
+        for line in lines:
+            lid = str(line.get("line_id", "") or "").strip()
+            if not lid:
+                continue
+            m = matches.get(lid) or {}
+            best = str(m.get("best_receipt") or "").strip()
+            try:
+                cf = float(m.get("confidence", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                cf = 0.0
+            if cf < REVIEW_CONFIDENCE_THRESHOLD:
+                low_conf += 1
+            if not best:
+                missing += 1
+                blockers.append(f"{lid}: missing receipt match.")
+                blocker_line_ids.append(lid)
+            elif not Path(best).expanduser().is_file():
+                missing += 1
+                blockers.append(f"{lid}: matched file not found on disk.")
+                blocker_line_ids.append(lid)
+            if lid not in approved:
+                blockers.append(f"{lid}: not approved for attachment.")
+                blocker_line_ids.append(lid)
+        matched = max(0, len(lines) - missing)
+        summary.set(
+            f"Matched: {matched} | Missing receipts: {missing} | Low confidence: {low_conf} | Total: {len(lines)}"
+        )
+        ready = len(blockers) == 0 and len(lines) > 0
+        readiness.set("READY to submit" if ready else "NOT READY")
+        blockers_list.delete(0, tk.END)
+        if not blockers:
+            blockers_list.insert(tk.END, "No blockers found.")
+        else:
+            for b in blockers[:500]:
+                blockers_list.insert(tk.END, b)
+        self._review_blocker_line_ids = blocker_line_ids[:500]
+
+    def on_final_review_fix_selected(self) -> None:
+        lb = getattr(self, "_review_blockers_list", None)
+        if lb is None:
+            self.on_focus_attention_items()
+            return
+        sel = lb.curselection()
+        if not sel:
+            self.on_focus_attention_items()
+            return
+        idx = int(sel[0])
+        lids = getattr(self, "_review_blocker_line_ids", [])
+        lid = lids[idx] if idx < len(lids) else ""
+        self.focus_expense_report_tab()
+        tree = getattr(self, "expense_report_tree", None)
+        if tree is None or not lid or lid not in tree.get_children():
+            self.on_focus_attention_items()
+            return
+        tree.selection_set(lid)
+        tree.focus(lid)
+        tree.see(lid)
+        self._assignments_show_preview_for_line_id(lid)
+        self._matching_workspace_update_for_line(lid)
+        self.set_status(f"Final review fix: jumped to blocker line {lid}.")
+
+    def refresh_submission_timeline(self) -> None:
+        widget = getattr(self, "_submission_timeline_text", None)
+        if widget is None:
+            return
+        path = APP_DIR / "automation-events.ndjson"
+        lines: list[str] = []
+        if path.exists():
+            try:
+                raw = path.read_text(encoding="utf-8").splitlines()
+                lines = raw[-80:]
+            except Exception:
+                lines = []
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        if not lines:
+            widget.insert(tk.END, "No automation timeline events yet.")
+        else:
+            for ln in lines:
+                try:
+                    payload = json.loads(ln)
+                    msg = str(payload.get("message", "") or "").strip()
+                    kind = str(payload.get("kind", "") or "").strip()
+                    phase = str(payload.get("phase", "") or "").strip()
+                    widget.insert(tk.END, f"[{phase or '-'}] {kind}: {msg}\n")
+                except Exception:
+                    widget.insert(tk.END, ln + "\n")
+        widget.configure(state=tk.DISABLED)
+        status = getattr(self, "_submission_status_var", None)
+        if status is not None:
+            status.set("Submission timeline refreshed.")
+
+    def refresh_submit_reports_table(self) -> None:
+        tree = getattr(self, "_submit_reports_tree", None)
+        if tree is None:
+            return
+        for item in tree.get_children():
+            tree.delete(item)
+        reports = load_expense_report_groups(APP_DIR)
+        if not reports:
+            return
+        selected_rid = self._matching_report_id_map.get(self._matching_report_var.get())
+        for rid, data in sorted(reports.items(), key=lambda kv: kv[1].get("created_at", "")):
+            if selected_rid is not None and rid != selected_rid:
+                continue
+            name = str(data.get("name", "")).strip() or "Untitled"
+            line_ids = data.get("line_ids", [])
+            n_lines = len(line_ids) if isinstance(line_ids, list) else 0
+            created = str(data.get("created_at", "")).strip()
+            if created and len(created) >= 10:
+                created = created[:10]
+            status = get_report_submission_status(APP_DIR, rid)
+            tree.insert("", tk.END, iid=rid, values=(name, n_lines, created, status))
+
+    def _get_selected_submit_report_id(self) -> str | None:
+        tree = getattr(self, "_submit_reports_tree", None)
+        if tree is None:
+            return None
+        sel = tree.selection()
+        if not sel:
+            self.set_status("Select a report from the table first.")
+            return None
+        return str(sel[0])
+
+    def on_submit_selected_report(self) -> None:
+        """Load the selected report's lines into the matching workspace, approve them, then run automation."""
+        rid = self._get_selected_submit_report_id()
+        if not rid:
+            return
+
+        reports = load_expense_report_groups(APP_DIR)
+        report = reports.get(rid)
+        if not report:
+            self.set_status("Report not found.")
+            return
+
+        line_ids = report.get("line_ids", [])
+        if not line_ids:
+            self.set_status(f"Report '{report.get('name', 'Untitled')}' has no transactions assigned.")
+            return
+
+        line_id_set = {str(lid).strip() for lid in line_ids if str(lid).strip()}
+        matches = load_receipt_line_matches(APP_DIR)
+        approved: dict[str, dict] = {}
+        missing_receipt: list[str] = []
+
+        for lid in line_id_set:
+            m = matches.get(lid, {})
+            best = str(m.get("best_receipt") or "").strip()
+            if best and Path(best).expanduser().is_file():
+                approved[lid] = {"source_file": best, "approved": True}
+            else:
+                missing_receipt.append(lid)
+
+        if not approved:
+            self.set_status(
+                f"Submit blocked: none of the {len(line_id_set)} lines in "
+                f"'{report.get('name', 'Untitled')}' have a receipt file on disk."
+            )
+            return
+
+        if missing_receipt:
+            self.set_status(
+                f"Warning: {len(missing_receipt)} line(s) have no receipt — "
+                f"submitting {len(approved)} line(s) that do."
+            )
+
+        save_approved_matches(APP_DIR, approved)
+
+        if hasattr(self, "expense_report_tree"):
+            tree = self.expense_report_tree
+            for lid in tree.get_children():
+                self._assign_row_include[lid] = lid in approved
+            self._invalidate_receipt_table_match_cache()
+
+        if self._step3_automation_active:
+            self.set_status("Submit blocked: stop the running automation first.")
+            return
+
+        if not load_analyses_snapshot(APP_DIR) and not self.receipt_paths:
+            self.set_status("Submit blocked: import receipts or run matching first.")
+            return
+
+        ok_m, err_m = validate_approved_for_attach(APP_DIR)
+        if not ok_m:
+            self.set_status(f"Submit blocked (approvals): {err_m}")
+            return
+
+        if not self._prepare_complete_report_llm_mode():
+            return
+
+        if not self._controlled_browser_usable():
+            self.set_status(
+                f"Submitting '{report.get('name', 'Untitled')}': opening Chromium — "
+                "complete login or 2FA in the browser if prompted."
+            )
+            self.on_step_login()
+
+        if not self.browser_page:
+            self.set_status(
+                "Submit blocked: Chromium not connected. "
+                "Use Open Oracle to sign in, then try Submit again."
+            )
+            return
+
+        self._run_step6_file_attach = True
+        self._submit_report_name = str(report.get("name", "")).strip() or "Expense Report"
+        self.set_status(
+            f"Submitting report '{self._submit_report_name}' ({len(approved)} lines): "
+            "Step 1 open browser → Step 2 login → Step 3 Expenses Home → "
+            "Step 4.1 to 4.6 (Oracle wizard) …"
+        )
+        self._run_populate_expense_report_flow(start_from="nic_iexpenses")
+
+    def on_delete_selected_report(self) -> None:
+        """Delete the selected report, its transactions, and associated receipt documents."""
+        rid = self._get_selected_submit_report_id()
+        if not rid:
+            return
+
+        reports = load_expense_report_groups(APP_DIR)
+        report = reports.get(rid)
+        if not report:
+            self.set_status("Report not found.")
+            return
+
+        report_name = str(report.get("name", "")).strip() or "Untitled"
+        n_lines = len(report.get("line_ids", []))
+
+        confirm = messagebox.askyesno(
+            "Delete report",
+            f"Delete report '{report_name}' and its {n_lines} transaction(s) "
+            f"plus attached receipt images?\n\n"
+            f"Merchant classifications will be preserved for future reports.",
+            parent=self.root,
+        )
+        if not confirm:
+            return
+
+        result = delete_report_with_data(APP_DIR, rid)
+        if "error" in result:
+            self.set_status(f"Delete failed: {result['error']}")
+            return
+
+        self.refresh_submit_reports_table()
+        self.refresh_all_tabs()
+        self.set_status(
+            f"Deleted report '{report_name}': "
+            f"{result.get('removed_lines', 0)} transactions, "
+            f"{result.get('deleted_files', 0)} receipt files removed."
+        )
+
+    def refresh_workflow_dashboard(self) -> None:
+        kpi = getattr(self, "_workflow_dashboard_kpi_var", None)
+        ready = getattr(self, "_workflow_dashboard_ready_var", None)
+        nxt = getattr(self, "_workflow_dashboard_next_var", None)
+        if kpi is None or ready is None or nxt is None:
+            return
+        lines, _ = load_expense_lines_cache(APP_DIR)
+        matches = load_receipt_line_matches(APP_DIR)
+        approved = load_approved_matches(APP_DIR)
+        report_filter = self._get_selected_report_line_ids()
+        if report_filter is not None:
+            lines = [l for l in lines if str(l.get("line_id", "") or "").strip() in report_filter]
+            line_id_set = report_filter
+        else:
+            line_id_set = {str(l.get("line_id", "") or "").strip() for l in lines}
+        matched = 0
+        low_conf = 0
+        for lid, block in matches.items():
+            if lid not in line_id_set:
+                continue
+            if str(block.get("best_receipt") or "").strip():
+                matched += 1
+            try:
+                if float(block.get("confidence", 0.0) or 0.0) < REVIEW_CONFIDENCE_THRESHOLD:
+                    low_conf += 1
+            except (TypeError, ValueError):
+                low_conf += 1
+        unmatched = max(0, len(lines) - matched)
+        kpi.set(
+            f"Transactions: {len(lines)} | Matched: {matched} | Unmatched: {unmatched} | Low confidence: {low_conf}"
+        )
+        ready_to_submit = len(lines) > 0 and len(approved) > 0 and unmatched == 0
+        ready.set("Readiness: READY TO SUBMIT" if ready_to_submit else "Readiness: Needs review")
+        if len(lines) == 0:
+            nxt.set("Next step: Scrape Oracle transactions.")
+        elif not self.receipt_paths:
+            nxt.set("Next step: Import documents.")
+        elif not matches:
+            nxt.set("Next step: Run matching.")
+        elif self._expense_report_attention_line_ids():
+            nxt.set("Next step: Review attention items.")
+        else:
+            nxt.set("Next step: Final Review and Submission.")
+
+    def refresh_workflow_views(self) -> None:
+        self._populate_matching_report_combo()
+        self._refresh_report_header_status()
+        self.refresh_workflow_dashboard()
+        self.refresh_oracle_transactions_view()
+        self.refresh_classification_transactions_view()
+        self.refresh_final_review_view()
+        self.refresh_submit_reports_table()
+        self.refresh_submission_timeline()
+
+    def on_workflow_resume(self) -> None:
+        lines, _ = load_expense_lines_cache(APP_DIR)
+        matches = load_receipt_line_matches(APP_DIR)
+        if not lines:
+            self.show_workflow_stage("oracle")
+            self.set_status("Resume workflow: scrape Oracle transactions first.")
+            return
+        if not self.receipt_paths:
+            self.show_workflow_stage("documents")
+            self.set_status("Resume workflow: import receipt documents.")
+            return
+        if not matches:
+            self.show_workflow_stage("matching")
+            self.set_status("Resume workflow: run transaction ↔ receipt matching.")
+            return
+        if self._expense_report_attention_line_ids():
+            self.show_workflow_stage("matching")
+            self.set_status("Resume workflow: resolve attention items in matching workspace.")
+            return
+        self.show_workflow_stage("review")
+        self.set_status("Resume workflow: final review is next.")
+
+    def refresh_classification_transactions_view(self) -> None:
+        tree = getattr(self, "classification_transactions_tree", None)
+        if tree is None:
+            return
+        for iid in tree.get_children():
+            tree.delete(iid)
+        lines, _ = load_expense_lines_cache(APP_DIR)
+        cache = dict(self._load_vendor_expense_cache())
+        suggestions = classify_transactions(lines, user_memory=cache)
+        by_id = {str(r.get("transaction_id", "") or "").strip(): r for r in suggestions if isinstance(r, dict)}
+        combo = getattr(self, "_classification_type_combo", None)
+        if combo is not None:
+            combo.configure(values=list(PORTAL_EXPENSE_TYPE_OPTIONS))
+        for line in lines:
+            lid = str(line.get("line_id", "") or "").strip()
+            if not lid:
+                continue
+            s = by_id.get(lid) or {}
+            et = str(s.get("type") or self._expense_type_cell_for_line(line) or "Uncategorized")
+            conf = s.get("confidence", 0.0)
+            try:
+                conf_txt = f"{float(conf):.2f}"
+            except (TypeError, ValueError):
+                conf_txt = str(conf)
+            tree.insert(
+                "",
+                tk.END,
+                iid=lid,
+                values=(
+                    lid,
+                    str(line.get("merchant_name", "") or "")[:120],
+                    et[:120],
+                    conf_txt,
+                    str(s.get("source") or "rule"),
+                    str(s.get("justification") or "")[:240],
+                ),
+            )
+
+    def _on_classification_row_select(self, _event: object | None = None) -> None:
+        tree = getattr(self, "classification_transactions_tree", None)
+        if tree is None:
+            return
+        sel = list(tree.selection())
+        if not sel:
+            return
+        lid = sel[0]
+        vals = tree.item(lid, "values") or ()
+        lbl = getattr(self, "_classification_selected_line_var", None)
+        if lbl is not None:
+            lbl.set(f"Line: {lid}")
+        tvar = getattr(self, "_classification_type_var", None)
+        if tvar is not None and len(vals) > 2:
+            tvar.set(str(vals[2]))
+        jvar = getattr(self, "_classification_justification_var", None)
+        if jvar is not None and len(vals) > 5:
+            jvar.set(str(vals[5]))
+
+    def on_classification_apply_selected(self) -> None:
+        tree = getattr(self, "classification_transactions_tree", None)
+        if tree is None:
+            return
+        sel = list(tree.selection())
+        if not sel:
+            self.set_status("Classification: select a transaction row first.")
+            return
+        lid = sel[0]
+        new_type = str(getattr(self, "_classification_type_var", tk.StringVar()).get() or "").strip()
+        if not new_type:
+            self.set_status("Classification: choose an expense type first.")
+            return
+        lines, _ = load_expense_lines_cache(APP_DIR)
+        line = next((ln for ln in lines if str(ln.get("line_id", "") or "").strip() == lid), None)
+        if not isinstance(line, dict):
+            self.set_status("Classification: selected row is no longer in cache.")
+            return
+        vk = _normalize_vendor_key(str(line.get("merchant_name", "") or ""))
+        if not vk:
+            self.set_status("Classification: missing merchant key for selected row.")
+            return
+        ok, err = self._expense_types_commit_mapping(None, vk, new_type)
+        if not ok:
+            self.set_status(f"Classification blocked: {err}")
+            return
+        self.refresh_workflow_views()
+        self.set_status(f'Classification saved: "{vk}" -> "{new_type}".')
+
+    def on_classification_apply_to_similar(self) -> None:
+        tree = getattr(self, "classification_transactions_tree", None)
+        if tree is None:
+            return
+        sel = list(tree.selection())
+        if not sel:
+            self.set_status("Apply to similar: select a transaction row first.")
+            return
+        lid = sel[0]
+        new_type = str(getattr(self, "_classification_type_var", tk.StringVar()).get() or "").strip()
+        if not new_type:
+            self.set_status("Apply to similar: choose an expense type first.")
+            return
+        vals = tree.item(lid, "values") or ()
+        merchant = str(vals[1] if len(vals) > 1 else "").strip()
+        if not merchant:
+            self.set_status("Apply to similar: selected row has no merchant.")
+            return
+        vk = _normalize_vendor_key(merchant)
+        ok, err = self._expense_types_commit_mapping(None, vk, new_type)
+        if not ok:
+            self.set_status(f"Apply to similar blocked: {err}")
+            return
+        self.refresh_workflow_views()
+        self.set_status(f'Applied "{new_type}" to similar merchant rows for "{vk}".')
+
+    def on_expense_report_show_attention_only(self) -> None:
+        self._expense_report_attention_only = True
+        self.refresh_expense_report_tab()
+        self.set_status("Expense report filter: showing only low-confidence or unmatched rows.")
+
+    def on_expense_report_show_all_rows(self) -> None:
+        self._expense_report_attention_only = False
+        self.refresh_expense_report_tab()
+        self.set_status("Expense report filter: showing all rows.")
+
+    def _expense_report_attention_line_ids(self) -> list[str]:
+        tree = getattr(self, "expense_report_tree", None)
+        if tree is None:
+            return []
+        out: list[str] = []
+        for lid in tree.get_children():
+            try:
+                values = tree.item(lid, "values") or ()
+                tags = set(tree.item(lid, "tags") or ())
+            except tk.TclError:
+                continue
+            file_val = str(values[7] if len(values) > 7 else "").strip()
+            conf_val = str(values[9] if len(values) > 9 else "").strip()
+            no_file = (not self._assign_row_paths.get(str(lid), "").strip()) or file_val in {"", "—"}
+            low_conf = "low_confidence" in tags
+            try:
+                conf_f = float(conf_val) if conf_val else None
+            except (TypeError, ValueError):
+                conf_f = None
+            if conf_f is not None and conf_f < REVIEW_CONFIDENCE_THRESHOLD:
+                low_conf = True
+            if no_file or low_conf:
+                out.append(str(lid))
+        return out
+
+    def on_focus_attention_items(self) -> None:
+        self.focus_expense_report_tab()
+        tree = getattr(self, "expense_report_tree", None)
+        if tree is None:
+            self.set_status("Attention review unavailable: expense report table is not ready.")
+            return
+        ids = self._expense_report_attention_line_ids()
+        if not ids:
+            self.set_status("No attention items found: all rows have files and acceptable confidence.")
+            self._set_run_status(attention="None", message="No low-confidence or unmatched rows need review.")
+            return
+        first = ids[0]
+        try:
+            tree.selection_set(ids)
+            tree.focus(first)
+            tree.see(first)
+        except tk.TclError:
+            pass
+        self._assignments_show_preview_for_line_id(first)
+        self.set_status(
+            f"Attention focus: selected {len(ids)} low-confidence/unmatched row(s) in Expense report."
+        )
+        self._set_run_status(
+            attention=f"{len(ids)} item(s) need review",
+            message="Review selected low-confidence/unmatched rows in Expense report.",
+        )
 
     def _sync_settings_tab_vars(self) -> None:
         if not hasattr(self, "_settings_url_var"):
@@ -589,6 +1198,9 @@ class ReceiptAutomationUI:
             llm_matches = load_receipt_line_matches(APP_DIR)
             approved_prev = load_approved_matches(APP_DIR)
 
+        attention_total = 0
+        shown_count = 0
+
         for line in lines:
             lid = str(line.get("line_id", "") or "").strip()
             if not lid:
@@ -604,6 +1216,7 @@ class ReceiptAutomationUI:
                     str(line.get("currency", "") or "")[:8],
                     et[:80] if et != "—" else "—",
                     "—",
+                    "\u2713",
                     "",
                     "",
                 )
@@ -678,6 +1291,7 @@ class ReceiptAutomationUI:
                 inc = self._include_cell_text(use)
                 note_full = self._compose_llm_note_with_match_name(rpath, reason_raw)
                 et = self._expense_type_cell_for_line(line, vendor_cache=vcache)
+                receipt_missing_mark = "\u2713" if not rpath else ""
                 vals = (
                     inc,
                     lid,
@@ -687,9 +1301,11 @@ class ReceiptAutomationUI:
                     str(line.get("currency", "") or "")[:8],
                     et[:80] if et != "—" else "—",
                     Path(rpath).name if rpath else "—",
+                    receipt_missing_mark,
                     str(conf)[:8] if conf is not None else "",
                     note_full[:120],
                 )
+            needs_attention = False
             row_tags: tuple[str, ...] = ()
             if not scraping:
                 try:
@@ -698,18 +1314,205 @@ class ReceiptAutomationUI:
                     cf_row = None
                 if cf_row is not None and cf_row < REVIEW_CONFIDENCE_THRESHOLD:
                     row_tags = ("low_confidence",)
+                no_receipt = not bool(self._assign_row_paths.get(lid, "").strip())
+                needs_attention = no_receipt or (cf_row is not None and cf_row < REVIEW_CONFIDENCE_THRESHOLD)
+                if needs_attention:
+                    attention_total += 1
+                if self._expense_report_attention_only and not needs_attention:
+                    continue
             tree.insert("", tk.END, iid=lid, values=vals, tags=row_tags)
+            shown_count += 1
 
         ch0 = tree.get_children()
         if ch0 and not scraping:
             tree.selection_set(ch0[0])
             tree.focus(ch0[0])
             self._assignments_show_preview_for_line_id(ch0[0])
+            self._matching_workspace_update_for_line(ch0[0])
+        elif not ch0:
+            self._matching_workspace_update_for_line("")
+        flabel = getattr(self, "_expense_report_filter_label", None)
+        if flabel is not None:
+            if scraping:
+                flabel.configure(text="Filter: disabled while scraping")
+            elif self._expense_report_attention_only:
+                flabel.configure(text=f"Filter: attention only ({shown_count}/{len(lines)} shown)")
+            else:
+                flabel.configure(text=f"Attention items: {attention_total} of {len(lines)}")
         self._expense_report_sync_remove_all_button()
+
+    def _populate_matching_report_combo(self) -> None:
+        """Refresh the report dropdown with current report groups."""
+        reports = load_expense_report_groups(APP_DIR)
+        id_map: dict[str, str | None] = {"All (no filter)": None}
+        display_list = ["All (no filter)"]
+        for rid, data in sorted(reports.items(), key=lambda kv: str(kv[1].get("name", ""))):
+            name = str(data.get("name", "")).strip() or "Untitled"
+            count = len(data.get("line_ids", []))
+            label = f"{name} ({count} items)"
+            display_list.append(label)
+            id_map[label] = rid
+        self._matching_report_id_map = id_map
+        combo = getattr(self, "_matching_report_combo", None)
+        if combo is not None:
+            combo["values"] = display_list
+            current = self._matching_report_var.get()
+            if current not in id_map:
+                self._matching_report_var.set("All (no filter)")
+
+    def _get_selected_report_line_ids(self) -> set[str] | None:
+        """Return the set of line_ids for the selected report, or None if 'All'."""
+        label = self._matching_report_var.get()
+        rid = self._matching_report_id_map.get(label)
+        if rid is None:
+            return None
+        reports = load_expense_report_groups(APP_DIR)
+        report = reports.get(rid)
+        if not report:
+            return set()
+        return {str(lid).strip() for lid in report.get("line_ids", []) if str(lid).strip()}
+
+    def _on_matching_report_selected(self) -> None:
+        """Handle report dropdown selection change — refreshes all filtered views."""
+        self._receipt_table_ma_cache = None
+        self.refresh_expense_report_tab()
+        self.refresh_oracle_transactions_view()
+        self.refresh_receipt_table()
+        self.refresh_final_review_view()
+        self.refresh_workflow_dashboard()
+        self.refresh_submit_reports_table()
+        self._refresh_report_header_status()
+
+    def on_create_new_report(self) -> None:
+        """Create a new empty report group via dialog."""
+        import uuid as _uuid
+        from tkinter import simpledialog
+
+        name = simpledialog.askstring("New Report", "Report name:", parent=self.root)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        rid = str(_uuid.uuid4())[:8]
+        reports = load_expense_report_groups(APP_DIR)
+        reports[rid] = {
+            "name": name,
+            "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "line_ids": [],
+        }
+        save_expense_report_groups(APP_DIR, reports)
+        self._populate_matching_report_combo()
+        for label, r_id in self._matching_report_id_map.items():
+            if r_id == rid:
+                self._matching_report_var.set(label)
+                break
+        self._on_matching_report_selected()
+        self.set_status(f'Created new report "{name}".')
+
+    def _refresh_report_header_status(self) -> None:
+        """Update the status indicator dots in the report header bar."""
+        dots = getattr(self, "_report_header_status_dots", {})
+        if not dots:
+            return
+
+        report_line_ids = self._get_selected_report_line_ids()
+        lines, _ = load_expense_lines_cache(APP_DIR)
+        matches = load_receipt_line_matches(APP_DIR)
+
+        if report_line_ids is not None:
+            lines = [l for l in lines if str(l.get("line_id", "") or "").strip() in report_line_ids]
+
+        n_lines = len(lines)
+
+        trans_status = "complete" if n_lines > 0 else "pending"
+
+        n_with_file = 0
+        n_matched = 0
+        for line in lines:
+            lid = str(line.get("line_id", "") or "").strip()
+            m = matches.get(lid) or {}
+            best = str(m.get("best_receipt") or "").strip()
+            if best and Path(best).expanduser().is_file():
+                n_with_file += 1
+            if best:
+                n_matched += 1
+
+        if n_lines == 0:
+            docs_status = "pending"
+        elif n_with_file == n_lines:
+            docs_status = "complete"
+        elif n_with_file > 0:
+            docs_status = "partial"
+        else:
+            docs_status = "pending"
+
+        if n_lines == 0:
+            match_status = "pending"
+        elif n_matched == n_lines:
+            match_status = "complete"
+        elif n_matched > 0:
+            match_status = "partial"
+        else:
+            match_status = "pending"
+
+        rid = self._matching_report_id_map.get(self._matching_report_var.get())
+        if rid:
+            sub = get_report_submission_status(APP_DIR, rid)
+            if sub == "Submitted":
+                submit_status = "complete"
+            elif sub == "Partial":
+                submit_status = "partial"
+            else:
+                submit_status = "pending"
+        else:
+            submit_status = "pending"
+
+        status_map = {
+            "docs": docs_status,
+            "trans": trans_status,
+            "match": match_status,
+            "submit": submit_status,
+        }
+        for key, dot_label in dots.items():
+            status = status_map.get(key, "pending")
+            if status == "complete":
+                dot_label.configure(text="✓", foreground="#34a853")
+            elif status == "partial":
+                dot_label.configure(text="◐", foreground="#f9ab00")
+            else:
+                dot_label.configure(text="○", foreground="#bbb")
+
+    def _on_matching_remove_from_report(self) -> None:
+        """Remove selected line(s) from the current report, moving them back to unassigned."""
+        sel = list(self.expense_report_tree.selection())
+        if not sel:
+            self.set_status("Remove from report: select one or more rows first.")
+            return
+        label = self._matching_report_var.get()
+        rid = self._matching_report_id_map.get(label)
+        if rid is None:
+            self.set_status("Remove from report: select a specific report first (not 'All').")
+            return
+        line_ids = [str(x).strip() for x in sel if str(x).strip()]
+        if not line_ids:
+            return
+        reports = load_expense_report_groups(APP_DIR)
+        report = reports.get(rid)
+        if not report:
+            self.set_status("Remove from report: report not found.")
+            return
+        ids_set = set(line_ids)
+        existing = report.get("line_ids", [])
+        report["line_ids"] = [x for x in existing if str(x).strip() not in ids_set]
+        save_expense_report_groups(APP_DIR, reports)
+        self.refresh_all_tabs()
+        self._update_activity_recommendation_hint()
+        self._refresh_workflow_checklist()
+        self.set_status(f"Removed {len(line_ids)} item(s) from report back to unassigned.")
 
     def refresh_expense_report_tab(self, *, progress_lines: list[dict] | None = None) -> None:
         if not hasattr(self, "expense_report_tree"):
             return
+        self._populate_matching_report_combo()
         path = expense_lines_cache_path(APP_DIR)
         self._expense_report_raw_path.configure(text=str(path))
         if progress_lines is not None:
@@ -732,17 +1535,23 @@ class ReceiptAutomationUI:
             self._assign_row_llm_reason_raw.clear()
             self._expense_report_summary.configure(
                 text=(
-                    "No scraped lines yet. With VPN on, use “Launch browser & scrape expenses” above, "
+                    "No scraped lines yet. With VPN on, use \u201cLaunch browser & scrape expenses\u201d above, "
                     "or Open Oracle on the Activity tab then Scrape Step 2."
                 )
             )
             self._expense_report_preview_blank_message("Select a row")
             self._expense_report_sync_remove_all_button()
             return
+
+        report_filter = self._get_selected_report_line_ids()
+        if report_filter is not None:
+            lines = [l for l in lines if str(l.get("line_id", "") or "").strip() in report_filter]
+
         updated = str(meta.get("updated_at", "") or "")
         src = str(meta.get("source", "") or "")
+        em = "\u2014"
         self._expense_report_summary.configure(
-            text=f"{len(lines)} line(s) · updated {updated or '—'} · source {src or '—'}"
+            text=f"{len(lines)} line(s) \u00b7 updated {updated or em} \u00b7 source {src or em}"
         )
         self._refill_expense_report_tree_rows(lines, scraping=False)
 
@@ -847,6 +1656,22 @@ class ReceiptAutomationUI:
             return
         self.vendor_expense_cache = self._load_vendor_expense_cache()
         rows = self._gather_expense_type_tab_rows()
+
+        search_term = ""
+        if hasattr(self, "_expense_types_search_var"):
+            search_term = self._expense_types_search_var.get().strip().lower()
+        if search_term:
+            rows = [
+                r for r in rows
+                if search_term in r["vendor_key"].lower()
+                or search_term in r["display_type"].lower()
+            ]
+
+        sort_col = getattr(self, "_expense_types_sort_col", "vendor_key")
+        sort_asc = getattr(self, "_expense_types_sort_asc", True)
+        sort_key = "vendor_key" if sort_col == "vendor_key" else "display_type"
+        rows.sort(key=lambda r: r[sort_key].lower(), reverse=not sort_asc)
+
         tree = self.expense_types_tree
         for item in tree.get_children():
             tree.delete(item)
@@ -1056,6 +1881,7 @@ class ReceiptAutomationUI:
         self.refresh_receipt_table()
         self.refresh_expense_report_tab()
         self.refresh_expense_types_tab()
+        self.refresh_workflow_views()
 
     def _update_activity_recommendation_hint(self) -> None:
         if not hasattr(self, "_activity_hint"):
@@ -1586,9 +2412,108 @@ class ReceiptAutomationUI:
         primary = self._treeview_primary_selection_iid(self.expense_report_tree)
         if primary:
             self._assignments_show_preview_for_line_id(primary)
+            self._matching_workspace_update_for_line(primary)
         else:
             self._expense_report_preview_blank_message("Select a row")
+            self._matching_workspace_update_for_line("")
         self._expense_report_sync_remove_all_button()
+
+    def _matching_workspace_update_for_line(self, lid: str) -> None:
+        line_var = getattr(self, "_matching_line_var", None)
+        conf_var = getattr(self, "_matching_conf_var", None)
+        receipt_var = getattr(self, "_matching_receipt_var", None)
+        reason_widget = getattr(self, "_matching_reason_text", None)
+        if line_var is None or conf_var is None or receipt_var is None or reason_widget is None:
+            return
+        if not lid:
+            line_var.set("Line: —")
+            conf_var.set("Confidence: —")
+            receipt_var.set("Suggested receipt: —")
+            reason_widget.configure(state=tk.NORMAL)
+            reason_widget.delete("1.0", tk.END)
+            reason_widget.insert("1.0", "Select a row to inspect match rationale.")
+            reason_widget.configure(state=tk.DISABLED)
+            return
+        path_str = self._assign_row_paths.get(lid, "").strip()
+        llm = load_receipt_line_matches(APP_DIR).get(lid) or {}
+        raw_conf = llm.get("confidence", "")
+        try:
+            conf_f = float(raw_conf) if raw_conf is not None and str(raw_conf).strip() != "" else 0.0
+            conf_txt = f"{conf_f:.2f}"
+        except (TypeError, ValueError):
+            conf_txt = str(raw_conf) if raw_conf is not None else "—"
+        line_var.set(f"Line: {lid}")
+        conf_var.set(f"Confidence: {conf_txt}")
+        receipt_var.set(f"Suggested receipt: {Path(path_str).name if path_str else 'None'}")
+        reason = self._assign_row_llm_reason_raw.get(lid, "").strip() or "No rationale available."
+        reason_widget.configure(state=tk.NORMAL)
+        reason_widget.delete("1.0", tk.END)
+        reason_widget.insert("1.0", reason)
+        reason_widget.configure(state=tk.DISABLED)
+
+    def on_matching_accept_selected(self) -> None:
+        tree = getattr(self, "expense_report_tree", None)
+        if tree is None:
+            return
+        sel = list(tree.selection())
+        if not sel:
+            self.set_status("Accept selected: choose one or more lines first.")
+            return
+        n = 0
+        for lid in sel:
+            path = str(self._assign_row_paths.get(lid, "") or "").strip()
+            if not path:
+                continue
+            self._assign_row_include[lid] = True
+            vals = list(tree.item(lid, "values"))
+            vals[0] = self._include_cell_text(True)
+            tree.item(lid, values=vals)
+            n += 1
+        self.set_status(f"Accepted {n} selected match(es).")
+
+    def on_matching_reject_selected(self) -> None:
+        self._assignments_mark_receipt_missing_selected()
+
+    def on_matching_manual_pick(self) -> None:
+        self._assignments_pick_file()
+        primary = self._treeview_primary_selection_iid(self.expense_report_tree)
+        if primary:
+            self._matching_workspace_update_for_line(primary)
+
+    def on_matching_accept_all_high_confidence(self) -> None:
+        self._assignments_approve_suggested()
+        self.set_status("Accepted all high-confidence suggestions.")
+
+    def _matching_workspace_on_keypress(self, event: tk.Event) -> str | None:
+        k = (event.keysym or "").lower()
+        tree = getattr(self, "expense_report_tree", None)
+        if tree is None:
+            return None
+        rows = list(tree.get_children())
+        primary = self._treeview_primary_selection_iid(tree)
+        if k == "a":
+            self.on_matching_accept_selected()
+            return "break"
+        if k == "r":
+            self.on_matching_reject_selected()
+            return "break"
+        if k == "m":
+            self.on_matching_manual_pick()
+            return "break"
+        if k in {"n", "p"} and rows:
+            if primary in rows:
+                idx = rows.index(primary)
+            else:
+                idx = 0
+            idx = min(len(rows) - 1, idx + 1) if k == "n" else max(0, idx - 1)
+            target = rows[idx]
+            tree.selection_set(target)
+            tree.focus(target)
+            tree.see(target)
+            self._assignments_show_preview_for_line_id(target)
+            self._matching_workspace_update_for_line(target)
+            return "break"
+        return None
 
     def _expense_report_sync_remove_all_button(self) -> None:
         if not hasattr(self, "_expense_report_remove_all_btn"):
@@ -1657,8 +2582,9 @@ class ReceiptAutomationUI:
         self._assign_row_paths[lid] = path
         vals = list(tree.item(lid, "values"))
         vals[7] = Path(path).name
+        vals[8] = "" if path else "\u2713"
         reason_raw = self._assign_row_llm_reason_raw.get(lid, "")
-        vals[9] = self._compose_llm_note_with_match_name(path, reason_raw)[:120]
+        vals[10] = self._compose_llm_note_with_match_name(path, reason_raw)[:120]
         tree.item(lid, values=vals)
         self._assignments_show_preview_for_line_id(lid)
 
@@ -1774,6 +2700,14 @@ class ReceiptAutomationUI:
             )
             return
         self._run_step6_file_attach = True
+        selected_label = self._matching_report_var.get()
+        rid = self._matching_report_id_map.get(selected_label)
+        if rid:
+            reports = load_expense_report_groups(APP_DIR)
+            rpt = reports.get(rid)
+            self._submit_report_name = str((rpt or {}).get("name", "")).strip() or "Expense Report"
+        else:
+            self._submit_report_name = "Expense Report"
         self.set_status(
             "Create report (VPN on): Step 1 open browser → Step 2 login → Step 3 Expenses Home → "
             "Step 4.1 to 4.6 (Oracle wizard) …"
@@ -1821,14 +2755,19 @@ class ReceiptAutomationUI:
             command=self._assignments_pick_file,
         )
         m.add_command(
-            label="Ask LLM which receipt matches selected line(s)…",
+            label="Rescan selected for match",
             command=self.on_expense_report_match_selected_lines,
         )
         m.add_command(
             label="Mark receipt missing (clear matched document)",
             command=self._assignments_mark_receipt_missing_selected,
         )
-        m.add_command(label="Remove selected lines from report…", command=self.on_expense_report_remove_selected)
+        m.add_separator()
+        m.add_command(
+            label="Remove selected from report (back to unassigned)",
+            command=self._on_matching_remove_from_report,
+        )
+        m.add_command(label="Delete selected lines from cache…", command=self.on_expense_report_remove_selected)
         try:
             m.tk_popup(event.x_root, event.y_root)
         finally:
@@ -1957,6 +2896,134 @@ class ReceiptAutomationUI:
         }
         tag, prefix = mapping.get(category, (None, ""))
         self.set_status(f"{prefix}{message}", log_tag=tag)
+        self._emit_automation_event(
+            kind=f"log.{category}",
+            message=message,
+            data={"category": category},
+        )
+
+    def _emit_automation_event(
+        self, *, kind: str, message: str, data: dict | None = None, phase: str | None = None
+    ) -> None:
+        self._update_run_status_from_event(kind=kind, message=message, phase=phase, data=data)
+        try:
+            self._event_sink.emit(
+                kind=kind,
+                message=message,
+                phase=phase,
+                run_id=self._run_id,
+                data=dict(data or {}),
+            )
+        except Exception:
+            # Event telemetry must never break automation.
+            pass
+
+    @staticmethod
+    def _phase_default_progress(phase: str) -> int:
+        return {
+            "DocumentIngestion": 10,
+            "OracleScraping": 35,
+            "Matching": 55,
+            "Classification": 70,
+            "UserReview": 85,
+            "Submission": 95,
+            "Completed": 100,
+            "Recovery": 0,
+        }.get(phase, 0)
+
+    def _set_run_status(
+        self,
+        *,
+        phase: str | None = None,
+        progress: int | None = None,
+        attention: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        def _apply() -> None:
+            if phase is not None:
+                self._run_status_phase = str(phase).strip() or self._run_status_phase
+            if progress is not None:
+                self._run_status_progress_pct = max(0, min(100, int(progress)))
+            if attention is not None:
+                self._run_status_attention = str(attention).strip() or "None"
+            if message is not None:
+                self._run_status_message = str(message).strip() or self._run_status_message
+            if hasattr(self, "_run_status_phase_var"):
+                self._run_status_phase_var.set(f"Phase: {self._run_status_phase}")
+            if hasattr(self, "_run_status_progress_var"):
+                self._run_status_progress_var.set(f"Progress: {self._run_status_progress_pct}%")
+            if hasattr(self, "_run_status_attention_var"):
+                self._run_status_attention_var.set(f"Attention: {self._run_status_attention}")
+            if hasattr(self, "_run_status_message_var"):
+                self._run_status_message_var.set(self._run_status_message)
+            if hasattr(self, "_global_run_phase_var"):
+                self._global_run_phase_var.set(f"Phase: {self._run_status_phase}")
+            if hasattr(self, "_global_run_progress_var"):
+                self._global_run_progress_var.set(f"Progress: {self._run_status_progress_pct}%")
+            if hasattr(self, "_global_run_attention_var"):
+                self._global_run_attention_var.set(f"Attention: {self._run_status_attention}")
+            if hasattr(self, "_global_run_message_var"):
+                self._global_run_message_var.set(self._run_status_message)
+            bar = getattr(self, "_run_status_progress", None)
+            if bar is not None:
+                try:
+                    bar.configure(value=self._run_status_progress_pct)
+                except tk.TclError:
+                    pass
+            global_bar = getattr(self, "_global_run_progress", None)
+            if global_bar is not None:
+                try:
+                    global_bar.configure(value=self._run_status_progress_pct)
+                except tk.TclError:
+                    pass
+
+        if threading.current_thread() is threading.main_thread():
+            _apply()
+        else:
+            self.root.after(0, _apply)
+
+    def _update_run_status_from_event(
+        self,
+        *,
+        kind: str,
+        message: str,
+        phase: str | None,
+        data: dict | None,
+    ) -> None:
+        phase_text = phase or self._run_status_phase
+        progress = self._run_status_progress_pct
+        attention = self._run_status_attention
+        kind_l = str(kind or "").lower()
+        if phase:
+            progress = max(progress, self._phase_default_progress(phase_text))
+        if "retry" in kind_l:
+            attention = "Automatic retry in progress"
+        elif "failed" in kind_l or "recovery" in kind_l:
+            attention = "Action needed"
+        elif kind_l.endswith(".complete") or kind_l.endswith(".ok"):
+            attention = "None"
+            if phase_text == "Submission":
+                progress = max(progress, 100)
+        elif kind_l.endswith(".start"):
+            attention = "None"
+
+        if kind_l == "matching.start":
+            message = "Matching transactions to receipts…"
+        elif kind_l == "matching.complete":
+            message = "Matching complete. Review exceptions before submit."
+        elif kind_l == "scrape.page.retry":
+            page_idx = int((data or {}).get("page_index") or 0)
+            if page_idx > 0:
+                message = f"Retrying page {page_idx} due to slow pagination."
+        elif kind_l == "submission.recovery_needed":
+            message = "Recovered from automation interruption. Resume guidance is available."
+
+        self._set_run_status(
+            phase=phase_text,
+            progress=progress,
+            attention=attention,
+            message=message,
+        )
 
     def _pump_ui_and_check_cancel(self) -> None:
         self.root.update_idletasks()
@@ -2118,6 +3185,36 @@ class ReceiptAutomationUI:
         else:
             self.stop_release_browser_btn.configure(state=tk.DISABLED)
             self.workflow_take_browser_btn.configure(state=tk.DISABLED)
+
+        attention_btn = getattr(self, "_run_status_attention_btn", None)
+        if attention_btn is not None:
+            try:
+                has_attention_rows = bool(self._expense_report_attention_line_ids())
+            except Exception:
+                has_attention_rows = False
+            attention_btn.configure(state=(tk.NORMAL if has_attention_rows else tk.DISABLED))
+
+        if self._step3_automation_active:
+            self._set_run_status(phase="Submission", progress=max(self._phase_default_progress("Submission"), 90))
+        elif self._match_receipts_worker_active:
+            self._set_run_status(phase="Matching", progress=self._phase_default_progress("Matching"))
+        elif self._llm_resolve_worker_active or self._expense_types_scan_worker_active:
+            self._set_run_status(
+                phase="Classification",
+                progress=self._phase_default_progress("Classification"),
+            )
+        elif self._receipt_llm_worker_active:
+            self._set_run_status(
+                phase="DocumentIngestion",
+                progress=self._phase_default_progress("DocumentIngestion"),
+            )
+        elif self._populate_flow_completed:
+            self._set_run_status(
+                phase="Completed",
+                progress=100,
+                attention="None",
+                message="Automation sequence finished. Review results and submit if ready.",
+            )
 
         self._refresh_workflow_checklist()
 
@@ -3964,8 +5061,24 @@ class ReceiptAutomationUI:
     def _attach_playwright_to_cdp(self, http_base: str, target_url: str) -> None:
         if not self.playwright:
             self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.connect_over_cdp(
-            http_base, slow_mo=0, is_local=True
+        self._emit_automation_event(
+            kind="browser.attach.start",
+            message="Attaching Playwright to Chromium CDP.",
+            phase="OracleScraping",
+            data={"http_base": http_base},
+        )
+
+        def _connect() -> Browser:
+            assert self.playwright is not None
+            return self.playwright.chromium.connect_over_cdp(http_base, slow_mo=0, is_local=True)
+
+        self.browser = execute_with_retry(
+            _connect,
+            policy=RetryPolicy(max_attempts=4, initial_backoff_s=0.5, max_backoff_s=3.0),
+            transient_predicate=is_transient_error,
+            on_retry=lambda attempt, exc: self.set_status(
+                f"Browser connection unstable — recovering session (attempt {attempt + 1}/4): {exc}"
+            ),
         )
         contexts = self.browser.contexts
         if contexts:
@@ -3978,10 +5091,28 @@ class ReceiptAutomationUI:
         else:
             self.browser_page = self.browser_context.new_page()
         self._close_other_pages(self.browser_page)
-        self.browser_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+
+        def _goto() -> None:
+            assert self.browser_page is not None
+            self.browser_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+
+        execute_with_retry(
+            _goto,
+            policy=RetryPolicy(max_attempts=3, initial_backoff_s=0.5, max_backoff_s=2.5),
+            transient_predicate=is_transient_error,
+            on_retry=lambda attempt, exc: self.set_status(
+                f"Retrying Oracle page load (attempt {attempt + 1}/3): {exc}"
+            ),
+        )
         self._cdp_http_url = http_base
         self._progress_browser_had_live_link = True
         self._progress_browser_released_by_user = False
+        self._emit_automation_event(
+            kind="browser.attach.ok",
+            message="Playwright attached and page loaded.",
+            phase="OracleScraping",
+            data={"target_url": target_url},
+        )
 
     def open_controlled_browser(self, url: str) -> None:
         if self._chromium_proc is not None and self._chromium_proc.poll() is not None:
@@ -4258,6 +5389,12 @@ class ReceiptAutomationUI:
                 def _done_ok() -> None:
                     self._llm_resolve_worker_active = False
                     self.refresh_all_tabs()
+                    self._emit_automation_event(
+                        kind="classification.complete",
+                        message="Expense type resolution finished.",
+                        phase="Classification",
+                        data={"resolved_count": total},
+                    )
                     on_success(total)
 
                 self.root.after(0, _done_ok)
@@ -4266,10 +5403,22 @@ class ReceiptAutomationUI:
                     self._llm_resolve_worker_active = False
                     self.refresh_all_tabs()
                     self.set_status(f"LLM cache resolution failed: {exc}")
+                    self._emit_automation_event(
+                        kind="classification.failed",
+                        message="Expense type resolution failed.",
+                        phase="Classification",
+                        data={"error": str(exc)},
+                    )
 
                 self.root.after(0, _done_err)
 
         self._llm_resolve_worker_active = True
+        self._emit_automation_event(
+            kind="classification.start",
+            message="Expense type resolution started.",
+            phase="Classification",
+            data={"pending_count": len(pending_ids)},
+        )
         self.set_status(f"Resolving {len(pending_ids)} cached LLM prompt(s) (VPN should be off)...")
         threading.Thread(target=worker, daemon=True).start()
 
@@ -4345,24 +5494,51 @@ class ReceiptAutomationUI:
         """
         opts = list(PORTAL_EXPENSE_TYPE_OPTIONS)
         cache = dict(self._load_vendor_expense_cache())
+        # Fast path: deterministic/user-memory classification suggestions before spending LLM calls.
+        classifications = classify_transactions(line_list, user_memory=cache)
+        by_txn_id = {
+            str(row.get("transaction_id", "") or "").strip(): row
+            for row in classifications
+            if isinstance(row, dict)
+        }
         seen: set[str] = set()
         need: list[tuple[str, str]] = []
+        resolved_without_llm = 0
         for line in line_list:
+            lid = str(line.get("line_id", "") or "").strip()
             m = str(line.get("merchant_name", "") or "").strip()
             vk = _normalize_vendor_key(m)
             if not vk or vk in seen:
                 continue
             seen.add(vk)
-            if not str(cache.get(vk, "") or "").strip():
-                need.append((vk, m))
+            if str(cache.get(vk, "") or "").strip():
+                continue
+            suggestion = by_txn_id.get(lid) or {}
+            source = str(suggestion.get("source", "") or "").strip().lower()
+            suggested_type = str(suggestion.get("type", "") or "").strip()
+            matched_type = _match_label_to_options(suggested_type, opts) if suggested_type else ""
+            if source in {"user", "rule"} and matched_type:
+                cache[vk] = matched_type
+                resolved_without_llm += 1
+                self._schedule_log_event(
+                    "cache",
+                    f'Expense types: "{m}" -> "{matched_type}" ({source} suggestion; no LLM call).',
+                )
+                continue
+            need.append((vk, m))
         if not need:
             self._schedule_log_event(
                 "llm",
-                "Expense types: all merchants already in vendor cache — skipping LLM.",
+                "Expense types: all merchants resolved via cache/rules — skipping LLM.",
             )
+            if resolved_without_llm:
+                self._schedule_log_event(
+                    "step",
+                    f"Expense types: resolved {resolved_without_llm} merchant(s) without LLM.",
+                )
             self.root.after(0, self.refresh_expense_report_tab)
             self.root.after(0, self.refresh_expense_types_tab)
-            return 0
+            return resolved_without_llm
         self._schedule_log_event(
             "llm",
             f"Expense types: asking LLM for {len(need)} new merchant(s) (portal category list).",
@@ -4392,7 +5568,7 @@ class ReceiptAutomationUI:
             self.refresh_expense_types_tab()
 
         self.root.after(0, after_types)
-        return n
+        return resolved_without_llm + n
 
     def _expense_line_missing_receipt_file(
         self,
@@ -4547,6 +5723,18 @@ class ReceiptAutomationUI:
 
                 n_total = len(line_list)
                 out_path = receipt_line_match_path(APP_DIR)
+                deterministic_rows = match_transactions_to_receipts(
+                    line_list,
+                    analyses_src,
+                    amount_tolerance=0.5,
+                    date_window_days=3,
+                )
+                deterministic_by_line = {
+                    str(row.get("transaction_id", "") or "").strip(): row
+                    for row in deterministic_rows
+                    if isinstance(row, dict)
+                }
+                deterministic_auto_count = 0
 
                 def _status(msg: str) -> None:
                     self._schedule_log_event("llm", msg)
@@ -4559,14 +5747,35 @@ class ReceiptAutomationUI:
 
                     self.root.after(0, schedule_busy)
 
-                    result = match_one_expense_line_to_receipts(
-                        api_key=api_key,
-                        model=self.settings.openai_model,
-                        line=line,
-                        analyses=analyses_src,
-                        http_verify_preferred=self.settings.openai_http_verify,
-                        on_status=_status,
-                    )
+                    seed = deterministic_by_line.get(lid) or {}
+                    seed_receipt = str(seed.get("receipt_id", "") or "").strip()
+                    try:
+                        seed_conf = float(seed.get("confidence") or 0.0)
+                    except (TypeError, ValueError):
+                        seed_conf = 0.0
+                    if seed_receipt and seed_conf >= 0.90 and Path(seed_receipt).expanduser().is_file():
+                        deterministic_auto_count += 1
+                        result = {
+                            "best_receipt": seed_receipt,
+                            "confidence": seed_conf,
+                            "reason": (
+                                "Deterministic high-confidence match "
+                                "(amount/date/merchant) accepted without LLM."
+                            ),
+                        }
+                        self._schedule_log_event(
+                            "cache",
+                            f"Line {lid}: deterministic high-confidence match (no LLM call).",
+                        )
+                    else:
+                        result = match_one_expense_line_to_receipts(
+                            api_key=api_key,
+                            model=self.settings.openai_model,
+                            line=line,
+                            analyses=analyses_src,
+                            http_verify_preferred=self.settings.openai_http_verify,
+                            on_status=_status,
+                        )
                     accumulated[lid] = result
                     out_path = save_receipt_line_matches(APP_DIR, accumulated)
 
@@ -4592,6 +5801,16 @@ class ReceiptAutomationUI:
 
                 def _done_ok() -> None:
                     self._match_receipts_worker_active = False
+                    self._emit_automation_event(
+                        kind="matching.complete",
+                        message="Transaction-to-receipt matching completed.",
+                        phase="Matching",
+                        data={
+                            "matched_with_receipt": n_matched,
+                            "total_records": len(accumulated),
+                            "deterministic_auto_count": deterministic_auto_count,
+                        },
+                    )
                     try:
                         persist_expense_line_derived_fields(
                             APP_DIR,
@@ -4633,11 +5852,13 @@ class ReceiptAutomationUI:
                     if also_resolve_expense_types:
                         if n_expense_new:
                             base += (
-                                f" Expense types: LLM categorized {n_expense_new} new merchant(s); "
+                                f" Expense types: resolved {n_expense_new} new merchant(s); "
                                 f"cache {VENDOR_EXPENSE_CACHE_FILE}."
                             )
                         else:
                             base += " Expense types: all merchants were already in the vendor cache."
+                    if deterministic_auto_count:
+                        base += f" Deterministic matcher auto-filled {deterministic_auto_count} line(s) without LLM."
                     base += " Expense report: review table, then Create report (VPN on)."
                     self.set_status(base)
 
@@ -4647,10 +5868,26 @@ class ReceiptAutomationUI:
                     self._match_receipts_worker_active = False
                     self.set_busy_status("Ready.")
                     self.set_status(f"Receipt matching failed: {exc}")
+                    self._emit_automation_event(
+                        kind="matching.failed",
+                        message="Transaction-to-receipt matching failed.",
+                        phase="Matching",
+                        data={"error": str(exc)},
+                    )
 
                 self.root.after(0, _done_err)
 
         self._match_receipts_worker_active = True
+        self._emit_automation_event(
+            kind="matching.start",
+            message="Transaction-to-receipt matching started.",
+            phase="Matching",
+            data={
+                "only_without_receipt_file": bool(only_without_receipt_file),
+                "only_line_ids": len(only_line_ids or []),
+                "also_resolve_expense_types": bool(also_resolve_expense_types),
+            },
+        )
         if only_line_ids is not None:
             self.set_status(
                 "Matching receipts for selected line(s) (one API call each; VPN should be off)…"
@@ -8044,6 +9281,11 @@ class ReceiptAutomationUI:
     def complete_credit_card_transactions_step(self) -> None:
         if not self.browser_page:
             raise RuntimeError("Browser page not available.")
+        self._emit_automation_event(
+            kind="scrape.start",
+            message="Scraping transactions started.",
+            phase="OracleScraping",
+        )
 
         if self._step3_vpn_mode == "vpn_collect" and not self._wizard_any_frame_on_step(2):
             raise RuntimeError(
@@ -8067,6 +9309,12 @@ class ReceiptAutomationUI:
         if self.browser_page:
             self.browser_page.wait_for_timeout(500)
         for page_idx in range(max_pages):
+            self._emit_automation_event(
+                kind="scrape.page.start",
+                message=f"Scraping transactions page {page_idx + 1}.",
+                phase="OracleScraping",
+                data={"page_index": page_idx + 1},
+            )
             locate = self._step2_pick_best_credit_snapshot()
             if not locate:
                 raise RuntimeError(
@@ -8162,6 +9410,19 @@ class ReceiptAutomationUI:
             if clicked_next:
                 self.browser_page.wait_for_timeout(900)
                 continue
+            self._emit_automation_event(
+                kind="scrape.page.retry",
+                message=f"Retrying page {page_idx + 1}: table pagination did not advance.",
+                phase="OracleScraping",
+                data={"page_index": page_idx + 1},
+            )
+            self.set_status(f"Retrying page {page_idx + 1} (table pagination)…")
+            clicked_next = self.click_expense_table_pagination_next_in_any_frame(
+                preferred_frame=self._step2_credit_card_frame,
+            )
+            if clicked_next:
+                self.browser_page.wait_for_timeout(900)
+                continue
 
             page_range = self.get_step2_credit_table_page_range_in_any_frame()
             have2 = len(self._scraped_expense_lines)
@@ -8192,6 +9453,12 @@ class ReceiptAutomationUI:
             )
 
         self._persist_scraped_lines_after_step2()
+        self._emit_automation_event(
+            kind="scrape.complete",
+            message=f"Scraping complete: {len(self._scraped_expense_lines)} transaction rows captured.",
+            phase="OracleScraping",
+            data={"row_count": len(self._scraped_expense_lines)},
+        )
 
         if self._step3_vpn_mode == "vpn_collect":
             self._vpn_collect_finish_step2_cancel_wizard()
@@ -8736,7 +10003,7 @@ class ReceiptAutomationUI:
         for block in llm_matches.values():
             index_existing(str((block or {}).get("best_receipt") or ""))
 
-        work: list[tuple[str, Path, tuple[str, str, str]]] = []
+        work: list[tuple[str, Path, tuple[str, str, str], str]] = []
         approved_updated = False
         missing_path_count = 0
         staged_fail_count = 0
@@ -8799,7 +10066,7 @@ class ReceiptAutomationUI:
                     stage_fail_logged += 1
                 self.log_event("warn", f"Step 6: skip {lid} — could not stage upload file: {p}")
                 continue
-            work.append((lid, staged, sig_by_line[lid]))
+            work.append((lid, staged, sig_by_line[lid], str(p)))
             if str(p) != raw_source:
                 block["source_file"] = str(p)
                 approved_updated = True
@@ -8827,7 +10094,7 @@ class ReceiptAutomationUI:
         used_pairs: set[tuple[int, int]] = set()
         attempted = 0
         attached_ok = 0
-        for lid, path, want_sig in work:
+        for lid, path, want_sig, original_source in work:
             self._pump_ui_and_check_cancel()
             rows = self._extract_step6_expense_lines_rows()
             if not rows:
@@ -8913,6 +10180,7 @@ class ReceiptAutomationUI:
                 continue
             used_pairs.add((ti, bri))
             attached_ok += 1
+            record_submitted_receipt(APP_DIR, source_file=original_source, line_id=lid)
             self.log_event("browser", f"Step 6: applied {path.name} for {lid}")
             if self.browser_page:
                 self.browser_page.wait_for_timeout(1200)
@@ -9307,8 +10575,9 @@ class ReceiptAutomationUI:
             self._populate_ui_current = "fill_purpose"
             self._last_populate_step = "fill_purpose"
             self._refresh_activity_panel()
-            self.set_status("Step 4.1: verifying purpose (set if needed)…")
-            if not self.fill_purpose_in_any_frame("travel"):
+            purpose = getattr(self, "_submit_report_name", None) or "Expense Report"
+            self.set_status(f"Step 4.1: setting purpose to '{purpose}'…")
+            if not self.fill_purpose_in_any_frame(purpose):
                 raise RuntimeError("Could not locate Purpose field.")
 
         if self._populate_at_or_after(start_from, "fill_approver"):
@@ -9566,9 +10835,26 @@ class ReceiptAutomationUI:
                 except Exception as exc:
                     self._crash_resume_anchor = self._populate_ui_current or self._last_populate_step
                     self._enable_crash_resume_button()
-                    self.set_status(f"Step 3 automation failed: {exc}")
-                    self.log_event("err", f"Step 3 failure (use Resume after crash if needed): {exc}")
-                    return
+                    self.set_status(f"Paused (unexpected error): {exc}")
+                    self.log_event("err", f"Step 3 unexpected failure: {exc}")
+                    self._emit_automation_event(
+                        kind="submission.recovery_needed",
+                        message="Unexpected automation error; manual resume required.",
+                        phase="Submission",
+                        data={"error": str(exc), "anchor": self._crash_resume_anchor or ""},
+                    )
+                    choice = self._prompt_manual_resume(str(exc), self._last_populate_step)
+                    self._refresh_activity_panel()
+                    if not choice:
+                        self.set_status("Step 3 automation cancelled after unexpected error.")
+                        return
+                    if choice == CRASH_RESUME_DIALOG_CHOICE:
+                        self._crash_resume_anchor = self._populate_ui_current or self._last_populate_step
+                        restart_crash_resume = True
+                        break
+                    self._disable_crash_resume_button()
+                    crash_first = False
+                    current = choice
         finally:
             self._populate_ui_current = None
             self._step3_automation_active = False
@@ -10087,7 +11373,21 @@ class ReceiptAutomationUI:
             )
             # endregion
 
-        for path_str in self.receipt_paths:
+        report_filter = self._get_selected_report_line_ids()
+        if report_filter is not None:
+            allowed_paths: set[str] = set()
+            for lid in report_filter:
+                br = str((matches.get(lid) or {}).get("best_receipt") or "").strip()
+                if br:
+                    allowed_paths.add(br)
+                asrc = str((approved_by_line.get(lid) or {}).get("source_file") or "").strip()
+                if asrc:
+                    allowed_paths.add(asrc)
+            visible_paths = [p for p in self.receipt_paths if p in allowed_paths]
+        else:
+            visible_paths = list(self.receipt_paths)
+
+        for path_str in visible_paths:
             analysis = analysis_by_source.get(path_str, {})
             assignment_value = self.assignment_map.get(path_str, "")
             is_assigned = bool(assignment_value.strip())

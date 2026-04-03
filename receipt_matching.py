@@ -209,11 +209,38 @@ def _parse_iso_to_date(value: object) -> date | None:
         return None
 
 
+def _correct_ddmmyy_misparse(receipt_d: date, txn_d: date) -> date | None:
+    """Detect when an LLM returned DD.MM.YY as YYYY-MM-DD.
+
+    European receipts commonly print dates as DD.MM.YY (e.g. "19.03.26" for
+    19-Mar-2026). LLMs sometimes return this as "2019-03-26", treating the
+    2-digit day as a year prefix and the 2-digit year as the day. When the
+    resulting gap is implausibly large, swap day↔year and check if the
+    corrected date is close to the transaction date.
+    """
+    gap = abs((txn_d - receipt_d).days)
+    if gap <= 180:
+        return None
+    candidate_day = receipt_d.year % 100
+    candidate_year = 2000 + receipt_d.day
+    try:
+        corrected = date(candidate_year, receipt_d.month, candidate_day)
+    except ValueError:
+        return None
+    if abs((txn_d - corrected).days) <= 7:
+        return corrected
+    return None
+
+
 def _date_gap_days(line_date: object, receipt_date: object) -> int | None:
     ld = _parse_iso_to_date(line_date)
     rd = _parse_iso_to_date(receipt_date)
     if ld is None or rd is None:
         return None
+    if ld is not None and rd is not None:
+        corrected = _correct_ddmmyy_misparse(rd, ld)
+        if corrected is not None:
+            rd = corrected
     return abs((ld - rd).days)
 
 
@@ -461,6 +488,10 @@ def line_and_receipt_amounts_align(line: dict[str, Any], analysis: dict[str, Any
     if cc_cur == "USD" and cc_amt is not None and abs(cc_amt - line_usd) <= tol:
         return True
 
+    line_amt_raw = _float_or_none(line.get("amount"))
+    if cc_amt is not None and line_amt_raw is not None and abs(cc_amt - line_amt_raw) <= tol:
+        return True
+
     if doc_cur == "USD" and nat is not None and abs(nat - line_usd) <= tol:
         return True
 
@@ -523,6 +554,15 @@ def _enforce_amount_alignment_on_match(
     }
 
 
+def _line_amount_matches_card_charge(line: dict[str, Any], analysis: dict[str, Any], tolerance: float = 1.0) -> bool:
+    """True when the raw line amount numerically matches the card charged amount (likely FX / mislabelled currency)."""
+    line_amt = _float_or_none(line.get("amount"))
+    cc_amt = _float_or_none(analysis.get("card_charged_amount"))
+    if line_amt is None or cc_amt is None:
+        return False
+    return abs(line_amt - cc_amt) <= tolerance
+
+
 def _apply_match_quality_policy(
     line: dict[str, Any],
     analyses_by_path: dict[str, dict[str, Any]],
@@ -563,6 +603,15 @@ def _apply_match_quality_policy(
         pass
     elif gap <= 4:
         cap = min(cap, 0.85)
+        policy_notes.append(f"date gap {gap}d")
+    elif _line_amount_matches_card_charge(line, analysis):
+        cap = min(cap, REVIEW_CONFIDENCE_THRESHOLD - 0.05)
+        policy_notes.append(f"date gap {gap}d (card-charge amount match)")
+    elif gap <= 14:
+        cap = min(cap, 0.55)
+        policy_notes.append(f"date gap {gap}d")
+    elif gap <= 30:
+        cap = min(cap, 0.45)
         policy_notes.append(f"date gap {gap}d")
     else:
         cap = min(cap, MIN_MATCH_CONFIDENCE - 0.01)
@@ -614,6 +663,8 @@ def build_receipt_match_prompt(lines: list[dict[str, Any]], analyses: list[dict[
         "Never invent a path. The reason must refer to the same receipt as best_receipt (vendor and/or filename).\n"
         '  "confidence": number from 0 to 1\n'
         '  "reason": short string\n'
+        '  "translated_merchant_name": string or null — if the matched receipt vendor name is NOT in English, '
+        "provide a concise English translation. If already English or no match, set null.\n"
         "Currency on expense_line.currency is the posted/card line currency; receipt.currency is the folio/document "
         "currency (line_items[].currency inherits receipt currency when null). Some receipts include "
         "card_charged_amount / card_charged_currency (DCC / amount charged to card). Receipts may also include "
@@ -621,15 +672,14 @@ def build_receipt_match_prompt(lines: list[dict[str, Any]], analyses: list[dict[
         "plus optional estimated_usd_fx_note. line_items may include estimated_usd per row for split foreign charges.\n"
         "Rules (apply in this order; do not prefer a receipt that fails an earlier step over one that passes it):\n"
         "Confidence policy (strict): amount evidence carries the most weight, then date proximity.\n"
-        "- Dates should normally be within 1-2 days; larger gaps must sharply reduce confidence.\n"
         "- Missing/unparseable dates lower confidence.\n"
         f"- If final confidence would be below {MIN_MATCH_CONFIDENCE:.2f}, set best_receipt=null (no match).\n"
         f"- {MIN_MATCH_CONFIDENCE:.2f} to <{REVIEW_CONFIDENCE_THRESHOLD:.2f} means weak/partial match and should read as review-needed in reason.\n"
-        "1) Amount + currency — three tiers for each line. **Always prefer the smallest |line USD − receipt USD signal|** "
+        "1) Amount + currency — three tiers for each line. **Always prefer the smallest |line amount − receipt amount signal|** "
         "among receipts that pass Phase A or consistent Phase B (exact/near-exact dollar match wins).\n"
-        "   Phase A (explicit): First, if receipt.card_charged_amount and card_charged_currency are set, and "
-        "line.currency equals card_charged_currency (or line currency missing), compare line.amount to "
-        "card_charged_amount with trivial rounding (e.g. one cent). "
+        "   Phase A (explicit): First, if receipt.card_charged_amount is set and |line.amount - card_charged_amount| <= ~1.0, "
+        "treat as a match — this applies **regardless of whether card_charged_currency matches line.currency**, "
+        "because expense portals often show the billed/card amount but label it with the receipt's native currency. "
         "Else, when line.currency and receipt.currency are equal or either is null: compare line.amount to "
         "line_items[].amount (same currency) if any, else matched_amount and total_amount. Allow only trivial rounding.\n"
         "   Phase B (USD estimate / close): Use only when Phase A gives no satisfactory receipt for this line. "
@@ -644,8 +694,10 @@ def build_receipt_match_prompt(lines: list[dict[str, Any]], analyses: list[dict[
         "do not help, you may match when merchant/date fit and line.amount is a plausible conversion of receipt totals at "
         "transaction date. Mention currencies and implied FX in reason; confidence lower (e.g. cap ~0.72).\n"
         "2) Merchant: use vendor/merchant text only as a soft tie-breaker when amount/date evidence is otherwise similar.\n"
-        "3) Date: Receipt date vs transaction_date may differ by about one or two days (e.g. purchase day vs posting); "
-        "larger gaps weaken confidence; prefer null if amount and merchant fit but dates are wildly off.\n"
+        "3) Date: Receipt date vs transaction_date commonly differs by 1-2 days. Posting delays, batch processing, "
+        "and travel charges (especially hotels) can cause gaps of weeks. Gaps up to ~7 days are normal; "
+        "7-30 days should reduce confidence but NOT cause rejection when amount and merchant evidence is strong. "
+        "Only reject on date alone if the gap exceeds ~30 days.\n"
         "- One best_receipt per expense line. The same source_file may be best_receipt for multiple lines when one "
         "receipt covers several card charges (e.g. rideshare trip amount on one line and tip on another). "
         "In that case each line should match a distinct line_items amount when possible.\n"
@@ -665,15 +717,19 @@ def build_single_line_receipt_match_prompt(line: dict[str, Any], analyses: list[
         "(full path string). Never invent a path. The reason must describe the same document (merchant and/or filename) as best_receipt.\n"
         '  "confidence": number from 0 to 1\n'
         '  "reason": short string\n'
+        '  "translated_merchant_name": string or null — if the matched receipt vendor name is NOT in English, '
+        "provide a concise English translation. If already English or no match, set null.\n"
         "expense_line.currency is the posted/card currency; receipt.currency is the folio currency. Receipts may include "
         "card_charged_amount / card_charged_currency (DCC), and estimated_usd_total (model USD equivalent for foreign totals "
         "at receipt_date), plus line_items[].estimated_usd for split lines.\n"
         "Rules (apply in this order):\n"
-        "Confidence policy (strict): amount evidence is primary, then date (within ~1-2 days).\n"
+        "Confidence policy (strict): amount evidence is primary, then date proximity.\n"
         f"- If confidence would be below {MIN_MATCH_CONFIDENCE:.2f}, return best_receipt as null.\n"
         f"- If confidence is {MIN_MATCH_CONFIDENCE:.2f} to <{REVIEW_CONFIDENCE_THRESHOLD:.2f}, reason should indicate review is needed.\n"
-        "1) Phase A — Explicit: card_charged_* vs line when currencies align (trivial rounding); else same-currency match to "
-        "line_items or matched_amount/total_amount. **Prefer receipt whose card USD (or native USD total) is closest to line.amount.**\n"
+        "1) Phase A — Explicit: card_charged_amount vs line.amount when amounts are numerically close (within ~1.0), "
+        "regardless of whether card_charged_currency matches line.currency — expense portals often show the billed/card amount "
+        "but label it with the receipt's native currency. Also try same-currency match to "
+        "line_items or matched_amount/total_amount. **Prefer receipt whose card amount (or native total) is closest to line.amount.**\n"
         "2) Phase B — USD close: only if Phase A failed. **Ignore estimated_usd_total if it is impossible given the receipt's "
         "printed total in document currency** (e.g. single-digit foreign currency vs ~190 USD estimate). "
         "When estimated_usd_total is plausible vs the folio, if line.currency is USD or empty, compare line.amount to "
@@ -681,7 +737,10 @@ def build_single_line_receipt_match_prompt(line: dict[str, Any], analyses: list[
         "Reason must cite USD estimate; confidence below Phase A.\n"
         "3) Phase C — General FX if A and B fail; lowest confidence.\n"
         "4) Merchant: optional soft tie-breaker only; do not penalize confidence for vendor text mismatch when amount/date fit.\n"
-        "5) Date: Receipt vs transaction_date may differ by about one or two days; larger gaps weaken confidence.\n"
+        "5) Date: Receipt date vs transaction_date commonly differs by 1-2 days, but posting delays, batch processing, "
+        "and travel charges (especially hotels) can cause gaps of weeks. Gaps up to ~7 days are normal; "
+        "7-30 days should reduce confidence but NOT cause rejection when amount and merchant evidence is strong. "
+        "Only reject on date alone if the gap exceeds ~30 days.\n"
         "The same receipt file may correctly apply to this line even if another expense line also uses it (split charges). "
         "Prefer null if nothing fits.\n\n"
         f"expense_line: {json.dumps(line_obj, ensure_ascii=False)}\n\n"
@@ -725,10 +784,13 @@ def _parse_single_line_match_response(
         )
         reason = (prefix + reason)[:500]
 
+    translated = str(parsed.get("translated_merchant_name") or "").strip() or None
+
     return {
         "best_receipt": br or None,
         "confidence": conf_f,
         "reason": reason,
+        "translated_merchant_name": translated,
     }
 
 
@@ -850,10 +912,12 @@ def match_receipts_to_expense_lines(
                 "(often Apple Photos temp exports). Re-add from a stable folder or use Choose file. "
             )
             reason = (prefix + reason)[:500]
+        translated = str(val.get("translated_merchant_name") or "").strip() or None
         one = {
             "best_receipt": br or None,
             "confidence": conf_f,
             "reason": reason,
+            "translated_merchant_name": translated,
         }
         out[lid] = _apply_match_quality_policy(ln, by_path, one) if ln else one
 

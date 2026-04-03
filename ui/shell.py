@@ -1,4 +1,4 @@
-"""Main window: header, workflow chips, notebook."""
+"""Main window: persistent run bar + stage-based workflow shell."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from tkinter import ttk
 def build_main_shell(app) -> None:
     import receipt_automation_ui as rui
 
-    from ui.tabs import activity, documents, expense_report, expense_types, settings_tab
+    from ui.tabs import expense_types, settings_tab
+    from ui.workflow import build_workflow_stage_shell
 
     container = ttk.Frame(app.root, padding=12)
     container.pack(fill=tk.BOTH, expand=True)
@@ -36,33 +37,67 @@ def build_main_shell(app) -> None:
 
     ttk.Button(header_row, text="Settings", command=app.focus_settings_tab).pack(side=tk.RIGHT)
 
+    run_strip = ttk.Frame(container)
+    run_strip.pack(fill=tk.X, pady=(8, 0))
+    app._global_run_phase_var = tk.StringVar(value="Phase: Idle")
+    app._global_run_progress_var = tk.StringVar(value="Progress: 0%")
+    app._global_run_attention_var = tk.StringVar(value="Attention: None")
+    app._global_run_message_var = tk.StringVar(value="Waiting for next action.")
+    ttk.Label(run_strip, textvariable=app._global_run_phase_var, foreground="#0b57d0").pack(
+        side=tk.LEFT, padx=(0, 12)
+    )
+    ttk.Label(run_strip, textvariable=app._global_run_progress_var, foreground="#333").pack(
+        side=tk.LEFT, padx=(0, 12)
+    )
+    ttk.Label(run_strip, textvariable=app._global_run_attention_var, foreground="#b06000").pack(
+        side=tk.LEFT
+    )
+    app._global_run_progress = ttk.Progressbar(
+        container, orient=tk.HORIZONTAL, mode="determinate", maximum=100
+    )
+    app._global_run_progress.pack(fill=tk.X, pady=(4, 0))
+    ttk.Label(
+        container,
+        textvariable=app._global_run_message_var,
+        foreground="#555",
+        wraplength=960,
+        justify=tk.LEFT,
+    ).pack(anchor=tk.W, pady=(2, 0))
+
     nb = ttk.Notebook(container)
     nb.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
     app.main_notebook = nb
 
-    f_docs = ttk.Frame(nb, padding=8)
-    nb.add(f_docs, text="Documents")
-    documents.build_documents_tab(app, f_docs)
-    app._frame_documents = f_docs
-
-    f_report = ttk.Frame(nb, padding=8)
-    nb.add(f_report, text="Expense report")
-    expense_report.build_expense_report_tab(app, f_report)
-    app._frame_expense_report = f_report
-
-    f_types = ttk.Frame(nb, padding=8)
-    nb.add(f_types, text="Expense types")
-    expense_types.build_expense_types_tab(app, f_types)
-    app._frame_expense_types = f_types
-
-    f_act = ttk.Frame(nb, padding=8)
-    nb.add(f_act, text="Activity")
-    activity.build_activity_tab(app, f_act)
+    f_workflow = ttk.Frame(nb, padding=8)
+    nb.add(f_workflow, text="Workflow")
+    build_workflow_stage_shell(app, f_workflow)
+    app._frame_workflow = f_workflow
 
     f_set = ttk.Frame(nb, padding=8)
     nb.add(f_set, text="Settings")
     settings_tab.build_settings_tab(app, f_set)
     app._frame_settings = f_set
+
+    f_class = ttk.Frame(nb, padding=8)
+    nb.add(f_class, text="Vendor Classification")
+    ttk.Label(
+        f_class,
+        text="Vendor Classification",
+        font=("SF Pro Text", 13, "bold"),
+    ).pack(anchor=tk.W, pady=(0, 6))
+    ttk.Label(
+        f_class,
+        text=(
+            "Define the Expense Type to use whenever a merchant name matches exactly. "
+            "New merchants discovered during scanning are added automatically and classified by the LLM. "
+            "You can override any classification here."
+        ),
+        wraplength=980,
+        justify=tk.LEFT,
+        foreground="#555",
+    ).pack(anchor=tk.W, pady=(0, 8))
+    expense_types.build_expense_types_tab(app, f_class)
+    app._frame_vendor_classification = f_class
 
     nb.bind("<<NotebookTabChanged>>", app._on_notebook_tab_changed)
 

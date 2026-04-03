@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from persistence.atomic_json import atomic_write_json, load_json_or_quarantine
 
 SCHEMA_VERSION = 1
 MIN_ACCEPTED_MATCH_CONFIDENCE = 0.40
@@ -21,6 +23,8 @@ EXPENSE_LINES_FILENAME = "expense_lines_cache.json"
 RECEIPT_MATCH_FILENAME = "receipt_line_match.json"
 APPROVED_MATCH_FILENAME = "receipt_match_approved.json"
 ANALYSES_SNAPSHOT_FILENAME = "receipt_analyses_snapshot.json"
+EXPENSE_REPORT_GROUPS_FILENAME = "expense_report_groups.json"
+SUBMITTED_RECEIPTS_FILENAME = "submitted_receipts.json"
 
 
 def _iso_now() -> str:
@@ -90,7 +94,7 @@ def save_expense_lines_cache(
         "source": source,
         "lines": lines,
     }
-    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, doc, indent=2, ensure_ascii=False)
     return path
 
 
@@ -98,10 +102,7 @@ def load_expense_lines_cache(app_dir: Path) -> tuple[list[dict[str, Any]], dict[
     path = expense_lines_cache_path(app_dir)
     if not path.exists():
         return [], {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return [], {}
+    raw = load_json_or_quarantine(path, {})
     if not isinstance(raw, dict):
         return [], {}
     lines = raw.get("lines")
@@ -165,7 +166,7 @@ def save_receipt_line_matches(
         "updated_at": _iso_now(),
         "matches": matches,
     }
-    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, doc, indent=2, ensure_ascii=False)
     return path
 
 
@@ -173,10 +174,7 @@ def load_receipt_line_matches(app_dir: Path) -> dict[str, dict[str, Any]]:
     path = receipt_line_match_path(app_dir)
     if not path.exists():
         return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    raw = load_json_or_quarantine(path, {})
     if not isinstance(raw, dict):
         return {}
     m = raw.get("matches")
@@ -252,7 +250,7 @@ def save_approved_matches(app_dir: Path, approved: dict[str, dict[str, Any]]) ->
         "updated_at": _iso_now(),
         "approved": approved,
     }
-    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, doc, indent=2, ensure_ascii=False)
     return path
 
 
@@ -260,10 +258,7 @@ def load_approved_matches(app_dir: Path) -> dict[str, dict[str, Any]]:
     path = approved_match_path(app_dir)
     if not path.exists():
         return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    raw = load_json_or_quarantine(path, {})
     if not isinstance(raw, dict):
         return {}
     a = raw.get("approved")
@@ -339,7 +334,7 @@ def save_analyses_snapshot(app_dir: Path, analyses: list[dict[str, Any]]) -> Pat
         "updated_at": _iso_now(),
         "analyses": analyses,
     }
-    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, doc, indent=2, ensure_ascii=False)
     return path
 
 
@@ -347,10 +342,7 @@ def load_analyses_snapshot(app_dir: Path) -> list[dict[str, Any]]:
     path = receipt_analyses_snapshot_path(app_dir)
     if not path.exists():
         return []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    raw = load_json_or_quarantine(path, {})
     if not isinstance(raw, dict):
         return []
     a = raw.get("analyses")
@@ -384,6 +376,41 @@ def load_vendor_expense_types_flat(app_dir: Path) -> dict[str, str]:
         if key and val:
             out[key] = val
     return out
+
+
+def expense_report_groups_path(app_dir: Path) -> Path:
+    return app_dir / EXPENSE_REPORT_GROUPS_FILENAME
+
+
+def load_expense_report_groups(app_dir: Path) -> dict[str, dict[str, Any]]:
+    path = expense_report_groups_path(app_dir)
+    if not path.exists():
+        return {}
+    raw = load_json_or_quarantine(path, {})
+    if not isinstance(raw, dict):
+        return {}
+    reports = raw.get("reports")
+    if not isinstance(reports, dict):
+        return {}
+    return {
+        str(k): dict(v) if isinstance(v, dict) else {}
+        for k, v in reports.items()
+    }
+
+
+def save_expense_report_groups(
+    app_dir: Path,
+    reports: dict[str, dict[str, Any]],
+) -> Path:
+    path = expense_report_groups_path(app_dir)
+    app_dir.mkdir(parents=True, exist_ok=True)
+    doc: dict[str, Any] = {
+        "version": SCHEMA_VERSION,
+        "updated_at": _iso_now(),
+        "reports": reports,
+    }
+    atomic_write_json(path, doc, indent=2, ensure_ascii=False)
+    return path
 
 
 def persist_expense_line_derived_fields(
@@ -424,3 +451,411 @@ def persist_expense_line_derived_fields(
         row["cached_match_reason"] = str(blk.get("reason") or "").strip()[:500]
     source = str(meta.get("source") or "step2_credit_card")
     return save_expense_lines_cache(app_dir, lines, source=source)
+
+
+# ---------------------------------------------------------------------------
+# Submitted receipts — tracks files actually attached to an Oracle report
+# ---------------------------------------------------------------------------
+
+def submitted_receipts_path(app_dir: Path) -> Path:
+    return app_dir / SUBMITTED_RECEIPTS_FILENAME
+
+
+def load_submitted_receipts(app_dir: Path) -> dict[str, dict[str, Any]]:
+    """Return {source_file: {line_id, submitted_at, ...}} for receipts attached to Oracle."""
+    path = submitted_receipts_path(app_dir)
+    if not path.exists():
+        return {}
+    raw = load_json_or_quarantine(path, {})
+    if not isinstance(raw, dict):
+        return {}
+    entries = raw.get("submitted")
+    if not isinstance(entries, dict):
+        return {}
+    return {str(k): dict(v) if isinstance(v, dict) else {} for k, v in entries.items()}
+
+
+def save_submitted_receipts(app_dir: Path, submitted: dict[str, dict[str, Any]]) -> Path:
+    path = submitted_receipts_path(app_dir)
+    app_dir.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "version": SCHEMA_VERSION,
+        "updated_at": _iso_now(),
+        "submitted": submitted,
+    }
+    atomic_write_json(path, doc, indent=2, ensure_ascii=False)
+    return path
+
+
+def record_submitted_receipt(
+    app_dir: Path,
+    *,
+    source_file: str,
+    line_id: str,
+) -> None:
+    """Mark a single receipt as attached to an Oracle expense report."""
+    submitted = load_submitted_receipts(app_dir)
+    submitted[source_file] = {
+        "line_id": line_id,
+        "submitted_at": _iso_now(),
+    }
+    save_submitted_receipts(app_dir, submitted)
+
+
+# ---------------------------------------------------------------------------
+# Report deletion — removes transactions + documents, keeps vendor types
+# ---------------------------------------------------------------------------
+
+def delete_report_with_data(
+    app_dir: Path,
+    report_id: str,
+) -> dict[str, Any]:
+    """Delete a report group and all associated transactions, matches, and receipt documents.
+
+    Preserves vendor_expense_types.json so merchant classifications survive for future reports.
+    Returns a summary dict with counts of removed items.
+    """
+    reports = load_expense_report_groups(app_dir)
+    report = reports.get(report_id)
+    if not report:
+        return {"error": "Report not found", "report_id": report_id}
+
+    line_ids = report.get("line_ids", [])
+    line_id_set = {str(lid).strip() for lid in line_ids if str(lid).strip()}
+    report_name = str(report.get("name", "")).strip() or "Untitled"
+
+    receipt_files_to_remove: set[str] = set()
+
+    if line_id_set:
+        approved = load_approved_matches(app_dir)
+        matches = load_receipt_line_matches(app_dir)
+        for lid in line_id_set:
+            sf = str((approved.get(lid) or {}).get("source_file", "") or "").strip()
+            if sf:
+                receipt_files_to_remove.add(sf)
+            sf2 = str((matches.get(lid) or {}).get("best_receipt", "") or "").strip()
+            if sf2:
+                receipt_files_to_remove.add(sf2)
+
+    removed_lines, remaining_lines = (0, 0)
+    if line_id_set:
+        removed_lines, remaining_lines = remove_expense_lines_by_ids(app_dir, line_id_set)
+
+    removed_analyses = 0
+    if receipt_files_to_remove:
+        analyses = load_analyses_snapshot(app_dir)
+        kept_analyses = []
+        for a in analyses:
+            sf = str(a.get("source_file", "")).strip()
+            if sf in receipt_files_to_remove:
+                removed_analyses += 1
+            else:
+                kept_analyses.append(a)
+        if removed_analyses:
+            save_analyses_snapshot(app_dir, kept_analyses)
+
+        state_path = app_dir / "state.json"
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+            rp = state.get("receipt_paths", [])
+            if isinstance(rp, list):
+                state["receipt_paths"] = [p for p in rp if p not in receipt_files_to_remove]
+                state_path.write_text(
+                    json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+
+        submitted = load_submitted_receipts(app_dir)
+        sub_changed = False
+        for sf in receipt_files_to_remove:
+            if sf in submitted:
+                submitted.pop(sf)
+                sub_changed = True
+        if sub_changed:
+            save_submitted_receipts(app_dir, submitted)
+
+    deleted_files = 0
+    for sf in receipt_files_to_remove:
+        p = Path(sf).expanduser()
+        if p.is_file():
+            try:
+                p.unlink()
+                deleted_files += 1
+            except OSError:
+                pass
+
+    reports.pop(report_id, None)
+    save_expense_report_groups(app_dir, reports)
+
+    return {
+        "report_name": report_name,
+        "removed_lines": removed_lines,
+        "remaining_lines": remaining_lines,
+        "removed_analyses": removed_analyses,
+        "deleted_files": deleted_files,
+        "receipt_files_removed": len(receipt_files_to_remove),
+    }
+
+
+def get_report_submission_status(
+    app_dir: Path,
+    report_id: str,
+) -> str:
+    """Return 'Submitted', 'Partial', or 'Not submitted' for a given report."""
+    reports = load_expense_report_groups(app_dir)
+    report = reports.get(report_id)
+    if not report:
+        return "Unknown"
+    line_ids = report.get("line_ids", [])
+    if not line_ids:
+        return "Empty"
+
+    line_id_set = {str(lid).strip() for lid in line_ids if str(lid).strip()}
+    if not line_id_set:
+        return "Empty"
+
+    submitted = load_submitted_receipts(app_dir)
+    submitted_line_ids: set[str] = set()
+    for _sf, block in submitted.items():
+        lid = str((block or {}).get("line_id", "") or "").strip()
+        if lid:
+            submitted_line_ids.add(lid)
+
+    overlap = line_id_set & submitted_line_ids
+    if not overlap:
+        return "Not submitted"
+    if overlap == line_id_set:
+        return "Submitted"
+    return "Partial"
+
+
+# ---------------------------------------------------------------------------
+# Soft-delete / pending-deletion support
+# ---------------------------------------------------------------------------
+
+PENDING_DELETION_FILENAME = "pending_deletion.json"
+
+
+def _pending_deletion_path(app_dir: Path) -> Path:
+    return app_dir / PENDING_DELETION_FILENAME
+
+
+def load_pending_deletions(app_dir: Path) -> dict[str, Any]:
+    return load_json_or_quarantine(_pending_deletion_path(app_dir), {})
+
+
+def save_pending_deletions(app_dir: Path, data: dict[str, Any]) -> None:
+    atomic_write_json(_pending_deletion_path(app_dir), data)
+
+
+def soft_delete_report(
+    app_dir: Path,
+    report_id: str,
+    countdown_days: int = 5,
+) -> dict[str, Any]:
+    """Mark a report and its data for deferred deletion.
+
+    Hides the report from normal views immediately but preserves all
+    data on disk.  After *countdown_days* the caller can purge via
+    ``purge_expired_deletions``.
+    """
+    reports = load_expense_report_groups(app_dir)
+    report = reports.get(report_id)
+    if not report:
+        return {"error": "Report not found", "report_id": report_id}
+
+    line_ids = report.get("line_ids", [])
+    line_id_set = {str(lid).strip() for lid in line_ids if str(lid).strip()}
+    report_name = str(report.get("name", "")).strip() or "Untitled"
+
+    receipt_files: list[str] = []
+    if line_id_set:
+        approved = load_approved_matches(app_dir)
+        matches = load_receipt_line_matches(app_dir)
+        seen: set[str] = set()
+        for lid in line_id_set:
+            sf = str((approved.get(lid) or {}).get("source_file", "") or "").strip()
+            if sf and sf not in seen:
+                receipt_files.append(sf)
+                seen.add(sf)
+            sf2 = str((matches.get(lid) or {}).get("best_receipt", "") or "").strip()
+            if sf2 and sf2 not in seen:
+                receipt_files.append(sf2)
+                seen.add(sf2)
+
+    now = _iso_now()
+    delete_after = (
+        datetime.now(timezone.utc) + timedelta(days=countdown_days)
+    ).isoformat()
+
+    pending = load_pending_deletions(app_dir)
+    pending[report_id] = {
+        "report_id": report_id,
+        "report_name": report_name,
+        "line_ids": sorted(line_id_set),
+        "receipt_files": receipt_files,
+        "marked_at": now,
+        "delete_after": delete_after,
+        "countdown_days": countdown_days,
+    }
+    save_pending_deletions(app_dir, pending)
+
+    reports.pop(report_id, None)
+    save_expense_report_groups(app_dir, reports)
+
+    if line_id_set:
+        lines, _meta = load_expense_lines_cache(app_dir)
+
+        hidden_lines = [l for l in lines if str(l.get("line_id", "")).strip() in line_id_set]
+        kept = [l for l in lines if str(l.get("line_id", "")).strip() not in line_id_set]
+        save_expense_lines_cache(app_dir, kept)
+
+        pending[report_id]["cached_lines"] = hidden_lines
+
+        cached_matches, cached_approved = _snapshot_matches_for_soft_delete(app_dir, line_id_set)
+        pending[report_id]["cached_matches"] = cached_matches
+        pending[report_id]["cached_approved"] = cached_approved
+        save_pending_deletions(app_dir, pending)
+
+        _remove_lines_from_matches(app_dir, line_id_set)
+
+    return {
+        "report_name": report_name,
+        "line_count": len(line_id_set),
+        "receipt_count": len(receipt_files),
+        "delete_after": delete_after,
+    }
+
+
+def _snapshot_matches_for_soft_delete(
+    app_dir: Path, line_id_set: set[str]
+) -> tuple[dict, dict]:
+    """Capture match/approval data before removing, so we can restore later."""
+    matches = load_receipt_line_matches(app_dir)
+    approved = load_approved_matches(app_dir)
+    cached_matches = {lid: matches[lid] for lid in line_id_set if lid in matches}
+    cached_approved = {lid: approved[lid] for lid in line_id_set if lid in approved}
+    return cached_matches, cached_approved
+
+
+def _remove_lines_from_matches(app_dir: Path, line_id_set: set[str]) -> None:
+    """Remove match and approval entries for line_ids."""
+    matches = load_receipt_line_matches(app_dir)
+    changed = False
+    for lid in line_id_set:
+        if lid in matches:
+            matches.pop(lid)
+            changed = True
+    if changed:
+        save_receipt_line_matches(app_dir, matches)
+
+    approved = load_approved_matches(app_dir)
+    changed_a = False
+    for lid in line_id_set:
+        if lid in approved:
+            approved.pop(lid)
+            changed_a = True
+    if changed_a:
+        save_approved_matches(app_dir, approved)
+
+
+def restore_pending_deletion(app_dir: Path, report_id: str) -> dict[str, Any]:
+    """Restore a soft-deleted report back into active views."""
+    pending = load_pending_deletions(app_dir)
+    entry = pending.get(report_id)
+    if not entry:
+        return {"error": "Pending deletion not found", "report_id": report_id}
+
+    report_name = entry.get("report_name", "Untitled")
+    line_ids = entry.get("line_ids", [])
+    receipt_files = entry.get("receipt_files", [])
+    cached_lines = entry.get("cached_lines", [])
+    cached_matches = entry.get("cached_matches", {})
+    cached_approved = entry.get("cached_approved", {})
+
+    reports = load_expense_report_groups(app_dir)
+    reports[report_id] = {
+        "id": report_id,
+        "name": report_name,
+        "created_at": entry.get("marked_at", _iso_now()),
+        "line_ids": line_ids,
+    }
+    save_expense_report_groups(app_dir, reports)
+
+    if cached_lines:
+        lines, _meta = load_expense_lines_cache(app_dir)
+        existing_ids = {str(l.get("line_id", "")).strip() for l in lines}
+        for cl in cached_lines:
+            lid = str(cl.get("line_id", "")).strip()
+            if lid and lid not in existing_ids:
+                lines.append(cl)
+        save_expense_lines_cache(app_dir, lines)
+
+    if cached_matches:
+        matches = load_receipt_line_matches(app_dir)
+        matches.update(cached_matches)
+        save_receipt_line_matches(app_dir, matches)
+
+    if cached_approved:
+        approved = load_approved_matches(app_dir)
+        approved.update(cached_approved)
+        save_approved_matches(app_dir, approved)
+
+    pending.pop(report_id, None)
+    save_pending_deletions(app_dir, pending)
+
+    return {
+        "report_name": report_name,
+        "restored_lines": len(line_ids),
+        "restored_receipts": len(receipt_files),
+    }
+
+
+def purge_expired_deletions(app_dir: Path) -> list[dict[str, Any]]:
+    """Permanently delete reports whose countdown has expired."""
+    pending = load_pending_deletions(app_dir)
+    if not pending:
+        return []
+
+    now = datetime.now(timezone.utc)
+    purged: list[dict[str, Any]] = []
+    remaining: dict[str, Any] = {}
+
+    for rid, entry in pending.items():
+        delete_after_str = entry.get("delete_after", "")
+        try:
+            delete_after = datetime.fromisoformat(delete_after_str)
+        except (ValueError, TypeError):
+            remaining[rid] = entry
+            continue
+
+        if now >= delete_after:
+            receipt_files = entry.get("receipt_files", [])
+            deleted_files = 0
+            for sf in receipt_files:
+                p = Path(sf).expanduser()
+                if p.is_file():
+                    try:
+                        p.unlink()
+                        deleted_files += 1
+                    except OSError:
+                        pass
+
+            analyses = load_analyses_snapshot(app_dir)
+            receipt_set = set(receipt_files)
+            kept_analyses = [a for a in analyses if str(a.get("source_file", "")).strip() not in receipt_set]
+            if len(kept_analyses) != len(analyses):
+                save_analyses_snapshot(app_dir, kept_analyses)
+
+            purged.append({
+                "report_id": rid,
+                "report_name": entry.get("report_name", ""),
+                "deleted_files": deleted_files,
+            })
+        else:
+            remaining[rid] = entry
+
+    save_pending_deletions(app_dir, remaining)
+    return purged

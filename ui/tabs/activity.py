@@ -16,6 +16,39 @@ def build_activity_tab(app, parent: ttk.Frame) -> None:
     )
     app._activity_hint.pack(anchor=tk.W, pady=(0, 8))
 
+    status_panel = ttk.LabelFrame(parent, text="Run status", padding=8)
+    status_panel.pack(fill=tk.X, pady=(0, 8))
+    top = ttk.Frame(status_panel)
+    top.pack(fill=tk.X)
+    app._run_status_phase_var = tk.StringVar(value="Phase: Idle")
+    app._run_status_progress_var = tk.StringVar(value="Progress: 0%")
+    app._run_status_attention_var = tk.StringVar(value="Attention: None")
+    app._run_status_message_var = tk.StringVar(value="Waiting for next action.")
+    ttk.Label(top, textvariable=app._run_status_phase_var, foreground="#0b57d0").pack(
+        side=tk.LEFT, padx=(0, 14)
+    )
+    ttk.Label(top, textvariable=app._run_status_progress_var, foreground="#333").pack(
+        side=tk.LEFT, padx=(0, 14)
+    )
+    ttk.Label(top, textvariable=app._run_status_attention_var, foreground="#b06000").pack(side=tk.LEFT)
+    app._run_status_progress = ttk.Progressbar(status_panel, orient=tk.HORIZONTAL, mode="determinate", maximum=100)
+    app._run_status_progress.pack(fill=tk.X, pady=(6, 4))
+    ttk.Label(
+        status_panel,
+        textvariable=app._run_status_message_var,
+        foreground="#555",
+        wraplength=900,
+        justify=tk.LEFT,
+    ).pack(anchor=tk.W)
+    status_actions = ttk.Frame(status_panel)
+    status_actions.pack(fill=tk.X, pady=(6, 0))
+    app._run_status_attention_btn = ttk.Button(
+        status_actions,
+        text="Review attention items",
+        command=app.on_focus_attention_items,
+    )
+    app._run_status_attention_btn.pack(side=tk.LEFT)
+
     actions = ttk.LabelFrame(parent, text="Actions (order is flexible — use what you need)", padding=8)
     actions.pack(fill=tk.X, pady=(0, 10))
 
