@@ -2,6 +2,14 @@
 
 Automates expense-report entry by driving a real browser against the legacy expense portal. Instead of tedious copy-paste, the tool scrapes your credit-card transactions, matches them to receipt photos, and fills everything in for you.
 
+### How it works & what it does with your data
+
+This app does **exactly what you would do by hand** — it opens a real browser window, logs into Oracle with your credentials, reads your credit-card transactions, and types values into the expense-report form. You can watch every step happen live on screen.
+
+- **Passwords are stored in your system keychain** (macOS Keychain / Windows Credential Manager) — the same secure vault your OS uses for Wi-Fi passwords and website logins. They are **never** written to plain-text files, logs, or sent anywhere other than the Oracle login page itself.
+- **Nothing is sent to a remote server.** The app runs 100% locally on your machine. The only external calls are (1) logging into Oracle (the same site you'd open in a normal browser) and (2) sending receipt images to the OpenAI API for amount/date extraction, if you enable that option.
+- **The code is open-source** — you (or anyone you trust) can read every line to verify there is no data collection, telemetry, or hidden network calls.
+
 ---
 
 ## Quick Start — get the app running in ~5 minutes
@@ -161,5 +169,4 @@ Once you've entered your credentials, the Dashboard unlocks and the workflow is:
 ## Notes
 
 - App data (settings, browser profile) is stored in `~/.expense-automator`.
-- Your credentials are saved securely in your system keychain — they are never stored in plain-text files.
-- The automated browser stays open after each step so you can verify what it did before moving on.
+- The automated browser stays open after each step so you can watch and verify what it did before moving on — nothing happens behind the scenes.
