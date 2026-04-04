@@ -1,6 +1,12 @@
 .env
 .venv/
 .venv-rpa/
+.venv-build/
+
+# PyInstaller / local Playwright bundle for packaging
+packaging/build/
+build/
+dist/
 __pycache__/
 *.pyc
 .DS_Store
