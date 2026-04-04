@@ -1,6 +1,6 @@
 # Standalone desktop builds
 
-These scripts produce a self-contained **Expense Automator** app (no separate Python install). The app is the same NiceGUI workflow as `python -m web`: it starts a local server on port 8080 and opens your browser.
+These scripts produce a self-contained **Expense Automator** app (no separate Python install). The app is the same NiceGUI workflow as `python -m web`: it starts a local server on port 8080 and opens a **native window** (pywebview), not a separate browser tab. Set `EXPENSE_AUTOMATOR_USE_BROWSER=1` in the environment to use the system browser instead (e.g. for devtools).
 
 ## Prerequisites (build machine only)
 

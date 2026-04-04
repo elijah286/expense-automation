@@ -55,11 +55,31 @@ except Exception:
 from web.app import _kill_existing_on_port  # noqa: E402 — triggers page registration
 from nicegui import ui  # noqa: E402
 
-_kill_existing_on_port(8080)
-ui.run(
-    title="Expense Automator",
-    port=8080,
-    reload=False,
-    show=True,
-    favicon="💰",
+WEB_PORT = 8080
+_kill_existing_on_port(WEB_PORT)
+
+# Native window (pywebview / WKWebView on macOS) instead of the default browser tab.
+# Set EXPENSE_AUTOMATOR_USE_BROWSER=1 to open in the system browser (e.g. devtools).
+_use_browser = os.environ.get("EXPENSE_AUTOMATOR_USE_BROWSER", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
 )
+
+if _use_browser:
+    ui.run(
+        title="Expense Automator",
+        port=WEB_PORT,
+        reload=False,
+        show=True,
+        favicon="💰",
+    )
+else:
+    ui.run(
+        title="Expense Automator",
+        port=WEB_PORT,
+        reload=False,
+        native=True,
+        window_size=(1280, 800),
+        favicon="💰",
+    )

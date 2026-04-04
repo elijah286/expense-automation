@@ -2,7 +2,7 @@
 Expense Automator — Modern Web UI (NiceGUI).
 
 Run:  python3 -m web.app
-Opens http://localhost:8080 in your default browser.
+Opens the UI in a native window (pywebview). Set EXPENSE_AUTOMATOR_USE_BROWSER=1 for a browser tab.
 """
 
 from __future__ import annotations
@@ -4253,10 +4253,25 @@ if __name__ == "__main__":
     _kill_existing_on_port(8080)
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(
-        title="Expense Automator",
-        port=8080,
-        reload=False,
-        show=True,
-        favicon="💰",
+    _browser = os.environ.get("EXPENSE_AUTOMATOR_USE_BROWSER", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
     )
+    if _browser:
+        ui.run(
+            title="Expense Automator",
+            port=8080,
+            reload=False,
+            show=True,
+            favicon="💰",
+        )
+    else:
+        ui.run(
+            title="Expense Automator",
+            port=8080,
+            reload=False,
+            native=True,
+            window_size=(1280, 800),
+            favicon="💰",
+        )

@@ -120,7 +120,7 @@ Make sure you still see `(.venv-rpa)` in your terminal. If you don't, re-activat
 python -m web
 ```
 
-A browser window will automatically open to **http://localhost:8080**.
+The app opens in a **native window** (not a separate browser tab). To use your default browser instead—for example to open devtools—set `EXPENSE_AUTOMATOR_USE_BROWSER=1` before running `python -m web`.
 
 **On first launch the app will ask you to enter your credentials** — Oracle portal URL, username, password, and your OpenAI API key. The rest of the tool stays locked until you do this. Fill them in on the Settings page, click **Save Settings**, and you're ready to go.
 

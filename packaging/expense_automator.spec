@@ -22,6 +22,7 @@ hiddenimports: list[str] = []
 for pkg in (
     "playwright",
     "nicegui",
+    "webview",
     "uvicorn",
     "starlette",
     "websockets",
