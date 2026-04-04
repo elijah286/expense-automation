@@ -45,6 +45,13 @@ if not _env_file.exists() and _env_example is not None and _env_example.exists()
 
 load_dotenv(_env_file)
 
+try:
+    import keychain_credentials
+
+    keychain_credentials.warm_up()
+except Exception:
+    pass
+
 from web.app import _kill_existing_on_port  # noqa: E402 — triggers page registration
 from nicegui import ui  # noqa: E402
 

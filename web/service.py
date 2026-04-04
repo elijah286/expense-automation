@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shutil
-import threading
 import uuid as _uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,6 +37,7 @@ from expense_lines_cache import (
     save_analyses_snapshot,
     soft_delete_report,
 )
+import keychain_credentials
 from classification.service import classify_transactions
 
 APP_DIR = Path.home() / ".expense-automator"
@@ -154,11 +154,6 @@ def _float_safe(val: Any, default: float = 0.0) -> float:
 class ExpenseService:
     def __init__(self, app_dir: Path | None = None):
         self.app_dir = app_dir or APP_DIR
-        # Avoid repeated macOS keychain prompts: each keyring.get_password can trigger a dialog
-        # until the user chooses "Always Allow". Cache secrets for this process after first read.
-        self._keyring_lock = threading.Lock()
-        self._openai_key_cache: str | None = None
-        self._expense_password_cache: str | None = None
 
     # ------------------------------------------------------------------
     # Reads
@@ -1494,61 +1489,34 @@ class ExpenseService:
             return {}
 
     def _get_openai_key(self) -> str:
-        with self._keyring_lock:
-            if self._openai_key_cache is not None:
-                return self._openai_key_cache
-            try:
-                import keyring
-                val = keyring.get_password("expense-automator", "openai_api_key") or ""
-                if val:
-                    self._openai_key_cache = val.strip()
-                    return self._openai_key_cache
-            except Exception:
-                pass
-            raw = self._load_settings_raw()
-            if raw.get("openai_api_key"):
-                self._openai_key_cache = str(raw["openai_api_key"]).strip()
-                return self._openai_key_cache
-            self._openai_key_cache = os.environ.get("OPENAI_API_KEY", "") or ""
-            return self._openai_key_cache
+        try:
+            val = keychain_credentials.get_keychain_openai_key()
+            if val:
+                return val.strip()
+        except Exception:
+            pass
+        raw = self._load_settings_raw()
+        if raw.get("openai_api_key"):
+            return str(raw["openai_api_key"]).strip()
+        return os.environ.get("OPENAI_API_KEY", "") or ""
 
     def _set_openai_key(self, key: str) -> str | None:
         stripped = key.strip()
-        try:
-            import keyring
-            keyring.set_password("expense-automator", "openai_api_key", key)
-            with self._keyring_lock:
-                self._openai_key_cache = stripped
-        except Exception as e:
-            raw = self._load_settings_raw()
-            raw["openai_api_key"] = key
-            self._settings_path().write_text(
-                json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-            with self._keyring_lock:
-                self._openai_key_cache = stripped
-            return f"Saved to settings file (keychain unavailable: {e})"
-        return None
+        err = keychain_credentials.set_keychain_openai_key(key)
+        if err is None:
+            return None
+        raw = self._load_settings_raw()
+        raw["openai_api_key"] = key
+        self._settings_path().write_text(
+            json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return f"Saved to settings file (keychain unavailable: {err})"
 
     def _get_expense_password(self) -> str:
-        with self._keyring_lock:
-            if self._expense_password_cache is not None:
-                return self._expense_password_cache
-            try:
-                import keyring
-                self._expense_password_cache = (
-                    keyring.get_password("expense-automator", "expense_portal_password") or ""
-                ).strip()
-            except Exception:
-                self._expense_password_cache = ""
-            return self._expense_password_cache
+        try:
+            return keychain_credentials.get_keychain_expense_password()
+        except Exception:
+            return ""
 
     def _set_expense_password(self, password: str) -> str | None:
-        try:
-            import keyring
-            keyring.set_password("expense-automator", "expense_portal_password", password)
-            with self._keyring_lock:
-                self._expense_password_cache = password.strip()
-        except Exception as e:
-            return f"Could not save password to keychain: {e}"
-        return None
+        return keychain_credentials.set_keychain_expense_password(password)

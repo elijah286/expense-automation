@@ -34,7 +34,7 @@ except ImportError:
     ImageOps = None  # type: ignore[misc, assignment]
     ImageTk = None  # type: ignore[misc, assignment]
 
-import keyring
+import keychain_credentials
 from dotenv import load_dotenv
 from playwright.sync_api import (
     Browser,
@@ -115,9 +115,6 @@ SETTINGS_FILE = APP_DIR / "settings.json"
 STATE_FILE = APP_DIR / "state.json"
 UI_LAYOUT_FILE = APP_DIR / "ui_layout.json"
 VENDOR_EXPENSE_CACHE_FILE = APP_DIR / "vendor_expense_types.json"
-KEYRING_SERVICE = "expense-automator"
-KEYRING_USERNAME = "openai_api_key"
-KEYRING_EXPENSE_PASSWORD = "expense_portal_password"
 ENV_OPENAI_KEY = "OPENAI_API_KEY"
 SETTINGS_OPENAI_KEY = "openai_api_key"
 DEBUG_LOG_PATH = Path("/Users/elijahkerry/expense-automator/.cursor/debug-c7332b.log")
@@ -127,6 +124,11 @@ INCLUDE_UNCHECKED = "[ ]"
 AUTO_INCLUDE_CONFIDENCE_THRESHOLD = REVIEW_CONFIDENCE_THRESHOLD
 
 load_dotenv()
+
+try:
+    keychain_credentials.warm_up()
+except Exception:
+    pass
 
 # Ordered resume anchors for Step 3 (create expense report). Keys must match _execute_populate_from phases.
 POPULATE_RESUME_STEPS: list[tuple[str, str]] = [
@@ -3690,13 +3692,8 @@ class ReceiptAutomationUI:
     def _try_set_keyring_value(self, api_key: str) -> str | None:
         try:
             if api_key:
-                keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, api_key)
-            else:
-                try:
-                    keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
-                except Exception:
-                    # If the key does not exist yet, treat this as cleared.
-                    pass
+                return keychain_credentials.set_keychain_openai_key(api_key)
+            keychain_credentials.delete_keychain_openai_key()
             return None
         except Exception as exc:
             return str(exc)
@@ -3706,7 +3703,7 @@ class ReceiptAutomationUI:
             return self._openai_key_cache
 
         try:
-            keychain_value = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME) or ""
+            keychain_value = keychain_credentials.get_keychain_openai_key() or ""
             if keychain_value:
                 self._openai_key_cache = keychain_value.strip()
                 return self._openai_key_cache
@@ -3729,7 +3726,7 @@ class ReceiptAutomationUI:
         if self._expense_password_cache:
             return self._expense_password_cache
         try:
-            value = keyring.get_password(KEYRING_SERVICE, KEYRING_EXPENSE_PASSWORD) or ""
+            value = keychain_credentials.get_keychain_expense_password() or ""
             if value:
                 self._expense_password_cache = value
                 return self._expense_password_cache
@@ -3742,12 +3739,11 @@ class ReceiptAutomationUI:
         self._expense_password_cache = normalized
         try:
             if normalized:
-                keyring.set_password(KEYRING_SERVICE, KEYRING_EXPENSE_PASSWORD, normalized)
+                err = keychain_credentials.set_keychain_expense_password(normalized)
             else:
-                try:
-                    keyring.delete_password(KEYRING_SERVICE, KEYRING_EXPENSE_PASSWORD)
-                except Exception:
-                    pass
+                err = keychain_credentials.delete_keychain_expense_password()
+            if err:
+                return err
             return None
         except Exception as exc:
             return (
