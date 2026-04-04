@@ -58,20 +58,23 @@ from nicegui import ui  # noqa: E402
 WEB_PORT = 8080
 _kill_existing_on_port(WEB_PORT)
 
-# Native window (pywebview / WKWebView on macOS) instead of the default browser tab.
-# Set EXPENSE_AUTOMATOR_USE_BROWSER=1 to open in the system browser (e.g. devtools).
-_use_browser = os.environ.get("EXPENSE_AUTOMATOR_USE_BROWSER", "").strip().lower() in (
+# Default: open the system browser (single process → one Dock icon on macOS).
+# NiceGUI native mode runs pywebview in a separate multiprocessing process, which often
+# adds extra Python/WebKit icons in the Dock.
+# Set EXPENSE_AUTOMATOR_NATIVE=1 for an embedded window (may show multiple Dock icons).
+_use_native = os.environ.get("EXPENSE_AUTOMATOR_NATIVE", "").strip().lower() in (
     "1",
     "true",
     "yes",
 )
 
-if _use_browser:
+if _use_native:
     ui.run(
         title="Expense Automator",
         port=WEB_PORT,
         reload=False,
-        show=True,
+        native=True,
+        window_size=(1280, 800),
         favicon="💰",
     )
 else:
@@ -79,7 +82,6 @@ else:
         title="Expense Automator",
         port=WEB_PORT,
         reload=False,
-        native=True,
-        window_size=(1280, 800),
+        show=True,
         favicon="💰",
     )
