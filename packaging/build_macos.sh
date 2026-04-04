@@ -36,6 +36,7 @@ python -m pip install -q -U pip
 python -m pip install -q -r requirements.txt -r requirements-build.txt
 
 python "$ROOT/packaging/generate_icons.py"
+python "$ROOT/packaging/generate_dmg_background.py"
 
 BUNDLE_DIR="$ROOT/packaging/build/ms-playwright"
 export PLAYWRIGHT_BROWSERS_PATH="$BUNDLE_DIR"
@@ -71,6 +72,8 @@ cp -R "$APP" "$DMG_STAGE/"
 if command -v create-dmg >/dev/null 2>&1; then
   create-dmg \
     --volname "Expense Automator" \
+    --volicon "$ROOT/packaging/icons/ExpenseAutomator.icns" \
+    --background "$ROOT/packaging/dmg_background.png" \
     --window-pos 200 120 \
     --window-size 660 420 \
     --icon-size 90 \
@@ -81,7 +84,7 @@ if command -v create-dmg >/dev/null 2>&1; then
     "$DMG_STAGE"
 else
   echo "create-dmg not found; using hdiutil with a symlink to /Applications." >&2
-  echo "Install create-dmg for a nicer layout: brew install create-dmg" >&2
+  echo "Install create-dmg for the arrow background + layout: brew install create-dmg" >&2
   ln -sf /Applications "$DMG_STAGE/Applications"
   hdiutil create -volname "Expense Automator" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG"
 fi

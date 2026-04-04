@@ -29,7 +29,7 @@ Outputs:
 
 Playwright’s Chromium bundle is copied into `Contents/Resources/ms-playwright` (it is not embedded by PyInstaller; nested browser `.app` bundles break codesign).
 
-The DMG includes a shortcut to **Applications** so users can drag the app there (if `create-dmg` is installed, the window layout is tuned for that; otherwise `hdiutil` adds the same symlink with a simpler layout).
+The DMG uses **[create-dmg](https://github.com/create-dmg/create-dmg)** when installed (`brew install create-dmg`): custom **background** (arrow + “Drag to Applications…” text), **volume icon**, and an **Applications** drop link. Without `create-dmg`, the script falls back to `hdiutil` (symlink only, no background art).
 
 First launch: macOS may show a security prompt for an unsigned app. Control-click → Open, or allow in **System Settings → Privacy & Security**.
 
