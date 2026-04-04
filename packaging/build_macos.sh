@@ -61,17 +61,31 @@ cp -R "$BUNDLE_DIR" "$RES/ms-playwright"
 
 DMG="$ROOT/dist/Expense Automator.dmg"
 rm -f "$DMG"
+
+# Staging folder: only the .app (create-dmg adds the Applications link itself).
+DMG_STAGE="$ROOT/dist/.dmg-staging"
+rm -rf "$DMG_STAGE"
+mkdir -p "$DMG_STAGE"
+cp -R "$APP" "$DMG_STAGE/"
+
 if command -v create-dmg >/dev/null 2>&1; then
-  create-dmg --volname "Expense Automator" "$DMG" "$ROOT/dist"
+  create-dmg \
+    --volname "Expense Automator" \
+    --window-pos 200 120 \
+    --window-size 660 420 \
+    --icon-size 90 \
+    --icon "Expense Automator.app" 160 200 \
+    --hide-extension "Expense Automator.app" \
+    --app-drop-link 480 200 \
+    "$DMG" \
+    "$DMG_STAGE"
 else
-  echo "create-dmg not found; building a plain DMG with hdiutil"
-  TMP_DMG="$ROOT/dist/.tmp-dmg"
-  rm -rf "$TMP_DMG"
-  mkdir -p "$TMP_DMG"
-  cp -R "$APP" "$TMP_DMG/"
-  hdiutil create -volname "Expense Automator" -srcfolder "$TMP_DMG" -ov -format UDZO "$DMG"
-  rm -rf "$TMP_DMG"
+  echo "create-dmg not found; using hdiutil with a symlink to /Applications." >&2
+  echo "Install create-dmg for a nicer layout: brew install create-dmg" >&2
+  ln -sf /Applications "$DMG_STAGE/Applications"
+  hdiutil create -volname "Expense Automator" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG"
 fi
+rm -rf "$DMG_STAGE"
 
 echo "Built: $APP"
 echo "Disk image: $DMG"
