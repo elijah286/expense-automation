@@ -2,11 +2,12 @@
 Expense Automator — Modern Web UI (NiceGUI).
 
 Run:  python3 -m web.app
-Opens the UI in your default browser by default (one Dock icon). Set EXPENSE_AUTOMATOR_NATIVE=1 for an embedded window (extra Dock icons possible).
+macOS `.app`: embedded pywebview window (see `web/macos_single_process_webview.py`). From source, the default is usually the system browser unless `EXPENSE_AUTOMATOR_EMBEDDED=1`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -24,6 +25,13 @@ from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS
 from web.activity_log import activity_log
 
 svc = ExpenseService()
+
+
+@app.on_startup
+async def _warm_keychain_credentials() -> None:
+    """Load Keychain after the server is up so launch is not blocked on the main thread."""
+    await asyncio.to_thread(keychain_credentials.warm_up)
+
 
 # Background task tracking
 _task_lock = threading.Lock()
@@ -284,11 +292,77 @@ CUSTOM_CSS = """
     --color-medium: #d97706;
     --color-low: #dc2626;
     --color-unmatched: #6b7280;
+
+    --bg-page: #f1f5f9;
+    --bg-card: #ffffff;
+    --bg-surface: #f8fafc;
+    --bg-row-hover: #f8fafc;
+    --bg-row-hover-blue: #f0f7ff;
+    --bg-row-selected: #eff6ff;
+
+    --text-primary: #0f172a;
+    --text-secondary: #1e293b;
+    --text-body: #334155;
+    --text-muted: #64748b;
+    --text-subtle: #94a3b8;
+
+    --border-default: #e2e8f0;
+    --border-subtle: #f1f5f9;
+
+    --badge-high-bg: #dcfce7;
+    --badge-high-color: #15803d;
+    --badge-medium-bg: #fef3c7;
+    --badge-medium-color: #b45309;
+    --badge-low-bg: #fee2e2;
+    --badge-low-color: #b91c1c;
+    --badge-unmatched-bg: #f1f5f9;
+    --badge-unmatched-color: #64748b;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-page: #0a1628;
+        --bg-card: #1e293b;
+        --bg-surface: #162032;
+        --bg-row-hover: #243147;
+        --bg-row-hover-blue: #1a2f4a;
+        --bg-row-selected: #1a2f4a;
+
+        --text-primary: #f1f5f9;
+        --text-secondary: #e2e8f0;
+        --text-body: #cbd5e1;
+        --text-muted: #94a3b8;
+        --text-subtle: #64748b;
+
+        --border-default: #334155;
+        --border-subtle: #253347;
+
+        --badge-high-bg: rgba(22,163,74,0.15);
+        --badge-high-color: #4ade80;
+        --badge-medium-bg: rgba(217,119,6,0.15);
+        --badge-medium-color: #fbbf24;
+        --badge-low-bg: rgba(220,38,38,0.15);
+        --badge-low-color: #f87171;
+        --badge-unmatched-bg: rgba(100,116,139,0.15);
+        --badge-unmatched-color: #94a3b8;
+    }
+}
+
+html {
+    overscroll-behavior: none;
 }
 
 body {
     font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
-    background: #f1f5f9 !important;
+    background: var(--bg-page) !important;
+    overscroll-behavior: none;
+    color: var(--text-primary);
+}
+
+.q-header,
+.q-drawer,
+.q-drawer__content {
+    overscroll-behavior: none;
 }
 
 .q-drawer { background: #0f172a !important; }
@@ -301,10 +375,47 @@ body {
     max-width: 1400px;
     margin: 0 auto;
     padding: 32px 40px 52px;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+}
+
+/* Title + primary actions: wrap so buttons are never clipped at the window edge */
+.page-hero-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 1rem 1.5rem;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 1.5rem;
+}
+.page-hero-title {
+    min-width: 0;
+    flex: 1 1 200px;
+}
+.page-hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-left: auto;
+    max-width: 100%;
+    min-width: 0;
+}
+.page-hero-actions.column-end {
+    align-items: flex-end;
+}
+.page-hero-actions.is-stack {
+    flex-direction: column;
+    align-items: flex-end;
+    align-self: flex-end;
 }
 
 .stat-card {
-    background: white;
+    background: var(--bg-card);
     border-radius: 12px;
     padding: 24px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -316,7 +427,7 @@ body {
 }
 .stat-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
 .stat-number { font-size: 2rem; font-weight: 700; line-height: 1.2; }
-.stat-label { font-size: 0.85rem; color: #64748b; margin-top: 4px; font-weight: 500; }
+.stat-label { font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
 
 .confidence-badge {
     display: inline-flex;
@@ -329,13 +440,13 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.03em;
 }
-.badge-high { background: #dcfce7; color: #15803d; }
-.badge-medium { background: #fef3c7; color: #b45309; }
-.badge-low { background: #fee2e2; color: #b91c1c; }
-.badge-unmatched { background: #f1f5f9; color: #64748b; }
+.badge-high { background: var(--badge-high-bg); color: var(--badge-high-color); }
+.badge-medium { background: var(--badge-medium-bg); color: var(--badge-medium-color); }
+.badge-low { background: var(--badge-low-bg); color: var(--badge-low-color); }
+.badge-unmatched { background: var(--badge-unmatched-bg); color: var(--badge-unmatched-color); }
 
 .receipt-card {
-    background: white;
+    background: var(--bg-card);
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -352,7 +463,7 @@ body {
 .receipt-card:hover .remove-doc:hover { color: #ef4444; background: #fef2f2; }
 
 .match-card {
-    background: white;
+    background: var(--bg-card);
     border-radius: 16px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     overflow: hidden;
@@ -360,9 +471,13 @@ body {
 
 .matching-layout, .documents-layout {
     display: grid;
-    grid-template-columns: 1fr 420px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
     gap: 24px;
     align-items: start;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .doc-detail-table {
@@ -377,25 +492,25 @@ body {
     font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: #64748b;
-    background: #f8fafc;
-    border-bottom: 1px solid #e2e8f0;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-default);
 }
 .doc-detail-table td {
     padding: 6px 10px;
-    color: #334155;
-    border-bottom: 1px solid #f1f5f9;
+    color: var(--text-body);
+    border-bottom: 1px solid var(--border-subtle);
     vertical-align: top;
 }
 .doc-detail-table tr:last-child td { border-bottom: none; }
-.doc-detail-label { color: #64748b; font-weight: 500; font-size: 0.78rem; white-space: nowrap; }
+.doc-detail-label { color: var(--text-muted); font-weight: 500; font-size: 0.78rem; white-space: nowrap; }
 .doc-detail-value { font-weight: 500; }
 
 .match-table {
     width: 100%;
     border-collapse: separate;
     border-spacing: 0;
-    background: white;
+    background: var(--bg-card);
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -407,22 +522,22 @@ body {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #64748b;
-    background: #f8fafc;
-    border-bottom: 1px solid #e2e8f0;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-default);
     white-space: nowrap;
 }
 .match-table td {
     padding: 10px 16px;
     font-size: 0.84rem;
-    color: #1e293b;
-    border-bottom: 1px solid #f1f5f9;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
     white-space: nowrap;
 }
 .match-table tr:last-child td { border-bottom: none; }
 .match-table tbody tr { cursor: pointer; transition: background 0.1s; }
-.match-table tbody tr:hover td { background: #f0f7ff; }
-.match-table tbody tr.row-selected td { background: #eff6ff; box-shadow: inset 3px 0 0 #3b82f6; }
+.match-table tbody tr:hover td { background: var(--bg-row-hover-blue); }
+.match-table tbody tr.row-selected td { background: var(--bg-row-selected); box-shadow: inset 3px 0 0 #3b82f6; }
 .match-table tbody tr.row-high td:first-child { box-shadow: inset 3px 0 0 var(--color-high); }
 .match-table tbody tr.row-medium td:first-child { box-shadow: inset 3px 0 0 var(--color-medium); }
 .match-table tbody tr.row-low td:first-child { box-shadow: inset 3px 0 0 var(--color-low); }
@@ -431,10 +546,10 @@ body {
 
 .match-table .cell-merchant { font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .match-table .cell-amount { font-variant-numeric: tabular-nums; font-weight: 500; }
-.match-table .cell-receipt { max-width: 140px; overflow: hidden; text-overflow: ellipsis; color: #64748b; font-size: 0.78rem; }
+.match-table .cell-receipt { max-width: 140px; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); font-size: 0.78rem; }
 
 .detail-panel {
-    background: white;
+    background: var(--bg-card);
     border-radius: 16px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     overflow: hidden;
@@ -443,15 +558,15 @@ body {
 }
 .detail-panel-header {
     padding: 20px 24px 16px;
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid var(--border-subtle);
 }
 .detail-panel-body {
     padding: 20px 24px;
 }
 .detail-panel-actions {
     padding: 16px 24px;
-    border-top: 1px solid #f1f5f9;
-    background: #f8fafc;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-surface);
 }
 
 .status-dot {
@@ -501,8 +616,8 @@ body {
     align-items: center;
     gap: 12px;
     padding: 10px 28px;
-    background: white;
-    border-bottom: 1px solid #e2e8f0;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-default);
     position: sticky;
     top: 0;
     z-index: 5;
@@ -524,13 +639,13 @@ body {
 .section-title {
     font-size: 1.5rem;
     font-weight: 700;
-    color: #0f172a;
+    color: var(--text-primary);
     margin-bottom: 8px;
 }
 
 .section-subtitle {
     font-size: 0.9rem;
-    color: #64748b;
+    color: var(--text-muted);
     margin-bottom: 24px;
 }
 
@@ -538,7 +653,7 @@ body {
     width: 100%;
     border-collapse: separate;
     border-spacing: 0;
-    background: white;
+    background: var(--bg-card);
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -550,30 +665,30 @@ body {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #64748b;
-    background: #f8fafc;
-    border-bottom: 1px solid #e2e8f0;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-default);
 }
 .data-table td {
     padding: 14px 20px;
     font-size: 0.875rem;
-    color: #1e293b;
-    border-bottom: 1px solid #f1f5f9;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
 }
 .data-table tr:last-child td { border-bottom: none; }
-.data-table tr:hover td { background: #f8fafc; }
+.data-table tr:hover td { background: var(--bg-row-hover); }
 
 .empty-state {
     text-align: center;
     padding: 80px 40px;
-    color: #94a3b8;
+    color: var(--text-subtle);
 }
 .empty-state .icon { font-size: 3rem; margin-bottom: 16px; }
-.empty-state .title { font-size: 1.1rem; font-weight: 600; color: #64748b; margin-bottom: 8px; }
+.empty-state .title { font-size: 1.1rem; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
 .empty-state .desc { font-size: 0.9rem; }
 
 .classify-table {
-    background: white;
+    background: var(--bg-card);
     border-radius: 12px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     overflow: hidden;
@@ -583,16 +698,16 @@ body {
     grid-template-columns: 1fr 360px;
     gap: 0;
     padding: 8px 16px;
-    background: #f8fafc;
-    border-bottom: 1px solid #e2e8f0;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-default);
     font-size: 0.75rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #64748b;
+    color: var(--text-muted);
 }
 .classify-header span { cursor: pointer; user-select: none; }
-.classify-header span:hover { color: #334155; }
+.classify-header span:hover { color: var(--text-body); }
 
 .sortable-header {
     cursor: pointer;
@@ -602,34 +717,34 @@ body {
     gap: 2px;
     transition: color 0.15s, background 0.15s;
 }
-.sortable-header:hover { color: #334155; background: #e2e8f0; border-radius: 4px; }
+.sortable-header:hover { color: var(--text-body); background: var(--border-default); border-radius: 4px; }
 .classify-row {
     display: grid;
     grid-template-columns: 1fr 360px;
     gap: 0;
     align-items: center;
     padding: 4px 16px;
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid var(--border-subtle);
     font-size: 0.84rem;
-    color: #1e293b;
+    color: var(--text-secondary);
     transition: background 0.1s;
 }
 .classify-row:last-child { border-bottom: none; }
-.classify-row:hover { background: #f8fafc; }
+.classify-row:hover { background: var(--bg-row-hover); }
 .classify-row .q-field { margin: 0; padding: 0; }
 .classify-row .q-field--dense .q-field__control { min-height: 36px; height: 36px; }
 .classify-row .q-field--dense .q-field__native,
 .classify-row .q-field--dense .q-field__append { min-height: 36px; height: 36px; font-size: 0.84rem; }
 .classify-row .q-field--dense .q-field__label { display: none; }
 .classify-merchant { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.classify-dim { color: #64748b; font-size: 0.8rem; }
+.classify-dim { color: var(--text-muted); font-size: 0.8rem; }
 .classify-warn { font-size: 0.72rem; color: #d97706; margin-top: 1px; }
 .classify-search { margin-bottom: 12px; }
 
 .review-progress {
     height: 8px;
     border-radius: 4px;
-    background: #e2e8f0;
+    background: var(--border-default);
     overflow: hidden;
 }
 .review-progress-fill {
@@ -655,7 +770,7 @@ body {
 
 .txn-checkbox { cursor: pointer; width: 18px; height: 18px; accent-color: #3b82f6; }
 
-.data-table .txn-row-selected td { background: #eff6ff !important; }
+.data-table .txn-row-selected td { background: var(--bg-row-selected) !important; }
 
 .report-inline-select .q-field__control { min-height: 28px !important; padding: 0 6px !important; }
 .report-inline-select .q-field__native { font-size: 0.8rem !important; padding: 2px 0 !important; min-height: 28px !important; }
@@ -823,6 +938,47 @@ body {
     animation: match-spin 0.8s linear infinite;
     vertical-align: middle;
 }
+
+/* ---- Dark mode: Quasar component overrides ---- */
+
+@media (prefers-color-scheme: dark) {
+    /* Top header bar */
+    .q-header { background: var(--bg-card) !important; border-bottom: 1px solid var(--border-default) !important; }
+    .q-header .shadow-sm { box-shadow: 0 1px 0 var(--border-default) !important; }
+
+    /* Page background */
+    .q-page-container, .q-page { background: var(--bg-page) !important; }
+
+    /* Dialogs / cards */
+    .q-dialog .q-card { background: var(--bg-card) !important; color: var(--text-primary) !important; }
+    .q-dialog .q-card .q-card__section { color: var(--text-primary) !important; }
+
+    /* Quasar form fields */
+    .q-field__control { background: var(--bg-surface) !important; }
+    .q-field__control:before { border-color: var(--border-default) !important; }
+    .q-field__native, .q-field__input { color: var(--text-primary) !important; }
+    .q-field__label { color: var(--text-muted) !important; }
+    .q-select__dropdown-icon { color: var(--text-muted) !important; }
+
+    /* Quasar menu / popup (select dropdowns) */
+    .q-menu { background: var(--bg-card) !important; color: var(--text-primary) !important; }
+    .q-item { color: var(--text-primary) !important; }
+    .q-item:hover, .q-item--active { background: var(--bg-row-hover) !important; }
+
+    /* Tailwind utility overrides */
+    .bg-white { background-color: var(--bg-card) !important; }
+    .bg-slate-50 { background-color: var(--bg-surface) !important; }
+    .text-slate-900, .text-slate-800 { color: var(--text-primary) !important; }
+    .text-slate-700, .text-slate-600 { color: var(--text-body) !important; }
+    .text-slate-500 { color: var(--text-muted) !important; }
+    .text-blue-600 { color: #60a5fa !important; }
+    .shadow-sm { box-shadow: 0 1px 3px rgba(0,0,0,0.3) !important; }
+
+    /* Scrollbars on light areas */
+    ::-webkit-scrollbar-track { background: var(--bg-surface); }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+}
 """
 
 
@@ -974,7 +1130,7 @@ def report_header_bar(active_page: str, report_id: str = ""):
 
     with ui.element("div").classes("report-header-bar"):
         ui.label("Report").style(
-            "font-size:0.8rem;font-weight:700;color:#64748b;white-space:nowrap"
+            "font-size:0.8rem;font-weight:700;color:var(--text-muted);white-space:nowrap"
         )
         ui.select(
             options=report_options,
@@ -1019,7 +1175,7 @@ def report_header_bar(active_page: str, report_id: str = ""):
         ).style("font-weight:600;color:#3b82f6")
         ui.button("Manage", on_click=lambda: ui.navigate.to("/transactions")).props(
             "flat dense no-caps size=sm"
-        ).style("font-weight:500;color:#64748b")
+        ).style("font-weight:500;color:var(--text-muted)")
 
         ui.element("div").style("flex:1")
 
@@ -1061,7 +1217,7 @@ def _setup_required_overlay():
         display:flex;align-items:center;justify-content:center;
     ">
       <div style="
-          background:#fff;border-radius:20px;padding:48px 40px;
+          background:var(--bg-card);border-radius:20px;padding:48px 40px;
           max-width:460px;width:90%;text-align:center;
           box-shadow:0 25px 50px rgba(0,0,0,0.25);
       ">
@@ -1073,20 +1229,20 @@ def _setup_required_overlay():
         ">
           <span class="material-icons" style="color:#fff;font-size:32px">lock</span>
         </div>
-        <div style="font-size:1.35rem;font-weight:700;color:#0f172a;margin-bottom:8px">
+        <div style="font-size:1.35rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">
           Setup Required
         </div>
-        <div style="color:#475569;font-size:0.95rem;line-height:1.6;margin-bottom:20px">
+        <div style="color:var(--text-muted);font-size:0.95rem;line-height:1.6;margin-bottom:20px">
           Before you can use the tool, enter your credentials in <b>Settings</b>.
         </div>
         <div style="
-            text-align:left;background:#f8fafc;border-radius:12px;
+            text-align:left;background:var(--bg-surface);border-radius:12px;
             padding:16px 20px;margin-bottom:24px;
         ">
-          <div style="font-size:0.8rem;font-weight:600;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">
+          <div style="font-size:0.8rem;font-weight:600;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">
             Still needed
           </div>
-          <ul style="margin:0;padding-left:20px;color:#334155;font-size:0.9rem;line-height:1.8">
+          <ul style="margin:0;padding-left:20px;color:var(--text-body);font-size:0.9rem;line-height:1.8">
             {missing_html}
           </ul>
         </div>
@@ -1101,8 +1257,35 @@ def _setup_required_overlay():
     """)
 
 
+_DARK_MODE_JS = """<script>
+(function () {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    function applyDark(dark) {
+        if (window.Quasar && window.Quasar.Dark) {
+            window.Quasar.Dark.set(dark);
+        }
+    }
+    var attempts = 0;
+    function init() {
+        if (window.Quasar && window.Quasar.Dark) {
+            applyDark(mq.matches);
+            mq.addEventListener('change', function (e) { applyDark(e.matches); });
+        } else if (attempts++ < 60) {
+            setTimeout(init, 100);
+        }
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
+</script>"""
+
+
 def page_frame(active: str, report_id: str = ""):
     ui.add_head_html(f"<style>{CUSTOM_CSS}</style>")
+    ui.add_head_html(_DARK_MODE_JS)
     nav_drawer = shared_nav(active, report_id)
     shared_header(nav_drawer)
     _build_terminal()
@@ -1138,11 +1321,11 @@ def page_dashboard():
 
         # Workflow guidance
         with ui.card().classes("w-full").style(
-            "border-radius: 16px; padding: 32px; border: 2px solid #e2e8f0"
+            "border-radius: 16px; padding: 32px; border: 2px solid var(--border-default)"
         ):
             if stats.total_transactions == 0:
                 ui.html(
-                    '<div style="font-size:1.1rem;font-weight:600;color:#0f172a;margin-bottom:8px">'
+                    '<div style="font-size:1.1rem;font-weight:600;color:var(--text-primary);margin-bottom:8px">'
                     "Get Started</div>"
                 )
                 ui.label(
@@ -1151,7 +1334,7 @@ def page_dashboard():
                 ).classes("text-slate-500")
             elif stats.unmatched > 0:
                 ui.html(
-                    '<div style="font-size:1.1rem;font-weight:600;color:#0f172a;margin-bottom:8px">'
+                    '<div style="font-size:1.1rem;font-weight:600;color:var(--text-primary);margin-bottom:8px">'
                     f'{stats.unmatched} transaction{"s" if stats.unmatched != 1 else ""} need matching</div>'
                 )
                 ui.label(
@@ -1171,7 +1354,7 @@ def page_dashboard():
             elif stats.approved < stats.total_transactions:
                 pending = stats.total_transactions - stats.approved
                 ui.html(
-                    '<div style="font-size:1.1rem;font-weight:600;color:#0f172a;margin-bottom:8px">'
+                    '<div style="font-size:1.1rem;font-weight:600;color:var(--text-primary);margin-bottom:8px">'
                     f"{pending} match{'es' if pending != 1 else ''} pending approval</div>"
                 )
                 ui.label("Review and approve matches to proceed.").classes(
@@ -1356,14 +1539,15 @@ def page_documents(request: Request):
             header_container.clear()
             with header_container:
                 # Header row
-                with ui.row().classes("items-center justify-between w-full mb-6"):
-                    with ui.column().classes("gap-0"):
-                        ui.html('<div class="section-title">Documents</div>')
-                        ui.html(
-                            '<div class="section-subtitle" style="margin-bottom:0">'
-                            "Imported receipts and their extracted data</div>"
-                        )
-                    with ui.row().classes("items-center gap-3"):
+                with ui.element("div").classes("page-hero-row"):
+                    with ui.element("div").classes("page-hero-title"):
+                        with ui.column().classes("gap-0"):
+                            ui.html('<div class="section-title">Documents</div>')
+                            ui.html(
+                                '<div class="section-subtitle" style="margin-bottom:0">'
+                                "Imported receipts and their extracted data</div>"
+                            )
+                    with ui.element("div").classes("page-hero-actions"):
                         if used_count:
                             ui.button(
                                 f"Remove Used ({used_count})",
@@ -1531,8 +1715,8 @@ def page_documents(request: Request):
                         with ui.element("div").style(
                             "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px;"
                             "gap:0;padding:8px 20px;font-size:0.7rem;font-weight:700;text-transform:uppercase;"
-                            "letter-spacing:0.06em;color:#64748b;align-items:center;"
-                            "background:#f8fafc;border-bottom:2px solid #e2e8f0;border-radius:8px 8px 0 0;"
+                            "letter-spacing:0.06em;color:var(--text-muted);align-items:center;"
+                            "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
                             "position:sticky;top:0;z-index:10;"
                         ):
                             ui.element("div")
@@ -1699,7 +1883,7 @@ def page_documents(request: Request):
                         rotation = doc.rotation * 90
                         with ui.element("div").style(
                             "width:100%;max-height:260px;overflow:hidden;"
-                            "border-radius:8px;border:1px solid #e2e8f0;cursor:pointer;"
+                            "border-radius:8px;border:1px solid var(--border-default);cursor:pointer;"
                         ).on("click", lambda _, d=doc: _open_receipt_viewer(d)):
                             img_style = "width:100%;height:100%;object-fit:contain;"
                             if rotation:
@@ -1707,8 +1891,8 @@ def page_documents(request: Request):
                             ui.image(_img_url(doc.source_file)).style(img_style)
                     elif Path(doc.source_file).is_file():
                         with ui.element("div").style(
-                            "height:100px;background:#f8fafc;border-radius:8px;"
-                            "border:1px solid #e2e8f0;display:flex;align-items:center;"
+                            "height:100px;background:var(--bg-surface);border-radius:8px;"
+                            "border:1px solid var(--border-default);display:flex;align-items:center;"
                             "justify-content:center;gap:8px;cursor:pointer;"
                         ).on("click", lambda _, d=doc: _open_receipt_viewer(d)):
                             ui.icon("picture_as_pdf").classes("text-2xl text-slate-400")
@@ -1804,8 +1988,8 @@ def page_documents(request: Request):
                     notes = raw.get("notes") or doc.notes
                     if notes and str(notes).strip():
                         with ui.element("div").style(
-                            "margin-top:16px;padding:12px;background:#f8fafc;"
-                            "border-radius:8px;border:1px solid #f1f5f9;"
+                            "margin-top:16px;padding:12px;background:var(--bg-surface);"
+                            "border-radius:8px;border:1px solid var(--border-subtle);"
                         ):
                             ui.label("Notes").classes(
                                 "text-xs font-semibold text-slate-400 tracking-wider mb-1"
@@ -1918,7 +2102,7 @@ def _receipt_row(
             )
         else:
             with ui.element("div").style(
-                "width:72px;height:56px;background:#f1f5f9;"
+                "width:72px;height:56px;background:var(--border-subtle);"
                 "display:flex;align-items:center;justify-content:center;"
                 "cursor:pointer;"
             ).on("click", lambda _, cb=row_click: cb() if cb else None):
@@ -1997,8 +2181,8 @@ def _receipt_row(
             else:
                 ui.html(
                     '<span style="display:inline-flex;align-items:center;gap:4px;'
-                    'padding:2px 8px;border-radius:12px;background:#f1f5f9;'
-                    'color:#64748b;font-size:0.7rem;font-weight:600">'
+                    'padding:2px 8px;border-radius:12px;background:var(--badge-unmatched-bg);'
+                    'color:var(--badge-unmatched-color);font-size:0.7rem;font-weight:600">'
                     '<span class="material-icons" style="font-size:0.85rem">link_off</span>'
                     'Unmatched</span>'
                 )
@@ -2020,19 +2204,23 @@ _VIEWER_JS = """
             "translate("+tx+"px,"+ty+"px) scale("+scale+") rotate("+rot+"deg)";
     }
 
-    function fit() {
+    function fit(retries) {
+        retries = retries || 0;
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
-        if (!nw || !nh || !cw || !ch) return;
+        if (!nw || !nh || !cw || !ch) {
+            if (retries < 20) requestAnimationFrame(function() { fit(retries + 1); });
+            return;
+        }
         const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
-        scale = Math.min((cw-32)/ew, (ch-32)/eh, 1);
+        scale = Math.min((cw-32)/ew, (ch-32)/eh);
         tx = (cw - nw*scale)/2;
         ty = (ch - nh*scale)/2;
         apply();
     }
 
     if (img.complete && img.naturalWidth) fit();
-    else img.onload = fit;
+    else img.onload = function() { fit(); };
 
     ctr._vzoom = function(f) {
         const cw=ctr.clientWidth/2, ch=ctr.clientHeight/2;
@@ -2043,7 +2231,7 @@ _VIEWER_JS = """
     ctr.addEventListener("wheel", function(e) {
         e.preventDefault();
         const r=ctr.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
-        const f = e.deltaY<0 ? 1.15 : 1/1.15;
+        const f = Math.exp(-e.deltaY * 0.0025);
         tx=mx-f*(mx-tx); ty=my-f*(my-ty); scale*=f; apply();
     }, {passive:false});
 
@@ -2078,24 +2266,28 @@ _CARD_PREVIEW_JS = """
             "translate("+tx+"px,"+ty+"px) scale("+scale+") rotate("+rot+"deg)";
     }
 
-    function fit() {
+    function fit(retries) {
+        retries = retries || 0;
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
-        if (!nw || !nh || !cw || !ch) return;
+        if (!nw || !nh || !cw || !ch) {
+            if (retries < 20) requestAnimationFrame(function() { fit(retries + 1); });
+            return;
+        }
         const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
-        scale = Math.min(cw/ew, ch/eh, 1);
+        scale = Math.min(cw/ew, ch/eh);
         tx = (cw - nw*scale)/2;
         ty = (ch - nh*scale)/2;
         apply();
     }
 
     if (img.complete && img.naturalWidth) fit();
-    else img.onload = fit;
+    else img.onload = function() { fit(); };
 
     ctr.addEventListener("wheel", function(e) {
         e.preventDefault();
         const r = ctr.getBoundingClientRect(), mx = e.clientX-r.left, my = e.clientY-r.top;
-        const f = e.deltaY<0 ? 1.15 : 1/1.15;
+        const f = Math.exp(-e.deltaY * 0.0025);
         tx = mx-f*(mx-tx); ty = my-f*(my-ty); scale *= f; apply();
     }, {passive:false});
 
@@ -2187,7 +2379,7 @@ def _open_receipt_viewer(doc: ReceiptDoc):
     ):
         # Toolbar
         with ui.row().classes("items-center justify-between w-full px-4 py-3 bg-slate-50").style(
-            "flex-shrink:0;border-bottom:1px solid #e2e8f0"
+            "flex-shrink:0;border-bottom:1px solid var(--border-default)"
         ):
             ui.label(doc.vendor or doc.filename).classes("text-lg font-semibold text-slate-800")
             with ui.row().classes("items-center gap-2"):
@@ -2205,7 +2397,7 @@ def _open_receipt_viewer(doc: ReceiptDoc):
             with ui.element("div").style("flex:1 1 0;min-height:0;position:relative;width:100%"):
                 ui.html(
                     f'<div id="{container_id}" style="position:absolute;top:0;left:0;right:0;bottom:0;overflow:hidden;'
-                    f'cursor:grab;background:#f8fafc;">'
+                    f'cursor:grab;background:var(--bg-surface);">'
                     f'<img src="{img_src}" style="transform-origin:0 0;position:absolute;'
                     f'top:0;left:0;user-select:none;pointer-events:none;" />'
                     f'</div>'
@@ -2221,10 +2413,10 @@ def _open_receipt_viewer(doc: ReceiptDoc):
             js = _VIEWER_JS.replace("__CID__", container_id).replace("__ROT__", str(rotation))
 
             zoom_in_btn.on("click", lambda: ui.run_javascript(
-                f'document.getElementById("{container_id}")?._vzoom(1.3)'
+                f'document.getElementById("{container_id}")?._vzoom(1.2)'
             ))
             zoom_out_btn.on("click", lambda: ui.run_javascript(
-                f'document.getElementById("{container_id}")?._vzoom(1/1.3)'
+                f'document.getElementById("{container_id}")?._vzoom(1/1.2)'
             ))
             fit_btn.on("click", lambda: ui.run_javascript(
                 f'document.getElementById("{container_id}")?._vreset()'
@@ -2243,11 +2435,11 @@ def _open_receipt_viewer(doc: ReceiptDoc):
             import json as _json
             raw_json = _json.dumps(doc.raw_analysis, indent=2, ensure_ascii=False)
             with ui.expansion("LLM Response", icon="smart_toy").classes("w-full").style(
-                "flex-shrink:0;border-top:1px solid #e2e8f0"
+                "flex-shrink:0;border-top:1px solid var(--border-default)"
             ).props("dense header-class='text-xs font-semibold text-slate-500 bg-slate-50 px-6 py-1'"):
                 ui.html(
                     f'<pre style="margin:0;padding:12px 24px;font-size:0.78rem;line-height:1.5;'
-                    f'color:#334155;background:#f8fafc;overflow-x:auto;white-space:pre-wrap;'
+                    f'color:var(--text-body);background:var(--bg-surface);overflow-x:auto;white-space:pre-wrap;'
                     f'word-break:break-word;max-height:300px;overflow-y:auto">'
                     f'{raw_json}</pre>'
                 )
@@ -2291,14 +2483,15 @@ def page_transactions(request: Request):
         }
 
         # ---- Header with title + scrape button + report management ----
-        with ui.row().classes("items-center justify-between w-full mb-6"):
-            with ui.column().classes("gap-0"):
-                ui.html('<div class="section-title">Transactions</div>')
-                ui.html(
-                    '<div class="section-subtitle" style="margin-bottom:0">'
-                    "Scraped from Oracle expense portal — organize into expense reports</div>"
-                )
-            with ui.column().classes("gap-3 items-end"):
+        with ui.element("div").classes("page-hero-row"):
+            with ui.element("div").classes("page-hero-title"):
+                with ui.column().classes("gap-0"):
+                    ui.html('<div class="section-title">Transactions</div>')
+                    ui.html(
+                        '<div class="section-subtitle" style="margin-bottom:0">'
+                        "Scraped from Oracle expense portal — organize into expense reports</div>"
+                    )
+            with ui.element("div").classes("page-hero-actions column-end is-stack"):
                 def _start_scrape():
                     def _do_scrape(on_status):
                         return svc.run_scrape(on_status=on_status)
@@ -2315,8 +2508,8 @@ def page_transactions(request: Request):
                     on_click=_start_scrape,
                 ).props("no-caps unelevated color=primary").classes("action-btn")
                 with ui.element("div").style(
-                    "border-radius:10px;padding:12px 16px;background:#f8fafc;"
-                    "border:1px solid #e2e8f0;display:flex;align-items:center;gap:10px"
+                    "border-radius:10px;padding:12px 16px;background:var(--bg-surface);"
+                    "border:1px solid var(--border-default);display:flex;align-items:center;gap:10px"
                 ):
                     ui.icon("vpn_lock").classes("text-xl text-amber-600")
                     with ui.column().classes("gap-0"):
@@ -2523,9 +2716,9 @@ def page_transactions(request: Request):
                 ):
                     with ui.element("div").style(
                         "display:grid;grid-template-columns:40px 2fr 100px 120px 120px 160px 100px 40px;"
-                        "gap:0;padding:12px 20px;background:#f8fafc;border-bottom:1px solid #e2e8f0;"
+                        "gap:0;padding:12px 20px;background:var(--bg-surface);border-bottom:1px solid var(--border-default);"
                         "font-size:0.75rem;font-weight:600;text-transform:uppercase;"
-                        "letter-spacing:0.05em;color:#64748b;"
+                        "letter-spacing:0.05em;color:var(--text-muted);"
                     ):
                         ui.checkbox(
                             value=all_selected,
@@ -2543,11 +2736,11 @@ def page_transactions(request: Request):
 
                     for t in visible:
                         is_sel = t.line_id in state["selected"]
-                        bg = "background:#eff6ff;" if is_sel else ""
+                        bg = "background:var(--bg-row-selected);" if is_sel else ""
                         with ui.element("div").style(
                             f"display:grid;grid-template-columns:40px 2fr 100px 120px 120px 160px 100px 40px;"
-                            f"gap:0;padding:10px 20px;border-bottom:1px solid #f1f5f9;"
-                            f"align-items:center;font-size:0.875rem;color:#1e293b;"
+                            f"gap:0;padding:10px 20px;border-bottom:1px solid var(--border-subtle);"
+                            f"align-items:center;font-size:0.875rem;color:var(--text-secondary);"
                             f"transition:background 0.1s;{bg}"
                         ):
                             ui.checkbox(
@@ -2823,14 +3016,15 @@ def page_matching(request: Request):
         state: dict[str, Any] = {"selected_lid": None, "filter": "all", "sort_col": None, "sort_asc": True, "search": ""}
 
         # --- Header row ---
-        with ui.row().classes("items-center justify-between w-full mb-6"):
-            with ui.column().classes("gap-0"):
-                ui.html('<div class="section-title">Matching</div>')
-                ui.html(
-                    '<div class="section-subtitle" style="margin-bottom:0">'
-                    "Review receipt matches for every line item</div>"
-                )
-            with ui.row().classes("items-center gap-2"):
+        with ui.element("div").classes("page-hero-row"):
+            with ui.element("div").classes("page-hero-title"):
+                with ui.column().classes("gap-0"):
+                    ui.html('<div class="section-title">Matching</div>')
+                    ui.html(
+                        '<div class="section-subtitle" style="margin-bottom:0">'
+                        "Review receipt matches for every line item</div>"
+                    )
+            with ui.element("div").classes("page-hero-actions"):
                 def _do_approve_all():
                     count = svc.approve_all_high_confidence()
                     if count:
@@ -3118,8 +3312,8 @@ def page_matching(request: Request):
                 with ui.element("div").style(
                     f"display:grid;grid-template-columns:{_MATCH_GRID_COLS};"
                     "gap:0;padding:8px 20px;font-size:0.7rem;font-weight:700;text-transform:uppercase;"
-                    "letter-spacing:0.06em;color:#64748b;align-items:center;"
-                    "background:#f8fafc;border-bottom:2px solid #e2e8f0;border-radius:8px 8px 0 0;"
+                    "letter-spacing:0.06em;color:var(--text-muted);align-items:center;"
+                    "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
                     "position:sticky;top:0;z-index:10;min-width:860px;"
                 ):
                     ui.element("div")
@@ -3147,12 +3341,12 @@ def page_matching(request: Request):
                         "high": "var(--color-high)", "medium": "var(--color-medium)",
                         "low": "var(--color-low)", "unmatched": "var(--color-unmatched)",
                     }
-                    left_accent = f"box-shadow:inset 3px 0 0 {status_colors.get(t.match_status, '#e2e8f0')};"
-                    bg = "background:#eff6ff;" if is_active else ""
+                    left_accent = f"box-shadow:inset 3px 0 0 {status_colors.get(t.match_status, 'var(--border-default)')};"
+                    bg = "background:var(--bg-row-selected);" if is_active else ""
                     row_el = ui.element("div").style(
                         f"display:grid;grid-template-columns:{_MATCH_GRID_COLS};"
-                        f"gap:0;padding:10px 20px;border-bottom:1px solid #f1f5f9;"
-                        f"align-items:center;font-size:0.875rem;color:#1e293b;"
+                        f"gap:0;padding:10px 20px;border-bottom:1px solid var(--border-subtle);"
+                        f"align-items:center;font-size:0.875rem;color:var(--text-secondary);"
                         f"cursor:pointer;transition:background 0.1s;user-select:none;min-width:860px;{bg}{left_accent}"
                     )
                     row_el.on(
@@ -3190,7 +3384,7 @@ def page_matching(request: Request):
 
                         with ui.element("div").style(
                             "overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"
-                            "color:#64748b;font-size:0.75rem"
+                            "color:var(--text-muted);font-size:0.75rem"
                         ):
                             ui.label(t.expense_type or "\u2014").classes(
                                 "text-slate-500" if t.expense_type else "text-slate-300"
@@ -3198,7 +3392,7 @@ def page_matching(request: Request):
 
                         with ui.element("div").style(
                             "overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"
-                            "color:#64748b;font-size:0.78rem"
+                            "color:var(--text-muted);font-size:0.78rem"
                         ):
                             if item.receipt:
                                 if t.approved:
@@ -3346,12 +3540,12 @@ def page_matching(request: Request):
                             preview_cid = f"pv{id(r)}"
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
-                                "border-radius:8px;border:1px solid #e2e8f0;overflow:hidden;"
-                                "background:#f8fafc;"
+                                "border-radius:8px;border:1px solid var(--border-default);overflow:hidden;"
+                                "background:var(--bg-surface);"
                             ).on("click", lambda _, d=r: _open_receipt_viewer(d)):
                                 ui.html(
                                     f'<div id="{preview_cid}" style="position:absolute;top:0;left:0;right:0;bottom:0;'
-                                    f'overflow:hidden;cursor:grab;touch-action:none;background:#f8fafc;">'
+                                    f'overflow:hidden;cursor:grab;touch-action:none;background:var(--bg-surface);">'
                                     f'<img src="{_img_url(r.source_file)}" style="transform-origin:0 0;'
                                     f'position:absolute;top:0;left:0;user-select:none;pointer-events:none;" />'
                                     f'</div>'
@@ -3366,8 +3560,8 @@ def page_matching(request: Request):
                             ui.timer(0.2, lambda _js=_pjs: ui.run_javascript(_js), once=True)
                         else:
                             with ui.element("div").style(
-                                "height:120px;background:#f8fafc;border-radius:8px;"
-                                "border:1px solid #e2e8f0;display:flex;align-items:center;"
+                                "height:120px;background:var(--bg-surface);border-radius:8px;"
+                                "border:1px solid var(--border-default);display:flex;align-items:center;"
                                 "justify-content:center;gap:8px;cursor:pointer;"
                             ).on("click", lambda _, d=r: _open_receipt_viewer(d)):
                                 ui.icon("picture_as_pdf").classes("text-2xl text-slate-400")
@@ -3394,8 +3588,8 @@ def page_matching(request: Request):
                     # Reasoning
                     if t.match_reason:
                         with ui.element("div").style(
-                            "margin-top:16px;padding:12px;background:#f8fafc;"
-                            "border-radius:8px;border:1px solid #f1f5f9;"
+                            "margin-top:16px;padding:12px;background:var(--bg-surface);"
+                            "border-radius:8px;border:1px solid var(--border-subtle);"
                         ):
                             ui.label("Reasoning").classes("text-xs font-semibold text-slate-400 tracking-wider mb-1")
                             ui.label(t.match_reason).classes("text-xs text-slate-600 leading-relaxed")
@@ -3686,7 +3880,7 @@ def _submit_mini_stat(label: str, current: int, total: int, color: str):
     pct = int((current / total) * 100) if total else 0
     with ui.element("div").style("flex:1;min-width:120px"):
         ui.html(
-            f'<div style="font-size:0.65rem;font-weight:600;color:#64748b;'
+            f'<div style="font-size:0.65rem;font-weight:600;color:var(--text-muted);'
             f'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px">{label}</div>'
             f'<div style="font-size:1rem;font-weight:700;color:{color}">{current}/{total}</div>'
             f'<div class="review-progress" style="margin-top:4px;height:4px">'
@@ -3861,11 +4055,17 @@ def page_submit(request: Request):
                         tbl += f"<th>{col}</th>"
                     tbl += "</tr></thead><tbody>"
                     for item in r.attention_items:
+                        _curr = (
+                            f' <span style="color:#94a3b8;font-size:0.75rem"> '
+                            f"{_esc(item.currency)}</span>"
+                            if item.currency and item.currency != "USD"
+                            else ""
+                        )
                         tbl += (
                             f"<tr>"
                             f"<td><strong>{_esc(item.merchant)}</strong></td>"
                             f"<td>{_esc(item.date)}</td>"
-                            f"<td>{_esc(item.amount)}{(' <span style=\"color:#94a3b8;font-size:0.75rem\"> ' + _esc(item.currency) + '</span>') if item.currency and item.currency != 'USD' else ''}</td>"
+                            f"<td>{_esc(item.amount)}{_curr}</td>"
                             f"<td><span style='color:#dc2626;font-weight:500'>"
                             f"{_esc(item.issue)}</span></td>"
                             f"</tr>"
@@ -4001,7 +4201,7 @@ def page_submit(request: Request):
             dlg.open()
 
         with ui.card().classes("w-full mt-6").style(
-            "border-radius:12px;padding:20px;background:#f8fafc;border:1px solid #e2e8f0"
+            "border-radius:12px;padding:20px;background:var(--bg-surface);border:1px solid var(--border-default)"
         ):
             with ui.row().classes("items-center gap-3"):
                 ui.icon("vpn_lock").classes("text-2xl text-amber-600")
@@ -4119,7 +4319,7 @@ def page_settings():
 
             if not pending:
                 with ui.element("div").style(
-                    "background:#f8fafc;border-radius:8px;padding:20px;text-align:center"
+                    "background:var(--bg-surface);border-radius:8px;padding:20px;text-align:center"
                 ):
                     ui.label("No reports pending deletion.").classes(
                         "text-sm text-slate-400"
@@ -4139,7 +4339,7 @@ def page_settings():
                     if not current_pending:
                         with pending_container:
                             with ui.element("div").style(
-                                "background:#f8fafc;border-radius:8px;padding:20px;text-align:center"
+                                "background:var(--bg-surface);border-radius:8px;padding:20px;text-align:center"
                             ):
                                 ui.label("No reports pending deletion.").classes(
                                     "text-sm text-slate-400"
@@ -4253,25 +4453,28 @@ if __name__ == "__main__":
     _kill_existing_on_port(8080)
 
 if __name__ in {"__main__", "__mp_main__"}:
+    from web.macos_single_process_webview import (
+        patch_nicegui_server_run,
+        patch_nicegui_skip_process_pool_on_frozen_macos,
+        use_embedded_webview,
+    )
+
+    patch_nicegui_skip_process_pool_on_frozen_macos()
+    patch_nicegui_server_run()
     _native = os.environ.get("EXPENSE_AUTOMATOR_NATIVE", "").strip().lower() in (
         "1",
         "true",
         "yes",
     )
-    if _native:
-        ui.run(
-            title="Expense Automator",
-            port=8080,
-            reload=False,
-            native=True,
-            window_size=(1280, 800),
-            favicon="💰",
-        )
+    _kw = {
+        "title": "Expense Automator",
+        "port": 8080,
+        "reload": False,
+        "favicon": "💰",
+    }
+    if use_embedded_webview():
+        ui.run(**_kw, show=False, native=False, host="127.0.0.1")
+    elif _native:
+        ui.run(**_kw, native=True, window_size=(1280, 800))
     else:
-        ui.run(
-            title="Expense Automator",
-            port=8080,
-            reload=False,
-            show=True,
-            favicon="💰",
-        )
+        ui.run(**_kw, show=True)
