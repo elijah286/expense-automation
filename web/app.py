@@ -284,8 +284,16 @@ async def api_upload(files: list[UploadFile]) -> JSONResponse:
 # Custom CSS
 # ---------------------------------------------------------------------------
 
+_GOOGLE_FONTS_HTML = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    '<link rel="stylesheet"'
+    ' href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700'
+    "&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    '" media="print" onload="this.media=\'all\'">'
+)
+
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
     --color-high: #16a34a;
@@ -1284,6 +1292,7 @@ _DARK_MODE_JS = """<script>
 
 
 def page_frame(active: str, report_id: str = ""):
+    ui.add_head_html(_GOOGLE_FONTS_HTML)
     ui.add_head_html(f"<style>{CUSTOM_CSS}</style>")
     ui.add_head_html(_DARK_MODE_JS)
     nav_drawer = shared_nav(active, report_id)

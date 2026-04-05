@@ -63,6 +63,24 @@ cp -R "$BUNDLE_DIR" "$RES/ms-playwright"
 DMG="$ROOT/dist/Expense Automator.dmg"
 rm -f "$DMG"
 
+# Illustrated DMG requires create-dmg (sets Finder background + icon positions).
+if ! command -v create-dmg >/dev/null 2>&1; then
+  if command -v brew >/dev/null 2>&1; then
+    echo "Installing create-dmg (brew) for DMG background art..." >&2
+    brew install create-dmg
+  fi
+fi
+if ! command -v create-dmg >/dev/null 2>&1; then
+  if [[ "${ALLOW_PLAIN_DMG:-}" == "1" ]]; then
+    echo "ALLOW_PLAIN_DMG=1: building a plain DMG without background (install create-dmg for Firefox-style layout)." >&2
+  else
+    echo "ERROR: create-dmg is required for the illustrated DMG background." >&2
+    echo "Install: brew install create-dmg" >&2
+    echo "Or set ALLOW_PLAIN_DMG=1 to build a basic DMG without custom art." >&2
+    exit 1
+  fi
+fi
+
 # Staging folder: only the .app (create-dmg adds the Applications link itself).
 DMG_STAGE="$ROOT/dist/.dmg-staging"
 rm -rf "$DMG_STAGE"
@@ -70,21 +88,38 @@ mkdir -p "$DMG_STAGE"
 cp -R "$APP" "$DMG_STAGE/"
 
 if command -v create-dmg >/dev/null 2>&1; then
-  create-dmg \
-    --volname "Expense Automator" \
-    --volicon "$ROOT/packaging/icons/ExpenseAutomator.icns" \
-    --background "$ROOT/packaging/dmg_background.png" \
-    --window-pos 200 120 \
-    --window-size 660 420 \
-    --icon-size 90 \
-    --icon "Expense Automator.app" 160 200 \
-    --hide-extension "Expense Automator.app" \
-    --app-drop-link 480 200 \
-    "$DMG" \
-    "$DMG_STAGE"
+  # Window size must match packaging/dmg_background.png (900×520) and generate_dmg_background.py
+  # Finder AppleScript can time out (-1712) when the system is busy; retry a few times.
+  _attempt=1
+  _max=4
+  while [[ "$_attempt" -le "$_max" ]]; do
+    rm -f "$DMG" 2>/dev/null || true
+    shopt -s nullglob
+    for _rw in "$ROOT"/dist/rw.*.dmg; do rm -f "$_rw"; done
+    shopt -u nullglob
+    if create-dmg \
+      --volname "Expense Automator" \
+      --volicon "$ROOT/packaging/icons/ExpenseAutomator.icns" \
+      --background "$ROOT/packaging/dmg_background.png" \
+      --window-pos 200 120 \
+      --window-size 900 520 \
+      --icon-size 100 \
+      --icon "Expense Automator.app" 200 238 \
+      --hide-extension "Expense Automator.app" \
+      --app-drop-link 700 238 \
+      "$DMG" \
+      "$DMG_STAGE"; then
+      break
+    fi
+    if [[ "$_attempt" -eq "$_max" ]]; then
+      echo "create-dmg failed after $_max attempts (Finder/AppleScript). Close other Disk Images, wait, and retry." >&2
+      exit 1
+    fi
+    echo "create-dmg attempt $_attempt failed; retrying in 8s..." >&2
+    sleep 8
+    _attempt=$((_attempt + 1))
+  done
 else
-  echo "create-dmg not found; using hdiutil with a symlink to /Applications." >&2
-  echo "Install create-dmg for the arrow background + layout: brew install create-dmg" >&2
   ln -sf /Applications "$DMG_STAGE/Applications"
   hdiutil create -volname "Expense Automator" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG"
 fi

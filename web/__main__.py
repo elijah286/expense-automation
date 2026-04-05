@@ -45,43 +45,52 @@ if not _env_file.exists() and _env_example is not None and _env_example.exists()
 
 load_dotenv(_env_file)
 
-try:
-    import keychain_credentials
-
-    keychain_credentials.warm_up()
-except Exception:
-    pass
-
 from web.app import _kill_existing_on_port  # noqa: E402 — triggers page registration
+from web.macos_single_process_webview import (  # noqa: E402
+    patch_nicegui_server_run,
+    patch_nicegui_skip_process_pool_on_frozen_macos,
+    use_embedded_webview,
+)
+
+patch_nicegui_skip_process_pool_on_frozen_macos()
+patch_nicegui_server_run()
+
 from nicegui import ui  # noqa: E402
 
 WEB_PORT = 8080
 _kill_existing_on_port(WEB_PORT)
 
-# Default: open the system browser (single process → one Dock icon on macOS).
-# NiceGUI native mode runs pywebview in a separate multiprocessing process, which often
-# adds extra Python/WebKit icons in the Dock.
-# Set EXPENSE_AUTOMATOR_NATIVE=1 for an embedded window (may show multiple Dock icons).
+# macOS .app (frozen): embedded pywebview on main thread + server in a thread → one Dock
+# icon, no Safari. Override with EXPENSE_AUTOMATOR_USE_BROWSER=1 for Safari.
+# NiceGUI native=True uses a second process for webview → duplicate Dock icons.
 _use_native = os.environ.get("EXPENSE_AUTOMATOR_NATIVE", "").strip().lower() in (
     "1",
     "true",
     "yes",
 )
 
-if _use_native:
+_run_kw: dict = {
+    "title": "Expense Automator",
+    "port": WEB_PORT,
+    "reload": False,
+    "favicon": "💰",
+}
+
+if use_embedded_webview():
     ui.run(
-        title="Expense Automator",
-        port=WEB_PORT,
-        reload=False,
+        **_run_kw,
+        show=False,
+        native=False,
+        host="127.0.0.1",
+    )
+elif _use_native:
+    ui.run(
+        **_run_kw,
         native=True,
         window_size=(1280, 800),
-        favicon="💰",
     )
 else:
     ui.run(
-        title="Expense Automator",
-        port=WEB_PORT,
-        reload=False,
+        **_run_kw,
         show=True,
-        favicon="💰",
     )
