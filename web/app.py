@@ -368,9 +368,8 @@ body {
 }
 
 .q-header,
-.q-drawer,
 .q-drawer__content {
-    overscroll-behavior: none;
+    overflow: hidden !important;
 }
 
 .q-drawer { background: #0f172a !important; }
