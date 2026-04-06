@@ -1002,11 +1002,11 @@ def shared_header(nav_drawer=None):
             if nav_drawer is not None:
                 ui.button(
                     icon="menu", on_click=nav_drawer.toggle
-                ).props("flat dense round").classes("hamburger-btn text-slate-600")
-            ui.icon("receipt_long").classes("text-blue-600 text-2xl")
+                ).props("flat dense round").classes("hamburger-btn").style("color: var(--text-body)")
+            ui.icon("receipt_long").classes("text-2xl").style("color: #3b82f6")
             ui.label("Expense Automator").classes(
-                "text-lg font-bold text-slate-800 tracking-tight"
-            )
+                "text-lg font-bold tracking-tight"
+            ).style("color: var(--text-primary)")
 
 
 def shared_nav(active: str, report_id: str = ""):
