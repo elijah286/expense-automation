@@ -26,6 +26,8 @@ from web.activity_log import activity_log
 
 svc = ExpenseService()
 
+_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()
+
 
 @app.on_startup
 async def _warm_keychain_credentials() -> None:
@@ -327,33 +329,31 @@ CUSTOM_CSS = """
     --badge-unmatched-color: #64748b;
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg-page: #0a1628;
-        --bg-card: #1e293b;
-        --bg-surface: #162032;
-        --bg-row-hover: #243147;
-        --bg-row-hover-blue: #1a2f4a;
-        --bg-row-selected: #1a2f4a;
+body.body--dark {
+    --bg-page: #0a1628;
+    --bg-card: #1e293b;
+    --bg-surface: #162032;
+    --bg-row-hover: #243147;
+    --bg-row-hover-blue: #1a2f4a;
+    --bg-row-selected: #1a2f4a;
 
-        --text-primary: #f1f5f9;
-        --text-secondary: #e2e8f0;
-        --text-body: #cbd5e1;
-        --text-muted: #94a3b8;
-        --text-subtle: #64748b;
+    --text-primary: #f1f5f9;
+    --text-secondary: #e2e8f0;
+    --text-body: #cbd5e1;
+    --text-muted: #94a3b8;
+    --text-subtle: #64748b;
 
-        --border-default: #334155;
-        --border-subtle: #253347;
+    --border-default: #334155;
+    --border-subtle: #253347;
 
-        --badge-high-bg: rgba(22,163,74,0.15);
-        --badge-high-color: #4ade80;
-        --badge-medium-bg: rgba(217,119,6,0.15);
-        --badge-medium-color: #fbbf24;
-        --badge-low-bg: rgba(220,38,38,0.15);
-        --badge-low-color: #f87171;
-        --badge-unmatched-bg: rgba(100,116,139,0.15);
-        --badge-unmatched-color: #94a3b8;
-    }
+    --badge-high-bg: rgba(22,163,74,0.15);
+    --badge-high-color: #4ade80;
+    --badge-medium-bg: rgba(217,119,6,0.15);
+    --badge-medium-color: #fbbf24;
+    --badge-low-bg: rgba(220,38,38,0.15);
+    --badge-low-color: #f87171;
+    --badge-unmatched-bg: rgba(100,116,139,0.15);
+    --badge-unmatched-color: #94a3b8;
 }
 
 body {
@@ -938,44 +938,32 @@ body {
 
 /* ---- Dark mode: Quasar component overrides ---- */
 
-@media (prefers-color-scheme: dark) {
-    /* Top header bar */
-    .q-header { background: var(--bg-card) !important; border-bottom: 1px solid var(--border-default) !important; }
-    .q-header .shadow-sm { box-shadow: 0 1px 0 var(--border-default) !important; }
+body.body--dark .q-page-container, body.body--dark .q-page { background: var(--bg-page) !important; }
 
-    /* Page background */
-    .q-page-container, .q-page { background: var(--bg-page) !important; }
+body.body--dark .q-dialog .q-card { background: var(--bg-card) !important; color: var(--text-primary) !important; }
+body.body--dark .q-dialog .q-card .q-card__section { color: var(--text-primary) !important; }
 
-    /* Dialogs / cards */
-    .q-dialog .q-card { background: var(--bg-card) !important; color: var(--text-primary) !important; }
-    .q-dialog .q-card .q-card__section { color: var(--text-primary) !important; }
+body.body--dark .q-field__control { background: var(--bg-surface) !important; }
+body.body--dark .q-field__control:before { border-color: var(--border-default) !important; }
+body.body--dark .q-field__native, body.body--dark .q-field__input { color: var(--text-primary) !important; }
+body.body--dark .q-field__label { color: var(--text-muted) !important; }
+body.body--dark .q-select__dropdown-icon { color: var(--text-muted) !important; }
 
-    /* Quasar form fields */
-    .q-field__control { background: var(--bg-surface) !important; }
-    .q-field__control:before { border-color: var(--border-default) !important; }
-    .q-field__native, .q-field__input { color: var(--text-primary) !important; }
-    .q-field__label { color: var(--text-muted) !important; }
-    .q-select__dropdown-icon { color: var(--text-muted) !important; }
+body.body--dark .q-menu { background: var(--bg-card) !important; color: var(--text-primary) !important; }
+body.body--dark .q-item { color: var(--text-primary) !important; }
+body.body--dark .q-item:hover, body.body--dark .q-item--active { background: var(--bg-row-hover) !important; }
 
-    /* Quasar menu / popup (select dropdowns) */
-    .q-menu { background: var(--bg-card) !important; color: var(--text-primary) !important; }
-    .q-item { color: var(--text-primary) !important; }
-    .q-item:hover, .q-item--active { background: var(--bg-row-hover) !important; }
+body.body--dark .bg-white { background-color: var(--bg-card) !important; }
+body.body--dark .bg-slate-50 { background-color: var(--bg-surface) !important; }
+body.body--dark .text-slate-900, body.body--dark .text-slate-800 { color: var(--text-primary) !important; }
+body.body--dark .text-slate-700, body.body--dark .text-slate-600 { color: var(--text-body) !important; }
+body.body--dark .text-slate-500 { color: var(--text-muted) !important; }
+body.body--dark .text-blue-600 { color: #60a5fa !important; }
+body.body--dark .shadow-sm { box-shadow: 0 1px 3px rgba(0,0,0,0.3) !important; }
 
-    /* Tailwind utility overrides */
-    .bg-white { background-color: var(--bg-card) !important; }
-    .bg-slate-50 { background-color: var(--bg-surface) !important; }
-    .text-slate-900, .text-slate-800 { color: var(--text-primary) !important; }
-    .text-slate-700, .text-slate-600 { color: var(--text-body) !important; }
-    .text-slate-500 { color: var(--text-muted) !important; }
-    .text-blue-600 { color: #60a5fa !important; }
-    .shadow-sm { box-shadow: 0 1px 3px rgba(0,0,0,0.3) !important; }
-
-    /* Scrollbars on light areas */
-    ::-webkit-scrollbar-track { background: var(--bg-surface); }
-    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #64748b; }
-}
+body.body--dark ::-webkit-scrollbar-track { background: var(--bg-surface); }
+body.body--dark ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+body.body--dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
 """
 
 
@@ -997,16 +985,19 @@ def _img_url(path: str) -> str:
 
 
 def shared_header(nav_drawer=None):
-    with ui.header().classes("bg-white shadow-sm items-center px-4"):
+    with ui.header().classes("items-center px-4").style(
+        "background: #0f172a; border-bottom: 1px solid rgba(255,255,255,0.07); box-shadow: none"
+    ):
         with ui.row().classes("items-center gap-3 w-full"):
             if nav_drawer is not None:
                 ui.button(
                     icon="menu", on_click=nav_drawer.toggle
-                ).props("flat dense round").classes("hamburger-btn").style("color: var(--text-body)")
+                ).props("flat dense round").classes("hamburger-btn").style("color: rgba(255,255,255,0.65)")
             ui.icon("receipt_long").classes("text-2xl").style("color: #3b82f6")
             ui.label("Expense Automator").classes(
                 "text-lg font-bold tracking-tight"
-            ).style("color: var(--text-primary)")
+            ).style("color: #f1f5f9")
+            ui.html(_THEME_SWITCHER_HTML).style("margin-left: auto")
 
 
 def shared_nav(active: str, report_id: str = ""):
@@ -1065,7 +1056,61 @@ def shared_nav(active: str, report_id: str = ""):
                     f'<span class="material-icons" style="font-size:1.05rem;flex-shrink:0">{icon}</span>'
                     f'<span>{label}</span></div>'
                 )
+
+        ui.element("div").style("flex:1")
+
+        ui.html(
+            f'<div id="about-link" style="padding:8px 14px 12px;font-size:0.65rem;'
+            f'color:#475569;cursor:pointer;display:flex;align-items:center;gap:4px"'
+            f' onclick="document.getElementById(\'about-dialog\').style.display=\'flex\'">'
+            f'<span class="material-icons" style="font-size:0.8rem">info_outline</span>'
+            f'v{_VERSION}</div>'
+        )
+
+    _about_dialog()
     return drawer
+
+
+def _about_dialog():
+    """Render a lightweight About overlay using raw HTML/CSS."""
+    ui.html(f'''
+    <div id="about-dialog" style="
+        display:none; position:fixed; inset:0; z-index:9999;
+        align-items:center; justify-content:center;
+        background:rgba(0,0,0,0.45); backdrop-filter:blur(4px);
+    " onclick="if(event.target===this)this.style.display='none'">
+      <div style="
+        background:#1e293b; border:1px solid rgba(255,255,255,0.08);
+        border-radius:12px; padding:28px 32px; max-width:380px; width:90%;
+        color:#e2e8f0; box-shadow:0 20px 60px rgba(0,0,0,0.5);
+      ">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+          <span class="material-icons" style="font-size:1.5rem;color:#3b82f6">receipt_long</span>
+          <span style="font-size:1.1rem;font-weight:700;color:#f1f5f9">Expense Automator</span>
+          <span style="font-size:0.7rem;color:#64748b;margin-left:auto">v{_VERSION}</span>
+        </div>
+        <p style="font-size:0.82rem;line-height:1.55;color:#94a3b8;margin:0 0 14px">
+          Automates the tedious parts of expense reporting&mdash;scanning receipts,
+          matching them to credit-card transactions, classifying expense types,
+          and preparing submissions.
+        </p>
+        <p style="font-size:0.75rem;line-height:1.5;color:#64748b;margin:0 0 18px;
+                  padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:6px;
+                  border-left:2px solid #3b82f6">
+          <span class="material-icons" style="font-size:0.8rem;vertical-align:middle;margin-right:3px;color:#3b82f6">lock</span>
+          All data stays on this machine. Nothing is sent to external servers.
+        </p>
+        <div style="font-size:0.72rem;color:#475569">
+          Built by <span style="color:#94a3b8;font-weight:600">Elijah Kerry</span>
+        </div>
+        <div style="text-align:right;margin-top:14px">
+          <button onclick="this.closest('#about-dialog').style.display='none'"
+                  style="background:#334155;color:#e2e8f0;border:none;padding:5px 16px;
+                         border-radius:6px;font-size:0.75rem;cursor:pointer">Close</button>
+        </div>
+      </div>
+    </div>
+    ''')
 
 
 def _parse_date_sort_key(d: str) -> str:
@@ -1256,17 +1301,79 @@ def _setup_required_overlay():
 
 _DARK_MODE_JS = """<script>
 (function () {
+    var PREF_KEY = 'ea-theme';
     var mq = window.matchMedia('(prefers-color-scheme: dark)');
-    function applyDark(dark) {
+
+    function getSystemDark() { return mq.matches; }
+    function getPref() { return localStorage.getItem(PREF_KEY) || 'system'; }
+
+    function applyTheme(pref) {
+        var dark = pref === 'dark' || (pref === 'system' && getSystemDark());
         if (window.Quasar && window.Quasar.Dark) {
             window.Quasar.Dark.set(dark);
         }
+        var icon = document.getElementById('ea-theme-icon');
+        if (icon) {
+            icon.textContent = pref === 'light' ? 'light_mode' : pref === 'dark' ? 'dark_mode' : 'brightness_auto';
+        }
+        ['light', 'dark', 'system'].forEach(function (t) {
+            var el = document.getElementById('ea-theme-check-' + t);
+            if (el) el.style.opacity = t === pref ? '1' : '0';
+        });
     }
+
+    function setTheme(pref) {
+        localStorage.setItem(PREF_KEY, pref);
+        applyTheme(pref);
+        var menu = document.getElementById('ea-theme-menu');
+        if (menu) menu.style.display = 'none';
+    }
+
+    function bindUI() {
+        var wrap = document.getElementById('ea-theme-btn');
+        var menu = document.getElementById('ea-theme-menu');
+        var toggler = wrap && wrap.querySelector('button');
+        if (!wrap || !menu || !toggler) return false;
+
+        toggler.addEventListener('click', function (e) {
+            e.stopPropagation();
+            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+        });
+        toggler.addEventListener('mouseenter', function () {
+            toggler.style.background = 'rgba(255,255,255,0.1)';
+            toggler.style.color = 'rgba(255,255,255,1)';
+        });
+        toggler.addEventListener('mouseleave', function () {
+            toggler.style.background = 'transparent';
+            toggler.style.color = 'rgba(255,255,255,0.65)';
+        });
+
+        ['light', 'dark', 'system'].forEach(function (t) {
+            var item = document.getElementById('ea-theme-item-' + t);
+            if (!item) return;
+            item.addEventListener('click', function () { setTheme(t); });
+            item.addEventListener('mouseenter', function () { item.style.background = 'rgba(255,255,255,0.08)'; });
+            item.addEventListener('mouseleave', function () { item.style.background = 'transparent'; });
+        });
+
+        document.addEventListener('click', function (e) {
+            if (!wrap.contains(e.target)) menu.style.display = 'none';
+        });
+        return true;
+    }
+
+    mq.addEventListener('change', function () {
+        if (getPref() === 'system') applyTheme('system');
+    });
+
     var attempts = 0;
     function init() {
         if (window.Quasar && window.Quasar.Dark) {
-            applyDark(mq.matches);
-            mq.addEventListener('change', function (e) { applyDark(e.matches); });
+            applyTheme(getPref());
+            if (!bindUI() && attempts < 40) {
+                attempts++;
+                setTimeout(init, 100);
+            }
         } else if (attempts++ < 60) {
             setTimeout(init, 100);
         }
@@ -1278,6 +1385,37 @@ _DARK_MODE_JS = """<script>
     }
 })();
 </script>"""
+
+_THEME_SWITCHER_HTML = """
+<div id="ea-theme-btn" style="position:relative">
+  <button
+    title="Switch theme"
+    style="background:transparent;border:none;cursor:pointer;width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.65);transition:background 0.15s,color 0.15s"
+  >
+    <span id="ea-theme-icon" class="material-icons" style="font-size:20px">brightness_auto</span>
+  </button>
+  <div id="ea-theme-menu" style="display:none;position:absolute;right:0;top:calc(100% + 6px);background:#1e293b;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:4px;min-width:148px;box-shadow:0 8px 28px rgba(0,0,0,0.45);z-index:9999">
+    <div id="ea-theme-item-light"
+      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;color:#e2e8f0;font-size:13.5px;font-family:inherit">
+      <span class="material-icons" style="font-size:16px;color:#fbbf24">light_mode</span>
+      <span>Light</span>
+      <span id="ea-theme-check-light" class="material-icons" style="font-size:14px;margin-left:auto;color:#3b82f6;opacity:0">check</span>
+    </div>
+    <div id="ea-theme-item-dark"
+      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;color:#e2e8f0;font-size:13.5px;font-family:inherit">
+      <span class="material-icons" style="font-size:16px;color:#818cf8">dark_mode</span>
+      <span>Dark</span>
+      <span id="ea-theme-check-dark" class="material-icons" style="font-size:14px;margin-left:auto;color:#3b82f6;opacity:0">check</span>
+    </div>
+    <div id="ea-theme-item-system"
+      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;color:#e2e8f0;font-size:13.5px;font-family:inherit">
+      <span class="material-icons" style="font-size:16px;color:#94a3b8">brightness_auto</span>
+      <span>System</span>
+      <span id="ea-theme-check-system" class="material-icons" style="font-size:14px;margin-left:auto;color:#3b82f6;opacity:0">check</span>
+    </div>
+  </div>
+</div>
+"""
 
 
 def page_frame(active: str, report_id: str = ""):
@@ -1707,7 +1845,7 @@ def page_documents(request: Request):
 
                 # Two-column layout: list + detail panel
                 with ui.element("div").classes("documents-layout"):
-                    with ui.element("div"):
+                    with ui.element("div").style("overflow-x:auto;min-width:0"):
                         # Table header
                         sc, sa = state["sort_col"], state["sort_asc"]
                         with ui.element("div").style(
@@ -1715,7 +1853,7 @@ def page_documents(request: Request):
                             "gap:0;padding:8px 20px;font-size:0.7rem;font-weight:700;text-transform:uppercase;"
                             "letter-spacing:0.06em;color:var(--text-muted);align-items:center;"
                             "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
-                            "position:sticky;top:0;z-index:10;"
+                            "position:sticky;top:0;z-index:10;min-width:700px;"
                         ):
                             ui.element("div")
                             for col_key, col_label in [
@@ -1728,7 +1866,7 @@ def page_documents(request: Request):
                                 lbl.style(
                                     "cursor:pointer;padding:4px 6px;border-radius:4px;transition:all 0.15s;"
                                     "user-select:none;"
-                                    + ("color:#3b82f6;background:#eff6ff;" if is_active else "")
+                                    + ("color:#3b82f6;background:var(--bg-row-selected);" if is_active else "")
                                 )
                                 lbl.on("click", lambda _, c=col_key: _doc_toggle_sort(c))
 
@@ -2078,13 +2216,13 @@ def _receipt_row(
     else:
         border_style = ""
     opacity_style = "opacity:0.65;" if r.used else ""
-    sel_bg = "background:#eff6ff;" if selected else ""
+    sel_bg = "background:var(--bg-row-selected);" if selected else ""
     focus_cls = " receipt-selected" if focused else ""
     row_click = on_row_click or on_click
     with ui.element("div").classes(f"receipt-card{focus_cls}").style(
         "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px;"
         f"align-items:center;gap:0;padding:0;margin-bottom:8px;cursor:pointer;"
-        f"user-select:none;{border_style}{opacity_style}{sel_bg}"
+        f"user-select:none;min-width:700px;{border_style}{opacity_style}{sel_bg}"
     ):
         # Thumbnail
         if r.is_image and Path(r.source_file).is_file():
@@ -2710,7 +2848,7 @@ def page_transactions(request: Request):
                 report_select_options["__new__"] = "+ New Report"
 
                 with ui.element("div").style(
-                    "background:white;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.08);overflow:hidden"
+                    "background:var(--bg-card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.08);overflow:hidden"
                 ):
                     with ui.element("div").style(
                         "display:grid;grid-template-columns:40px 2fr 100px 120px 120px 160px 100px 40px;"
@@ -3297,7 +3435,7 @@ def page_matching(request: Request):
             filtered_count = len(items)
 
             with ui.element("div").style(
-                "background:white;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.08);"
+                "background:var(--bg-card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.08);"
                 "overflow-x:auto;min-width:0"
             ):
                 with ui.row().classes("items-center gap-4 px-5 pt-3 pb-2"):
@@ -3325,7 +3463,7 @@ def page_matching(request: Request):
                         lbl.style(
                             "cursor:pointer;padding:4px 6px;border-radius:4px;transition:all 0.15s;"
                             "user-select:none;"
-                            + ("color:#3b82f6;background:#eff6ff;" if is_active else "")
+                            + ("color:#3b82f6;background:var(--bg-row-selected);" if is_active else "")
                         )
                         lbl.on("click", lambda _, c=col_key: _match_toggle_sort(c))
                     ui.icon("do_not_disturb").style(
