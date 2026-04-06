@@ -356,20 +356,10 @@ CUSTOM_CSS = """
     }
 }
 
-html {
-    overscroll-behavior: none;
-}
-
 body {
     font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
     background: var(--bg-page) !important;
-    overscroll-behavior: none;
     color: var(--text-primary);
-}
-
-.q-header,
-.q-drawer__content {
-    overflow: hidden !important;
 }
 
 .q-drawer { background: #0f172a !important; }
