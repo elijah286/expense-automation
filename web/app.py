@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 import threading
 import urllib.parse
@@ -26,7 +27,14 @@ from web.activity_log import activity_log
 
 svc = ExpenseService()
 
-_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()
+def _read_version() -> str:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    try:
+        return (base / "VERSION").read_text().strip()
+    except FileNotFoundError:
+        return "0.0.0"
+
+_VERSION = _read_version()
 
 
 @app.on_startup

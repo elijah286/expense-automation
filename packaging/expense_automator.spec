@@ -15,7 +15,10 @@ ICON_DIR = PROJECT / "packaging" / "icons"
 ICON_MAC = ICON_DIR / "ExpenseAutomator.icns"
 ICON_WIN = ICON_DIR / "ExpenseAutomator.ico"
 
-datas: list[tuple[str, str]] = [(str(PROJECT / ".env.example"), ".")]
+datas: list[tuple[str, str]] = [
+    (str(PROJECT / ".env.example"), "."),
+    (str(PROJECT / "VERSION"), "."),
+]
 binaries: list[tuple[str, str]] = []
 hiddenimports: list[str] = []
 
