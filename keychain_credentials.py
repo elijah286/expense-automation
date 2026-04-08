@@ -68,7 +68,15 @@ def grant_keychain_access_after_user_consent() -> None:
 
 
 def _load_blob() -> dict[str, str]:
-    """Populate _blob from Keychain (prefer single v1 entry)."""
+    """Populate _blob from Keychain (prefer single v1 entry).
+
+    Each macOS Security.framework / ``security`` invocation can produce its own prompt.
+    We call ``get_password`` for ``credentials_v1`` at most once per load. The legacy
+    ``openai_api_key`` item is read only when v1 did not yield a usable blob (missing,
+    corrupt, or wrong shape), so a normal v1-only install does not touch the legacy item.
+    In-process caching (_loaded) ensures we do not re-query the keychain on every
+    ``get_keychain_openai_key`` call.
+    """
     global _blob, _loaded
     with _rlock:
         if _keychain_gated:
@@ -79,30 +87,40 @@ def _load_blob() -> dict[str, str]:
 
         import keyring
 
+        v1_raw: str | None = None
         try:
-            raw = keyring.get_password(KEYRING_SERVICE, KEYRING_CREDENTIALS_V1)
-            if raw:
-                data = json.loads(raw)
+            v1_raw = keyring.get_password(KEYRING_SERVICE, KEYRING_CREDENTIALS_V1)
+        except Exception:
+            v1_raw = None
+
+        v1_needs_clean_persist = False
+        v1_usable = False
+        if v1_raw:
+            try:
+                data = json.loads(v1_raw)
                 if isinstance(data, dict) and data.get("expense_portal_password"):
-                    try:
-                        cleaned = {"openai_api_key": str(data.get("openai_api_key") or "").strip()}
-                        _persist_v1(cleaned)
-                        data = cleaned
-                    except Exception:
-                        pass
+                    data = {"openai_api_key": str(data.get("openai_api_key") or "").strip()}
+                    v1_needs_clean_persist = True
                 got = _coerce_blob(data)
                 if got is not None:
+                    v1_usable = True
                     _blob = got
                     _loaded = True
+                    if v1_needs_clean_persist:
+                        try:
+                            _persist_v1(_blob)
+                        except Exception:
+                            pass
                     return _blob.copy()
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         oa = ""
-        try:
-            oa = (keyring.get_password(KEYRING_SERVICE, LEGACY_OPENAI) or "").strip()
-        except Exception:
-            pass
+        if not v1_usable:
+            try:
+                oa = (keyring.get_password(KEYRING_SERVICE, LEGACY_OPENAI) or "").strip()
+            except Exception:
+                pass
 
         merged = {"openai_api_key": oa}
         _blob = merged

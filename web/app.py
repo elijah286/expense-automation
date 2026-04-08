@@ -181,8 +181,13 @@ def _show_keychain_secure_storage_dialog(client_id: str) -> None:
                 <b>Python</b> (or this app) to access the keychain. That dialog is from the OS so only
                 you can use the stored key—it is <b>not</b> a website or third-party login.
               </p>
-              <p style="margin:0">
+              <p style="margin:0 0 12px 0">
                 Choose <b>Continue</b> when you are ready for that step.
+              </p>
+              <p style="margin:0;font-size:0.85rem;color:#64748b">
+                If macOS asks more than once, pick <b>Always Allow</b> (not only <b>Allow</b>)
+                so the app can reuse the stored key without a new prompt each time.
+                Saving your API key from setup may show one additional prompt to store it.
               </p>
             </div>
             """
@@ -1396,70 +1401,126 @@ _REPORT_PAGES = {"Documents", "Transactions", "Matching", "Submit"}
 
 
 def _setup_required_overlay():
-    """Full-page overlay blocking access until credentials are entered."""
-    missing = svc.missing_credentials()
-    missing_html = "".join(f"<li>{m}</li>" for m in missing)
-    ui.html(f"""
-    <div style="
-        position:fixed;inset:0;z-index:9999;
-        background:rgba(15,23,42,0.75);backdrop-filter:blur(6px);
-        display:flex;align-items:center;justify-content:center;
-    ">
-      <div style="
-          background:var(--bg-card);border-radius:20px;padding:48px 40px;
-          max-width:520px;width:90%;text-align:center;
-          box-shadow:0 25px 50px rgba(0,0,0,0.25);
-          max-height:min(90vh,calc(100vh - 32px));overflow-y:auto;
-      ">
-        <div style="
-            width:64px;height:64px;border-radius:16px;
-            background:linear-gradient(135deg,#3b82f6,#8b5cf6);
-            display:flex;align-items:center;justify-content:center;
-            margin:0 auto 20px;
-        ">
-          <span class="material-icons" style="color:#fff;font-size:32px">lock</span>
-        </div>
-        <div style="font-size:1.35rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">
-          Setup Required
-        </div>
-        <div style="
-            text-align:left;background:var(--bg-surface);border-radius:12px;
-            padding:16px 20px;margin-bottom:20px;
-        ">
-          <div style="font-size:0.8rem;font-weight:600;color:var(--text-muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em">
-            About this tool
-          </div>
-          <ul style="margin:0;padding-left:20px;color:var(--text-body);font-size:0.875rem;line-height:1.65">
-            <li style="margin-bottom:8px">Automates matching receipts to expense lines and filling your Oracle expense report.</li>
-            <li style="margin-bottom:8px">Works by driving your browser as you would, in your own Oracle session—not a separate account.</li>
-            <li style="margin-bottom:8px">Does not store your login credentials or private company information; app data stays on this computer.</li>
-            <li style="margin-bottom:8px">You’ll add an <strong>OpenAI API key</strong> in Settings so an LLM can suggest receipt-to-line matches. <strong>Do not use</strong> this tool if receipts contain private or confidential information you must not send to OpenAI.</li>
-            <li>You’ll enter your <strong>expense report approver’s display name</strong> exactly as it appears in Oracle (in Settings).</li>
-          </ul>
-        </div>
-        <div style="color:var(--text-muted);font-size:0.95rem;line-height:1.6;margin-bottom:20px">
-          When you’re ready, open <a href="/settings" style="color:#3b82f6;font-weight:600;text-decoration:none">Settings</a> and complete the items below.
-        </div>
-        <div style="
-            text-align:left;background:var(--bg-surface);border-radius:12px;
-            padding:16px 20px;margin-bottom:24px;
-        ">
-          <div style="font-size:0.8rem;font-weight:600;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">
-            Still needed
-          </div>
-          <ul style="margin:0;padding-left:20px;color:var(--text-body);font-size:0.9rem;line-height:1.8">
-            {missing_html}
-          </ul>
-        </div>
-        <a href="/settings" style="
-            display:inline-block;padding:12px 32px;
-            background:linear-gradient(135deg,#3b82f6,#8b5cf6);
-            color:#fff;font-weight:600;font-size:0.95rem;
-            border-radius:12px;text-decoration:none;
-        ">Go to Settings</a>
-      </div>
-    </div>
-    """)
+    """Full-page overlay until URL, OpenAI key, and approver are saved."""
+    if svc.credentials_ready():
+        return
+
+    current = svc.get_settings()
+    oa_hint = current["openai_key_hint"]
+    oa_ph = f"Already saved {oa_hint}" if current["openai_key_set"] else "sk-..."
+
+    with ui.element("div").style(
+        "position:fixed;inset:0;z-index:9999;"
+        "background:rgba(15,23,42,0.75);backdrop-filter:blur(6px);"
+        "display:flex;align-items:center;justify-content:center;padding:24px;"
+    ):
+        with ui.card().style(
+            "width:min(780px,calc(100vw - 48px));max-width:780px;"
+            "border-radius:20px;padding:36px 40px;"
+            "box-shadow:0 25px 50px rgba(0,0,0,0.25);"
+            "background:var(--bg-card);"
+        ):
+            with ui.column().classes("w-full gap-0 items-stretch"):
+                with ui.row().classes("w-full justify-center mb-3"):
+                    with ui.element("div").style(
+                        "width:56px;height:56px;border-radius:14px;"
+                        "background:linear-gradient(135deg,#3b82f6,#8b5cf6);"
+                        "display:flex;align-items:center;justify-content:center;"
+                    ):
+                        ui.icon("lock").style("color:#fff;font-size:28px")
+
+                ui.label("Setup required").classes(
+                    "text-h5 font-bold w-full text-center"
+                ).style("color:var(--text-primary);letter-spacing:-0.02em")
+
+                ui.html(
+                    """
+                    <div style="text-align:left;color:var(--text-body);font-size:0.9rem;
+                        line-height:1.5;width:100%;margin:12px 0 16px 0">
+                      <ul style="margin:0;padding-left:1.2rem">
+                        <li style="margin:0 0 6px 0">Matches receipts to lines and fills your Oracle report using your browser.</li>
+                        <li style="margin:0 0 6px 0">Oracle username and password are <b>not</b> stored—you sign in in the browser when needed.</li>
+                        <li style="margin:0 0 6px 0">Your data stays on this computer.</li>
+                        <li style="margin:0">OpenAI reads receipt images for matching—do <b>not</b> use with receipts you cannot send to OpenAI.</li>
+                      </ul>
+                    </div>
+                    """
+                )
+
+                need_url = not (current["oracle_url"] or "").strip()
+                ui.label(
+                    "Enter the following to get started"
+                    + (" (portal URL, API key, and approver)" if need_url else " (API key and approver)")
+                ).classes("text-sm font-semibold w-full").style(
+                    "color:var(--text-muted);margin-bottom:4px"
+                )
+
+                url_in: ui.input | None
+                with ui.column().classes("w-full gap-3"):
+                    if need_url:
+                        url_in = ui.input(
+                            label="Oracle expense portal URL",
+                            value="",
+                            placeholder="https://…",
+                        ).classes("w-full").props("outlined dense")
+                    else:
+                        url_in = None
+
+                    openai_in = ui.input(
+                        label="OpenAI API key",
+                        password=True,
+                        password_toggle_button=True,
+                        placeholder=oa_ph,
+                    ).classes("w-full").props("outlined dense")
+
+                    appr_in = ui.input(
+                        label="Expense report approver (exactly as in Oracle)",
+                        value=current.get("approver", "") or "",
+                        placeholder='e.g. "Last, First"',
+                    ).classes("w-full").props("outlined dense")
+
+                ui.label(
+                    "You can change these anytime in Settings."
+                ).classes("text-center w-full").style(
+                    "color:var(--text-muted);font-size:0.75rem;margin-top:10px;line-height:1.4"
+                )
+
+                with ui.row().classes("w-full justify-center gap-2 mt-5"):
+                    ui.link("Open full Settings", "/settings").classes(
+                        "text-sm self-center"
+                    ).style("color:#3b82f6")
+
+                    def _save_overlay() -> None:
+                        key_val = (openai_in.value or "").strip()
+                        url_val = (
+                            (url_in.value or "").strip()
+                            if url_in is not None
+                            else (current["oracle_url"] or "").strip()
+                        )
+                        warnings = svc.save_settings(
+                            oracle_url=url_val,
+                            approver=appr_in.value,
+                            openai_key=key_val if key_val else None,
+                            openai_model=current["openai_model"],
+                        )
+                        for w in warnings:
+                            ui.notify(w, type="warning", timeout=8000)
+                        if svc.credentials_ready():
+                            ui.notify("Saved. You're all set.", type="positive")
+                            ui.timer(0.35, lambda: ui.navigate.reload(), once=True)
+                        else:
+                            miss = svc.missing_credentials()
+                            ui.notify(
+                                "Still need: " + ", ".join(miss),
+                                type="warning",
+                                timeout=6000,
+                            )
+
+                    ui.button(
+                        "Save and continue",
+                        icon="check",
+                        on_click=_save_overlay,
+                    ).props("no-caps unelevated color=primary").classes("action-btn")
 
 
 _DARK_MODE_JS = """<script>
