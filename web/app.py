@@ -7,7 +7,6 @@ macOS `.app`: embedded pywebview window (see `web/macos_single_process_webview.p
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -23,6 +22,8 @@ from nicegui import app, ui
 
 import keychain_credentials
 
+keychain_credentials.enable_keychain_access_gate()
+
 from web.service import ExpenseService, ExpenseReportGroup, MatchReviewItem, ReceiptDoc, ReportReadiness, TransactionRow
 from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS
 from web.activity_log import activity_log
@@ -37,12 +38,6 @@ def _read_version() -> str:
         return "0.0.0"
 
 _VERSION = _read_version()
-
-
-@app.on_startup
-async def _warm_keychain_credentials() -> None:
-    """Load Keychain after the server is up so launch is not blocked on the main thread."""
-    await asyncio.to_thread(keychain_credentials.warm_up)
 
 
 # Background task tracking
@@ -136,6 +131,97 @@ def _open_oracle_manual_login_dialog(on_continue: Callable[[], None]) -> None:
                 "no-caps unelevated color=primary"
             ).classes("action-btn")
     dlg.open()
+
+
+_keychain_notice_clients: set[str] = set()
+
+
+def _finalize_keychain_notice_client(client_id: str) -> None:
+    _keychain_notice_clients.discard(client_id)
+
+
+def _run_keychain_unlock_then_reload() -> None:
+    done = threading.Event()
+
+    def worker() -> None:
+        try:
+            keychain_credentials.grant_keychain_access_after_user_consent()
+        finally:
+            done.set()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def wait_reload() -> None:
+        if done.is_set():
+            try:
+                ui.navigate.reload()
+            except Exception:
+                pass
+        else:
+            ui.timer(0.15, wait_reload, once=True)
+
+    ui.timer(0.15, wait_reload, once=True)
+
+
+def _show_keychain_secure_storage_dialog(client_id: str) -> None:
+    """Explain the OS keychain prompt before keyring access (web UI only)."""
+    with ui.dialog() as dlg, ui.card().style(
+        "min-width:420px;max-width:540px;border-radius:16px;padding:28px"
+    ):
+        ui.label("Secure storage on your computer").classes("text-lg font-bold text-slate-800 mb-2")
+        ui.html(
+            """
+            <div style="font-size:0.9rem;line-height:1.55;color:#475569">
+              <p style="margin:0 0 12px 0">
+                This app stores your <b>OpenAI API key</b> in your system's secure vault
+                (macOS Keychain, Windows Credential Manager, or similar), not as plain text in a file.
+              </p>
+              <p style="margin:0 0 12px 0">
+                Next, your <b>operating system</b> may ask for your password, Touch&nbsp;ID, or to allow
+                <b>Python</b> (or this app) to access the keychain. That dialog is from the OS so only
+                you can use the stored key—it is <b>not</b> a website or third-party login.
+              </p>
+              <p style="margin:0">
+                Choose <b>Continue</b> when you are ready for that step.
+              </p>
+            </div>
+            """
+        )
+        with ui.row().classes("items-center justify-end gap-2 w-full mt-4"):
+            ui.button("Not now", on_click=dlg.close).props("flat no-caps")
+
+            def _go() -> None:
+                _finalize_keychain_notice_client(client_id)
+                dlg.close()
+                _run_keychain_unlock_then_reload()
+
+            ui.button("Continue", icon="vpn_key", on_click=_go).props(
+                "no-caps unelevated color=primary"
+            ).classes("action-btn")
+
+    def _on_hide() -> None:
+        if keychain_credentials.is_keychain_access_gated():
+            _finalize_keychain_notice_client(client_id)
+
+    dlg.on("hide", _on_hide)
+    dlg.open()
+
+
+def _schedule_keychain_consent_if_needed() -> None:
+    if not keychain_credentials.is_keychain_access_gated():
+        return
+    try:
+        client_id = str(ui.context.client.id)
+    except Exception:
+        return
+    if client_id in _keychain_notice_clients:
+        return
+    _keychain_notice_clients.add(client_id)
+
+    def _show() -> None:
+        _show_keychain_secure_storage_dialog(client_id)
+
+    ui.timer(0.05, _show, once=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1321,8 +1407,9 @@ def _setup_required_overlay():
     ">
       <div style="
           background:var(--bg-card);border-radius:20px;padding:48px 40px;
-          max-width:460px;width:90%;text-align:center;
+          max-width:520px;width:90%;text-align:center;
           box-shadow:0 25px 50px rgba(0,0,0,0.25);
+          max-height:min(90vh,calc(100vh - 32px));overflow-y:auto;
       ">
         <div style="
             width:64px;height:64px;border-radius:16px;
@@ -1335,8 +1422,23 @@ def _setup_required_overlay():
         <div style="font-size:1.35rem;font-weight:700;color:var(--text-primary);margin-bottom:8px">
           Setup Required
         </div>
+        <div style="
+            text-align:left;background:var(--bg-surface);border-radius:12px;
+            padding:16px 20px;margin-bottom:20px;
+        ">
+          <div style="font-size:0.8rem;font-weight:600;color:var(--text-muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em">
+            About this tool
+          </div>
+          <ul style="margin:0;padding-left:20px;color:var(--text-body);font-size:0.875rem;line-height:1.65">
+            <li style="margin-bottom:8px">Automates matching receipts to expense lines and filling your Oracle expense report.</li>
+            <li style="margin-bottom:8px">Works by driving your browser as you would, in your own Oracle session—not a separate account.</li>
+            <li style="margin-bottom:8px">Does not store your login credentials or private company information; app data stays on this computer.</li>
+            <li style="margin-bottom:8px">You’ll add an <strong>OpenAI API key</strong> in Settings so an LLM can suggest receipt-to-line matches. <strong>Do not use</strong> this tool if receipts contain private or confidential information you must not send to OpenAI.</li>
+            <li>You’ll enter your <strong>expense report approver’s display name</strong> exactly as it appears in Oracle (in Settings).</li>
+          </ul>
+        </div>
         <div style="color:var(--text-muted);font-size:0.95rem;line-height:1.6;margin-bottom:20px">
-          Before you can use the tool, enter your credentials in <b>Settings</b>.
+          When you’re ready, open <a href="/settings" style="color:#3b82f6;font-weight:600;text-decoration:none">Settings</a> and complete the items below.
         </div>
         <div style="
             text-align:left;background:var(--bg-surface);border-radius:12px;
@@ -1480,6 +1582,7 @@ _THEME_SWITCHER_HTML = """
 
 
 def page_frame(active: str, report_id: str = ""):
+    _schedule_keychain_consent_if_needed()
     ui.add_head_html(_GOOGLE_FONTS_HTML)
     ui.add_head_html(f"<style>{CUSTOM_CSS}</style>")
     ui.add_head_html(_DARK_MODE_JS)

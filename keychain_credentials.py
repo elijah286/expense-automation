@@ -20,6 +20,10 @@ _rlock = threading.RLock()
 _blob: dict[str, str] | None = None
 _loaded = False
 
+# When True, skip all keyring access (returns empty OpenAI key) until the user
+# consents in the web UI. The desktop (Tk) app never enables this.
+_keychain_gated = False
+
 
 def _coerce_blob(raw: Any) -> dict[str, str] | None:
     if not isinstance(raw, dict):
@@ -43,10 +47,33 @@ def _delete_legacy() -> None:
             pass
 
 
+def enable_keychain_access_gate() -> None:
+    """Web UI: defer keyring reads/writes until the user accepts the security notice."""
+    global _keychain_gated
+    _keychain_gated = True
+
+
+def is_keychain_access_gated() -> bool:
+    return _keychain_gated
+
+
+def grant_keychain_access_after_user_consent() -> None:
+    """Call after the user acknowledges the OS keychain prompt; loads secrets from keyring."""
+    global _keychain_gated, _loaded, _blob
+    with _rlock:
+        _keychain_gated = False
+        _loaded = False
+        _blob = None
+    warm_up()
+
+
 def _load_blob() -> dict[str, str]:
     """Populate _blob from Keychain (prefer single v1 entry)."""
     global _blob, _loaded
     with _rlock:
+        if _keychain_gated:
+            return {"openai_api_key": ""}
+
         if _loaded and _blob is not None:
             return _blob.copy()
 
@@ -110,6 +137,12 @@ def get_keychain_expense_password() -> str:
 
 def set_keychain_openai_key(key: str) -> str | None:
     stripped = key.strip()
+    if _keychain_gated:
+        return (
+            'Open the "Secure storage" notice and choose Continue to save your API key in the system keychain.'
+            if stripped
+            else None
+        )
     with _rlock:
         b = {"openai_api_key": stripped}
         try:
@@ -123,6 +156,8 @@ def set_keychain_openai_key(key: str) -> str | None:
 
 def set_keychain_expense_password(password: str) -> str | None:
     """No-op: Oracle passwords are not stored. Clears legacy keychain item if present."""
+    if _keychain_gated:
+        return None
     import keyring
 
     try:
