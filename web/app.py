@@ -17,9 +17,11 @@ import threading
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from nicegui import app, ui
+
+import keychain_credentials
 
 from web.service import ExpenseService, ExpenseReportGroup, MatchReviewItem, ReceiptDoc, ReportReadiness, TransactionRow
 from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS
@@ -98,6 +100,43 @@ def _run_background(task_name: str, fn, on_done_msg: str):
 
     ui.notify(f"Started {task_name}...", type="info")
     threading.Thread(target=_worker, daemon=True).start()
+
+
+def _open_oracle_manual_login_dialog(on_continue: Callable[[], None]) -> None:
+    """Explain that Oracle credentials are entered only in the browser; then run *on_continue*."""
+    with ui.dialog() as dlg, ui.card().style(
+        "min-width:420px;max-width:520px;border-radius:16px;padding:28px"
+    ):
+        ui.label("Oracle sign-in").classes("text-lg font-bold text-slate-800 mb-2")
+        ui.html(
+            """
+            <div style="font-size:0.9rem;line-height:1.55;color:#475569">
+              <p style="margin:0 0 12px 0">
+                For privacy, <b>your Oracle username and password are not stored</b> in this app.
+                Chromium will open to your portal URL.
+              </p>
+              <p style="margin:0 0 12px 0">
+                Sign in in the browser window (including 2FA if your organization requires it).
+                When the app detects that you are logged in, automation <b>continues automatically</b>.
+              </p>
+              <p style="margin:0">
+                Keep the browser window open until the run finishes.
+              </p>
+            </div>
+            """
+        )
+        with ui.row().classes("items-center justify-end gap-2 w-full mt-4"):
+            ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
+
+            def _go() -> None:
+                dlg.close()
+                on_continue()
+
+            ui.button("Continue", icon="arrow_forward", on_click=_go).props(
+                "no-caps unelevated color=primary"
+            ).classes("action-btn")
+    dlg.open()
+
 
 # ---------------------------------------------------------------------------
 # Terminal panel — real-time activity log
@@ -371,6 +410,18 @@ body {
 }
 
 .q-drawer { background: #0f172a !important; }
+.q-drawer.detail-side-drawer {
+    background: var(--bg-card) !important;
+    border-left: 1px solid var(--border-default);
+}
+.q-drawer.detail-side-drawer .detail-panel {
+    position: static;
+    max-height: none;
+    overflow-x: hidden;
+    overflow-y: visible;
+    box-shadow: none;
+    border-radius: 0;
+}
 
 .nicegui-content {
     padding: 0 !important;
@@ -557,7 +608,9 @@ body {
     background: var(--bg-card);
     border-radius: 16px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
+    max-height: calc(100vh - 120px);
     position: sticky;
     top: 100px;
 }
@@ -1540,6 +1593,25 @@ def page_documents(request: Request):
     report_filter_id = (request.query_params.get("report") or "").strip()
     page_frame("Documents", report_filter_id)
 
+    _doc_actions: dict[str, Callable[[], None]] = {"close": lambda: None}
+
+    doc_detail_drawer = ui.right_drawer(value=False, fixed=True, bordered=True).classes(
+        "detail-side-drawer"
+    ).props("overlay elevated width=440")
+    with doc_detail_drawer:
+        with ui.column().classes("w-full").style(
+            "height:100%;max-height:100vh;display:flex;flex-direction:column"
+        ):
+            with ui.row().classes("items-center justify-end w-full").style(
+                "flex-shrink:0;padding:6px 8px;border-bottom:1px solid var(--border-subtle)"
+            ):
+                ui.button(icon="close", on_click=lambda: _doc_actions["close"]()).props(
+                    "flat dense round"
+                )
+            doc_detail_slot = ui.column().classes("w-full").style(
+                "flex:1;min-height:0;overflow-y:auto;padding:0 10px 24px"
+            )
+
     with ui.element("div").classes("page-container"):
 
         state: dict[str, Any] = {
@@ -1588,6 +1660,8 @@ def page_documents(request: Request):
             state["selected"] = set()
             state["selected_doc"] = None
             _render_documents()
+
+        _doc_actions["close"] = _clear_selection
 
         def _confirm_remove_selected():
             paths = list(state["selected"])
@@ -1764,6 +1838,7 @@ def page_documents(request: Request):
                         "No receipts imported",
                         "Import receipt images or PDFs to get started.",
                     )
+                _sync_doc_detail_drawer()
                 return
 
             search_container.set_visibility(True)
@@ -1851,53 +1926,52 @@ def page_documents(request: Request):
                     if fn:
                         receipts = sorted(receipts, key=fn, reverse=not state["sort_asc"])
 
-                # Two-column layout: list + detail panel
-                with ui.element("div").classes("documents-layout"):
-                    with ui.element("div").style("overflow-x:auto;min-width:0"):
-                        # Table header
-                        sc, sa = state["sort_col"], state["sort_asc"]
+                # Full-width list; detail opens in a right drawer
+                with ui.element("div").style("width:100%;min-width:0;overflow-x:auto"):
+                    # Table header
+                    sc, sa = state["sort_col"], state["sort_asc"]
+                    with ui.element("div").style(
+                        "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px;"
+                        "gap:0;padding:8px 20px;font-size:0.7rem;font-weight:700;text-transform:uppercase;"
+                        "letter-spacing:0.06em;color:var(--text-muted);align-items:center;"
+                        "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
+                        "position:sticky;top:0;z-index:10;min-width:700px;"
+                    ):
+                        ui.element("div")
+                        for col_key, col_label in [
+                            ("vendor", "Vendor / File"), ("amount", "Amount"), ("date", "Date"),
+                            ("added", "Added"), ("parse", "Parse"), ("status", "Status"),
+                        ]:
+                            is_active = sc == col_key
+                            lbl = ui.label(f"{col_label}{_sort_arrow(sc, sa, col_key)}")
+                            lbl.classes("sortable-header")
+                            lbl.style(
+                                "cursor:pointer;padding:4px 6px;border-radius:4px;transition:all 0.15s;"
+                                "user-select:none;"
+                                + ("color:#3b82f6;background:var(--bg-row-selected);" if is_active else "")
+                            )
+                            lbl.on("click", lambda _, c=col_key: _doc_toggle_sort(c))
+
+                    if not receipts and _q:
                         with ui.element("div").style(
-                            "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px;"
-                            "gap:0;padding:8px 20px;font-size:0.7rem;font-weight:700;text-transform:uppercase;"
-                            "letter-spacing:0.06em;color:var(--text-muted);align-items:center;"
-                            "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
-                            "position:sticky;top:0;z-index:10;min-width:700px;"
+                            "padding:40px 20px;text-align:center;"
                         ):
-                            ui.element("div")
-                            for col_key, col_label in [
-                                ("vendor", "Vendor / File"), ("amount", "Amount"), ("date", "Date"),
-                                ("added", "Added"), ("parse", "Parse"), ("status", "Status"),
-                            ]:
-                                is_active = sc == col_key
-                                lbl = ui.label(f"{col_label}{_sort_arrow(sc, sa, col_key)}")
-                                lbl.classes("sortable-header")
-                                lbl.style(
-                                    "cursor:pointer;padding:4px 6px;border-radius:4px;transition:all 0.15s;"
-                                    "user-select:none;"
-                                    + ("color:#3b82f6;background:var(--bg-row-selected);" if is_active else "")
-                                )
-                                lbl.on("click", lambda _, c=col_key: _doc_toggle_sort(c))
+                            ui.icon("search_off").classes("text-4xl text-slate-300 mb-2")
+                            ui.label("No receipts match your search").classes(
+                                "text-sm text-slate-400"
+                            )
+                    else:
+                        for r in receipts:
+                            is_sel = r.source_file in state["selected"]
+                            is_focused = state["selected_doc"] == r.source_file
+                            _receipt_row(
+                                r,
+                                selected=is_sel,
+                                focused=is_focused,
+                                on_row_click=lambda doc=r: _select_doc(doc.source_file),
+                            )
 
-                        if not receipts and _q:
-                            with ui.element("div").style(
-                                "padding:40px 20px;text-align:center;"
-                            ):
-                                ui.icon("search_off").classes("text-4xl text-slate-300 mb-2")
-                                ui.label("No receipts match your search").classes(
-                                    "text-sm text-slate-400"
-                                )
-                        else:
-                            for r in receipts:
-                                is_sel = r.source_file in state["selected"]
-                                is_focused = state["selected_doc"] == r.source_file
-                                _receipt_row(
-                                    r,
-                                    selected=is_sel,
-                                    focused=is_focused,
-                                    on_row_click=lambda doc=r: _select_doc(doc.source_file),
-                                )
-
-                    _render_doc_detail_inline(receipts)
+            _sync_doc_detail_drawer()
 
         def _render_doc_detail_content():
             multi = len(state["selected"]) > 1
@@ -2160,9 +2234,22 @@ def page_documents(request: Request):
                             "Rescan", icon="refresh", on_click=_rescan_this,
                         ).props("no-caps outline size=sm").classes("action-btn")
 
-        def _render_doc_detail_inline(receipts: list[ReceiptDoc]):
-            """Render the document detail panel inside the layout grid."""
-            _render_doc_detail_content()
+        def _sync_doc_detail_drawer():
+            doc_detail_slot.clear()
+            with doc_detail_slot:
+                _render_doc_detail_content()
+            show = bool(state.get("selected_doc")) or len(state.get("selected", set())) > 1
+            doc_detail_drawer.set_value(show)
+
+        def _on_doc_drawer_value(e):
+            if e.value:
+                return
+            if state.get("selected_doc") or len(state.get("selected", set())) > 0:
+                state["selected"] = set()
+                state["selected_doc"] = None
+                _render_documents()
+
+        doc_detail_drawer.on_value_change(_on_doc_drawer_value)
 
         def _confirm_remove_used(count: int):
             with ui.dialog() as dlg, ui.card().style("min-width:400px;border-radius:16px;padding:28px"):
@@ -2637,14 +2724,17 @@ def page_transactions(request: Request):
                     )
             with ui.element("div").classes("page-hero-actions column-end is-stack"):
                 def _start_scrape():
-                    def _do_scrape(on_status):
-                        return svc.run_scrape(on_status=on_status)
+                    def _run_after_notice():
+                        def _do_scrape(on_status):
+                            return svc.run_scrape(on_status=on_status)
 
-                    _run_background(
-                        "Scrape Transactions",
-                        _do_scrape,
-                        "Transaction scrape complete — reload page to see new rows.",
-                    )
+                        _run_background(
+                            "Scrape Transactions",
+                            _do_scrape,
+                            "Transaction scrape complete — reload page to see new rows.",
+                        )
+
+                    _open_oracle_manual_login_dialog(_run_after_notice)
 
                 ui.button(
                     "Scrape Transactions",
@@ -3128,19 +3218,18 @@ def page_matching(request: Request):
                 report_filter_name = g.name
                 break
 
-    with ui.element("div").classes("page-container"):
+    full_queue = svc.get_match_review_queue()
 
-        full_queue = svc.get_match_review_queue()
+    if report_filter_id == "__uncategorized__":
+        queue = [q for q in full_queue if not q.transaction.report_id]
+    elif report_filter_id:
+        queue = [q for q in full_queue if q.transaction.report_id == report_filter_id]
+    else:
+        queue = full_queue
+    total = len(queue)
 
-        if report_filter_id == "__uncategorized__":
-            queue = [q for q in full_queue if not q.transaction.report_id]
-        elif report_filter_id:
-            queue = [q for q in full_queue if q.transaction.report_id == report_filter_id]
-        else:
-            queue = full_queue
-        total = len(queue)
-
-        if total == 0:
+    if total == 0:
+        with ui.element("div").classes("page-container"):
             if report_filter_id and report_filter_name:
                 _empty_state(
                     "compare_arrows",
@@ -3154,10 +3243,38 @@ def page_matching(request: Request):
                     ).props("no-caps outlined").classes("action-btn")
             else:
                 _empty_state("compare_arrows", "No transactions to match", "Load transactions and receipts first.")
-            return
+        return
+
+    _match_actions: dict[str, Callable[[], None]] = {"close": lambda: None}
+
+    match_detail_drawer = ui.right_drawer(value=False, fixed=True, bordered=True).classes(
+        "detail-side-drawer"
+    ).props("overlay elevated width=440")
+    with match_detail_drawer:
+        with ui.column().classes("w-full").style(
+            "height:100%;max-height:100vh;display:flex;flex-direction:column"
+        ):
+            with ui.row().classes("items-center justify-end w-full").style(
+                "flex-shrink:0;padding:6px 8px;border-bottom:1px solid var(--border-subtle)"
+            ):
+                ui.button(icon="close", on_click=lambda: _match_actions["close"]()).props(
+                    "flat dense round"
+                )
+            match_detail_slot = ui.column().classes("w-full").style(
+                "flex:1;min-height:0;overflow-y:auto;padding:0 10px 24px"
+            )
+
+    with ui.element("div").classes("page-container"):
 
         all_receipts = svc.get_receipts()
-        state: dict[str, Any] = {"selected_lid": None, "filter": "all", "sort_col": None, "sort_asc": True, "search": ""}
+        state: dict[str, Any] = {
+            "selected_lid": None,
+            "selected_lids": set(),
+            "filter": "all",
+            "sort_col": None,
+            "sort_asc": True,
+            "search": "",
+        }
 
         # --- Header row ---
         with ui.element("div").classes("page-hero-row"):
@@ -3281,12 +3398,10 @@ def page_matching(request: Request):
             )
             ui.label(f"{reviewed}/{total} approved").classes("text-sm font-medium text-slate-500")
 
-        state["selected_lids"] = set()
-
         # --- Filter chips ---
         filter_chips_container = ui.row().classes("items-center gap-2 mb-5")
 
-        layout_container = ui.row().classes("w-full items-start gap-6").style("flex-wrap:nowrap")
+        layout_container = ui.column().classes("w-full")
 
         def _filtered_queue():
             f = state["filter"]
@@ -3332,6 +3447,7 @@ def page_matching(request: Request):
         def _set_filter(f: str):
             state["filter"] = f
             state["selected_lid"] = None
+            state["selected_lids"] = set()
             _render_all()
 
         def _match_toggle_sort(col: str):
@@ -3346,10 +3462,13 @@ def page_matching(request: Request):
             _render_filter_chips()
             layout_container.clear()
             with layout_container:
-                with ui.element("div").style("flex:1 1 0%;min-width:0;overflow:hidden"):
+                with ui.element("div").style("width:100%;min-width:0;overflow-x:auto"):
                     _render_table()
-                with ui.element("div").style("width:420px;flex-shrink:0"):
-                    _render_detail()
+            match_detail_slot.clear()
+            with match_detail_slot:
+                _render_detail()
+            show = bool(state.get("selected_lid")) or len(state.get("selected_lids", set())) > 1
+            match_detail_drawer.set_value(show)
 
         def _render_filter_chips():
             filter_chips_container.clear()
@@ -3394,6 +3513,13 @@ def page_matching(request: Request):
                 state["selected_lid"] = lid
                 state["selected_lids"] = {lid}
             _render_all()
+
+        def _clear_match_selection():
+            state["selected_lid"] = None
+            state["selected_lids"] = set()
+            _render_all()
+
+        _match_actions["close"] = _clear_match_selection
 
         def _toggle_receipt_missing(lid: str, is_currently_missing: bool):
             if is_currently_missing:
@@ -3808,6 +3934,16 @@ def page_matching(request: Request):
                             ui.button("Remove from report", icon="remove_circle_outline", on_click=_remove_single_from_report).props(
                                 "no-caps outline size=sm color=negative"
                             ).classes("action-btn")
+
+        def _on_match_drawer_value(e):
+            if e.value:
+                return
+            if state.get("selected_lid") or len(state.get("selected_lids", set())) > 0:
+                state["selected_lid"] = None
+                state["selected_lids"] = set()
+                _render_all()
+
+        match_detail_drawer.on_value_change(_on_match_drawer_value)
 
         def _advance_selection(current_lid: str):
             """After approving, move selection to next unreviewed item."""
@@ -4268,13 +4404,17 @@ def page_submit(request: Request):
                 ui.notify(result["error"], type="negative")
                 return
             n = result.get("approved", 0)
-            ui.notify(
-                f"Report '{report_name}' prepared — {n} receipt(s) approved. "
-                "Launching browser automation\u2026",
-                type="positive",
-                timeout=6000,
-            )
-            _trigger_submission_automation(report_id, report_name)
+
+            def _continue_submit() -> None:
+                ui.notify(
+                    f"Report '{report_name}' prepared — {n} receipt(s) approved. "
+                    "Launching browser automation\u2026",
+                    type="positive",
+                    timeout=6000,
+                )
+                _trigger_submission_automation(report_id, report_name)
+
+            _open_oracle_manual_login_dialog(_continue_submit)
 
         def _trigger_submission_automation(report_id: str, report_name: str):
             activity_log.emit("step", f"Submitting report: {report_name}")
@@ -4416,23 +4556,21 @@ def page_settings():
                 value=current["oracle_url"],
             ).classes("w-full mb-3").props('outlined dense')
 
-            oracle_user_input = ui.input(
-                label="Username",
-                value=current["oracle_username"],
-            ).classes("w-full mb-3").props('outlined dense')
-
-            oracle_pw_input = ui.input(
-                label="Password",
-                password=True,
-                password_toggle_button=True,
-                placeholder="(saved)" if current["oracle_password_set"] else "",
+            approver_input = ui.input(
+                label="Approver (display name in Oracle)",
+                value=current.get("approver", ""),
+                placeholder='e.g. "Sethi, Siddharth"',
             ).classes("w-full").props('outlined dense')
+
+            ui.label(
+                "Oracle username and password are never saved. You sign in manually in the "
+                "browser whenever scraping or submission opens Chromium."
+            ).classes("text-xs text-slate-500 mt-2")
 
         def _save():
             warnings = svc.save_settings(
                 oracle_url=oracle_url_input.value,
-                oracle_username=oracle_user_input.value,
-                oracle_password=oracle_pw_input.value or None,
+                approver=approver_input.value,
                 openai_key=openai_key_input.value or None,
                 openai_model=openai_model_input.value,
             )

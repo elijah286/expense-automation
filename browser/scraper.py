@@ -86,6 +86,15 @@ def _frame_inner_text_has_approver_label(blob: str) -> bool:
 
 StatusCallback = Callable[[str], None]
 
+_ORACLE_LOGGED_IN_MARKERS = (
+    "Update Expense Reports",
+    "NIC iExpenses",
+    "Create Expense Report",
+    "Expenses Home",
+    "Track Submitted",
+    "Logged In As",
+)
+
 
 class TransactionScraper:
     """Headless Oracle iExpenses transaction scraper driven by Playwright."""
@@ -336,6 +345,44 @@ class TransactionScraper:
     # ------------------------------------------------------------------
     # Login
     # ------------------------------------------------------------------
+
+    def _oracle_shell_ready(self) -> bool:
+        """True when the iExpenses shell (or wizard) is visible — past the login screen."""
+        if not self.browser_page:
+            return False
+        for m in _ORACLE_LOGGED_IN_MARKERS:
+            if self._body_contains_text(m):
+                return True
+        if self._wizard_any_frame_on_step(1) or self._wizard_any_frame_on_step(2):
+            return True
+        return False
+
+    def wait_for_manual_oracle_login(self, *, timeout_s: float | None = None) -> None:
+        """Block until the user signs in manually in Chromium (detects post-login Oracle UI)."""
+        if not self.browser_page:
+            raise RuntimeError("Browser page not available.")
+        raw = (os.environ.get("AUTOMATED_EXPENSES_MANUAL_LOGIN_TIMEOUT_S") or "").strip()
+        if timeout_s is None:
+            try:
+                timeout_s = float(raw) if raw else 1200.0
+            except ValueError:
+                timeout_s = 1200.0
+        timeout_s = max(60.0, float(timeout_s))
+
+        self.set_status(
+            "Waiting for you to sign in to Oracle in the browser (including 2FA if prompted)…"
+        )
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self._oracle_shell_ready():
+                self._wait_for_oracle_page_stable(settle_ms=500)
+                self.set_status("Oracle session detected — continuing automation…")
+                return
+            self.browser_page.wait_for_timeout(400)
+
+        raise RuntimeError(
+            "Timed out waiting for Oracle login. Sign in in the Chromium window, then try again."
+        )
 
     def try_auto_login(self, username: str, password: str) -> bool:
         if not self.browser_page:
@@ -1732,26 +1779,28 @@ class TransactionScraper:
     def scrape(
         self,
         portal_url: str,
-        username: str,
-        password: str,
+        approver: str,
         *,
         keep_browser_on_error: bool = True,
     ) -> list[dict[str, Any]]:
-        """Full scraping flow: launch browser, login, navigate, scrape, cancel, close.
+        """Full scraping flow: launch browser, wait for manual login, navigate, scrape, cancel, close.
 
         Returns the list of scraped expense line dicts.
         When *keep_browser_on_error* is True (default), Chromium stays open on
         failure so the user can inspect the Oracle page state.
         """
         succeeded = False
+        approver = re.sub(r"\s+", " ", str(approver or "").strip())
+        if not approver:
+            raise RuntimeError("Approver display name is required (set it in Settings).")
+
         try:
             self.set_status("Launching Chromium…")
             self.open_browser(portal_url)
 
-            self.set_status("Logging in to Oracle…")
-            self.try_auto_login(username, password)
+            self.wait_for_manual_oracle_login()
             assert self.browser_page is not None
-            self.browser_page.wait_for_timeout(2000)
+            self.browser_page.wait_for_timeout(500)
 
             self.set_status("Expanding NIC iExpenses in Navigator…")
             self._oracle_expand_nic_iexpenses_menu()
@@ -1780,8 +1829,8 @@ class TransactionScraper:
                 raise RuntimeError("Could not locate Purpose field.")
             self.browser_page.wait_for_timeout(300)
 
-            self.set_status("Setting approver…")
-            if not self.fill_approver_in_any_frame("Sethi, Siddharth"):
+            self.set_status(f"Setting approver: {approver}…")
+            if not self.fill_approver_in_any_frame(approver):
                 raise RuntimeError("Could not locate Approver field.")
             # Oracle LOV dropdown interaction can trigger background re-renders;
             # wait for the page to settle before clicking Save.

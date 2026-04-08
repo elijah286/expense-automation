@@ -1,7 +1,8 @@
 """
-Store OpenAI + Oracle secrets in one Keychain entry so macOS usually prompts once per process.
+Store the OpenAI API key in the system keychain (macOS Keychain / Windows Credential Manager).
 
-Legacy layout used two items; we migrate on first load.
+Oracle portal credentials are not stored — users sign in manually in the browser each session.
+Legacy v1 blobs that included an expense password are migrated to OpenAI-only on load.
 """
 
 from __future__ import annotations
@@ -23,10 +24,7 @@ _loaded = False
 def _coerce_blob(raw: Any) -> dict[str, str] | None:
     if not isinstance(raw, dict):
         return None
-    return {
-        "openai_api_key": str(raw.get("openai_api_key") or "").strip(),
-        "expense_portal_password": str(raw.get("expense_portal_password") or "").strip(),
-    }
+    return {"openai_api_key": str(raw.get("openai_api_key") or "").strip()}
 
 
 def _persist_v1(blob: dict[str, str]) -> None:
@@ -58,6 +56,13 @@ def _load_blob() -> dict[str, str]:
             raw = keyring.get_password(KEYRING_SERVICE, KEYRING_CREDENTIALS_V1)
             if raw:
                 data = json.loads(raw)
+                if isinstance(data, dict) and data.get("expense_portal_password"):
+                    try:
+                        cleaned = {"openai_api_key": str(data.get("openai_api_key") or "").strip()}
+                        _persist_v1(cleaned)
+                        data = cleaned
+                    except Exception:
+                        pass
                 got = _coerce_blob(data)
                 if got is not None:
                     _blob = got
@@ -67,26 +72,25 @@ def _load_blob() -> dict[str, str]:
             pass
 
         oa = ""
-        ep = ""
         try:
             oa = (keyring.get_password(KEYRING_SERVICE, LEGACY_OPENAI) or "").strip()
         except Exception:
             pass
-        try:
-            ep = (keyring.get_password(KEYRING_SERVICE, LEGACY_EXPENSE) or "").strip()
-        except Exception:
-            pass
 
-        merged = {"openai_api_key": oa, "expense_portal_password": ep}
+        merged = {"openai_api_key": oa}
         _blob = merged
         _loaded = True
 
-        if oa or ep:
+        if oa:
             try:
                 _persist_v1(merged)
                 _delete_legacy()
             except Exception:
                 pass
+        try:
+            keyring.delete_password(KEYRING_SERVICE, LEGACY_EXPENSE)
+        except Exception:
+            pass
 
         return merged.copy()
 
@@ -107,34 +111,37 @@ def get_keychain_expense_password() -> str:
 def set_keychain_openai_key(key: str) -> str | None:
     stripped = key.strip()
     with _rlock:
-        _load_blob()
-        assert _blob is not None
-        b = {
-            "openai_api_key": stripped,
-            "expense_portal_password": _blob.get("expense_portal_password", ""),
-        }
+        b = {"openai_api_key": stripped}
         try:
             _persist_v1(b)
             _blob = b
+            _loaded = True
         except Exception as e:
             return str(e)
     return None
 
 
 def set_keychain_expense_password(password: str) -> str | None:
-    stripped = password.strip()
+    """No-op: Oracle passwords are not stored. Clears legacy keychain item if present."""
+    import keyring
+
+    try:
+        keyring.delete_password(KEYRING_SERVICE, LEGACY_EXPENSE)
+    except Exception:
+        pass
     with _rlock:
-        _load_blob()
-        assert _blob is not None
-        b = {
-            "openai_api_key": _blob.get("openai_api_key", ""),
-            "expense_portal_password": stripped,
-        }
+        global _blob, _loaded
         try:
-            _persist_v1(b)
-            _blob = b
-        except Exception as e:
-            return f"Could not save password to keychain: {e}"
+            raw = keyring.get_password(KEYRING_SERVICE, KEYRING_CREDENTIALS_V1)
+            if raw:
+                data = json.loads(raw)
+                if isinstance(data, dict) and data.get("expense_portal_password"):
+                    cleaned = {"openai_api_key": str(data.get("openai_api_key") or "").strip()}
+                    _persist_v1(cleaned)
+        except Exception:
+            pass
+        _loaded = False
+        _blob = None
     return None
 
 

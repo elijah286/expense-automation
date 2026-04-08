@@ -2135,14 +2135,12 @@ class ReportSubmitter(TransactionScraper):
     def submit(
         self,
         portal_url: str,
-        username: str,
-        password: str,
         payload: SubmissionPayload,
         *,
         resume_cdp_url: str | None = None,
         keep_browser_on_error: bool = True,
     ) -> dict[str, Any]:
-        """Full submission flow: launch → login → wizard → submit → close.
+        """Full submission flow: launch → manual login → wizard → submit → close.
 
         When *resume_cdp_url* is provided, attempts to reconnect to an
         existing Chromium instance and resume from the detected wizard step.
@@ -2193,10 +2191,9 @@ class ReportSubmitter(TransactionScraper):
                 self.set_status("Launching Chromium…")
                 self.open_browser(portal_url)
 
-                self.set_status("Logging in to Oracle…")
-                self.try_auto_login(username, password)
+                self.wait_for_manual_oracle_login()
                 assert self.browser_page is not None
-                self.browser_page.wait_for_timeout(2000)
+                self.browser_page.wait_for_timeout(500)
 
                 # Navigate to iExpenses and detect existing report
                 self.set_status("Expanding NIC iExpenses…")

@@ -1229,20 +1229,19 @@ class ExpenseService:
 
         raw = self._load_settings_raw()
         portal_url = (raw.get("legacy_url") or "").strip()
-        username = (raw.get("expense_username") or "").strip()
-        password = self._get_expense_password()
+        approver = (raw.get("approver") or "").strip()
 
         if not portal_url:
             raise RuntimeError(
                 "Portal URL not configured. Set it in Settings before scraping."
             )
-        if not username or not password:
+        if not approver:
             raise RuntimeError(
-                "Oracle username or password not configured. Set credentials in Settings."
+                "Oracle approver not configured. Set the approver display name in Settings."
             )
 
         scraper = TransactionScraper(on_status=on_status)
-        rows = scraper.scrape(portal_url, username, password)
+        rows = scraper.scrape(portal_url, approver)
         return len(rows)
 
     # ------------------------------------------------------------------
@@ -1305,14 +1304,14 @@ class ExpenseService:
 
         raw = self._load_settings_raw()
         portal_url = (raw.get("legacy_url") or "").strip()
-        username = (raw.get("expense_username") or "").strip()
-        password = self._get_expense_password()
-        approver = (raw.get("approver") or "Sethi, Siddharth").strip()
+        approver = (raw.get("approver") or "").strip()
 
         if not portal_url:
             raise RuntimeError("Portal URL not configured. Set it in Settings before submitting.")
-        if not username or not password:
-            raise RuntimeError("Oracle credentials not configured. Set them in Settings.")
+        if not approver:
+            raise RuntimeError(
+                "Oracle approver not configured. Set the approver display name in Settings."
+            )
 
         groups = load_expense_report_groups(self.app_dir)
         group = groups.get(report_id)
@@ -1374,7 +1373,8 @@ class ExpenseService:
         submitter = ReportSubmitter(on_status=on_status)
         try:
             result = submitter.submit(
-                portal_url, username, password, payload,
+                portal_url,
+                payload,
                 resume_cdp_url=resume_cdp_url,
             )
             self._save_submission_state({
@@ -1405,11 +1405,9 @@ class ExpenseService:
         """Return user-facing settings (secrets are masked)."""
         raw = self._load_settings_raw()
         openai_key = self._get_openai_key()
-        expense_pw = self._get_expense_password()
         return {
             "oracle_url": raw.get("legacy_url", ""),
-            "oracle_username": raw.get("expense_username", ""),
-            "oracle_password_set": bool(expense_pw),
+            "approver": raw.get("approver", ""),
             "openai_key_set": bool(openai_key),
             "openai_key_hint": f"...{openai_key[-4:]}" if len(openai_key) >= 4 else "",
             "openai_model": raw.get("openai_model", "gpt-4.1-mini"),
@@ -1420,8 +1418,7 @@ class ExpenseService:
         s = self.get_settings()
         return bool(
             s["oracle_url"]
-            and s["oracle_username"]
-            and s["oracle_password_set"]
+            and str(s.get("approver", "")).strip()
             and s["openai_key_set"]
         )
 
@@ -1433,17 +1430,14 @@ class ExpenseService:
             missing.append("OpenAI API Key")
         if not s["oracle_url"]:
             missing.append("Oracle Portal URL")
-        if not s["oracle_username"]:
-            missing.append("Oracle Username")
-        if not s["oracle_password_set"]:
-            missing.append("Oracle Password")
+        if not str(s.get("approver", "")).strip():
+            missing.append("Oracle approver display name")
         return missing
 
     def save_settings(
         self,
         oracle_url: str | None = None,
-        oracle_username: str | None = None,
-        oracle_password: str | None = None,
+        approver: str | None = None,
         openai_key: str | None = None,
         openai_model: str | None = None,
     ) -> list[str]:
@@ -1453,20 +1447,16 @@ class ExpenseService:
 
         if oracle_url is not None:
             raw["legacy_url"] = oracle_url.strip()
-        if oracle_username is not None:
-            raw["expense_username"] = oracle_username.strip()
+        if approver is not None:
+            raw["approver"] = approver.strip()
         if openai_model is not None:
             raw["openai_model"] = openai_model.strip()
+        raw.pop("expense_username", None)
 
         self._settings_path().parent.mkdir(parents=True, exist_ok=True)
         self._settings_path().write_text(
             json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-
-        if oracle_password is not None and oracle_password.strip():
-            w = self._set_expense_password(oracle_password.strip())
-            if w:
-                warnings.append(w)
 
         if openai_key is not None and openai_key.strip():
             w = self._set_openai_key(openai_key.strip())
@@ -1511,12 +1501,3 @@ class ExpenseService:
             json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         return f"Saved to settings file (keychain unavailable: {err})"
-
-    def _get_expense_password(self) -> str:
-        try:
-            return keychain_credentials.get_keychain_expense_password()
-        except Exception:
-            return ""
-
-    def _set_expense_password(self, password: str) -> str | None:
-        return keychain_credentials.set_keychain_expense_password(password)

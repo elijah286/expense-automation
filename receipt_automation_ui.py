@@ -348,7 +348,7 @@ def _match_label_to_options(label: str, options: list[str]) -> str | None:
 @dataclass
 class AppSettings:
     legacy_url: str = "https://ebiz-app.natinst.com/OA_HTML/AppsLocalLogin.jsp"
-    expense_username: str = ""
+    approver: str = ""
     openai_model: str = "gpt-4.1-mini"
     openai_http_verify: str = ""
     photos_limit: int = 5
@@ -383,7 +383,6 @@ class ReceiptAutomationUI:
         self.browser_page: Page | None = None
         self._openai_client = None
         self._openai_key_cache = ""
-        self._expense_password_cache = ""
         self._bootstrap_openai_key()
         self._last_populate_step: str = POPULATE_RESUME_KEYS[0]
         self._crash_resume_anchor: str | None = None
@@ -1110,8 +1109,7 @@ class ReceiptAutomationUI:
         if not hasattr(self, "_settings_url_var"):
             return
         self._settings_url_var.set(self.settings.legacy_url)
-        self._settings_expense_user_var.set(self.settings.expense_username)
-        self._settings_expense_pass_var.set(self.get_expense_password())
+        self._settings_approver_var.set(self.settings.approver)
         self._settings_model_var.set(self.settings.openai_model)
         self._settings_limit_var.set(str(self.settings.photos_limit))
         self._settings_export_var.set(self.settings.photos_export_dir)
@@ -3328,7 +3326,7 @@ class ReceiptAutomationUI:
         try:
             return AppSettings(
                 legacy_url=data.get("legacy_url", AppSettings.legacy_url),
-                expense_username=str(data.get("expense_username", "") or ""),
+                approver=str(data.get("approver", "") or ""),
                 openai_model=data.get("openai_model", AppSettings.openai_model),
                 openai_http_verify=str(data.get("openai_http_verify", "") or ""),
                 photos_limit=int(data.get("photos_limit", AppSettings.photos_limit)),
@@ -3344,6 +3342,7 @@ class ReceiptAutomationUI:
             payload = {**asdict(settings), SETTINGS_OPENAI_KEY: existing[SETTINGS_OPENAI_KEY]}
         else:
             payload = asdict(settings)
+        payload.pop("expense_username", None)
         self._write_settings_payload(payload)
         self.settings = settings
 
@@ -3721,35 +3720,6 @@ class ReceiptAutomationUI:
             return self._openai_key_cache
 
         return ""
-
-    def get_expense_password(self) -> str:
-        if self._expense_password_cache:
-            return self._expense_password_cache
-        try:
-            value = keychain_credentials.get_keychain_expense_password() or ""
-            if value:
-                self._expense_password_cache = value
-                return self._expense_password_cache
-        except Exception:
-            pass
-        return ""
-
-    def set_expense_password(self, password: str) -> str | None:
-        normalized = password.strip()
-        self._expense_password_cache = normalized
-        try:
-            if normalized:
-                err = keychain_credentials.set_keychain_expense_password(normalized)
-            else:
-                err = keychain_credentials.delete_keychain_expense_password()
-            if err:
-                return err
-            return None
-        except Exception as exc:
-            return (
-                "Expense portal password could not be saved to macOS keychain: "
-                f"{exc}"
-            )
 
     def set_openai_key(self, api_key: str) -> str | None:
         normalized = api_key.strip()
@@ -4383,36 +4353,26 @@ class ReceiptAutomationUI:
 
     def on_step_login(self) -> None:
         try:
+            from tkinter import messagebox
+
+            messagebox.showinfo(
+                "Oracle sign-in",
+                "Your Oracle username and password are not stored in this app.\n\n"
+                "Sign in manually in the Chromium window (including 2FA if required). "
+                "When you run scrape or expense-report automation, the app will wait until "
+                "you are logged in, then continue automatically.",
+            )
+        except Exception:
+            pass
+        try:
             self.open_controlled_browser(self.settings.legacy_url)
             self._refresh_activity_panel()
         except Exception as exc:
             self.set_status(f"Step 2 failed: could not open controlled browser ({exc}).")
             return
 
-        user = (self.settings.expense_username or "").strip()
-        password = self.get_expense_password().strip()
-        if user and password:
-            try:
-                if self._try_auto_login_expense_portal(user, password):
-                    self.set_status(
-                        "Step 2: submitted saved credentials in the browser. "
-                        "Complete any extra prompts (2FA, OK) in the Chromium window, then use Step 3."
-                    )
-                    self._refresh_activity_panel()
-                    return
-                self.set_status(
-                    "Step 2: could not auto-fill this login page; please sign in manually in Chromium, then Step 3."
-                )
-            except Exception as exc:
-                self.set_status(
-                    f"Step 2: auto-login error ({exc}); please sign in manually in Chromium."
-                )
-            self._refresh_activity_panel()
-            return
-
         self.set_status(
-            "Opened controlled Chromium window for expense login. "
-            "Add username/password in Settings for automatic sign-in, or log in manually, then continue to Step 3."
+            "Opened Chromium to the expense portal. Sign in manually, then continue with the workflow steps."
         )
         self._refresh_activity_panel()
 
@@ -4428,27 +4388,9 @@ class ReceiptAutomationUI:
             self.set_status(f"Relaunch failed: {exc}")
             self.log_event("err", f"Resume relaunch: could not open browser ({exc}).")
             return
-        user = (self.settings.expense_username or "").strip()
-        password = self.get_expense_password().strip()
-        if user and password:
-            try:
-                if self._try_auto_login_expense_portal(user, password):
-                    self.set_status(
-                        "Browser relaunched — credentials submitted. Complete 2FA or prompts if shown, "
-                        "then Continue automation."
-                    )
-                else:
-                    self.set_status(
-                        "Browser relaunched — sign in manually in Chromium, then Continue automation."
-                    )
-            except Exception as exc:
-                self.set_status(
-                    f"Browser relaunched — auto-login error ({exc}); sign in manually, then Continue."
-                )
-        else:
-            self.set_status(
-                "Browser relaunched — add credentials in Settings or sign in manually, then Continue automation."
-            )
+        self.set_status(
+            "Browser relaunched — sign in manually in Chromium, then Continue automation."
+        )
         self._refresh_activity_panel()
 
     def _post_login_wait_seconds(self) -> float:
@@ -5134,87 +5076,6 @@ class ReceiptAutomationUI:
         http_base, proc = self._spawn_chromium_cdp_subprocess()
         self._chromium_proc = proc
         self._attach_playwright_to_cdp(http_base, url)
-
-    def _try_auto_login_expense_portal(self, username: str, password: str) -> bool:
-        """Fill Oracle-style local login and submit if fields are found in any frame."""
-        if not self.browser_page:
-            return False
-        try:
-            self.browser_page.wait_for_load_state("domcontentloaded", timeout=8000)
-        except Exception:
-            pass
-        self.browser_page.wait_for_timeout(250)
-        deadline = time.monotonic() + 45.0
-        while time.monotonic() < deadline:
-            for frame in self.browser_page.frames:
-                if self._fill_and_submit_login_frame(frame, username, password):
-                    return True
-            self.browser_page.wait_for_timeout(200)
-        return False
-
-    def _fill_and_submit_login_frame(self, frame: Frame, username: str, password: str) -> bool:
-        """Oracle may show only password when a user cookie/session is already present (username on screen as text)."""
-        try:
-            pass_loc = frame.locator(
-                'input[name="passwordField"], input[name="password"][type="password"], '
-                'input[type="password"]'
-            )
-            n_pw = pass_loc.count()
-            if n_pw == 0:
-                return False
-            p = None
-            for i in range(min(n_pw, 24)):
-                cand = pass_loc.nth(i)
-                try:
-                    cand.wait_for(state="visible", timeout=150)
-                    p = cand
-                    break
-                except PlaywrightTimeoutError:
-                    continue
-                except Exception:
-                    continue
-            if p is None:
-                return False
-
-            user_loc = frame.locator(
-                'input[name="usernameField"], input[name="userid"], '
-                'input#usernameField, input[id*="Username" i][type="text"]'
-            )
-            n_user = user_loc.count()
-            for j in range(min(n_user, 12)):
-                u = user_loc.nth(j)
-                try:
-                    u.wait_for(state="visible", timeout=150)
-                    u.click(timeout=4000)
-                    u.fill(username, timeout=4000)
-                    break
-                except PlaywrightTimeoutError:
-                    continue
-                except Exception:
-                    continue
-
-            p.click(timeout=4000)
-            p.fill(password, timeout=4000)
-
-            for btn in [
-                frame.locator("input[type='submit'][value*='Log' i]"),
-                frame.locator("input[type='submit'][value*='Sign' i]"),
-                frame.get_by_role("button", name=re.compile(r"log\s*in|sign\s*on|submit", re.I)),
-            ]:
-                try:
-                    if btn.count() == 0:
-                        continue
-                    first = btn.first
-                    first.wait_for(state="visible", timeout=400)
-                    first.click(timeout=12000)
-                    return True
-                except Exception:
-                    continue
-
-            p.press("Enter")
-            return True
-        except Exception:
-            return False
 
     def _close_chromium_stderr_log(self) -> None:
         fp = self._chromium_stderr_log_fp
@@ -10584,7 +10445,13 @@ class ReceiptAutomationUI:
             self._last_populate_step = "fill_approver"
             self._refresh_activity_panel()
             self.set_status("Step 4.1: verifying approver (set if needed)…")
-            if not self.fill_approver_in_any_frame("Sethi, Siddharth"):
+            approver = (self.settings.approver or "").strip()
+            if not approver:
+                raise RuntimeError(
+                    "Approver not configured — set the approver display name in Settings "
+                    '(e.g. "Sethi, Siddharth").'
+                )
+            if not self.fill_approver_in_any_frame(approver):
                 raise RuntimeError("Could not locate Approver field.")
 
         if self._populate_at_or_after(start_from, "save_step1"):

@@ -1,4 +1,4 @@
-"""Settings tab: URL, credentials, OpenAI, Photos, TLS."""
+"""Settings tab: URL, Oracle approver, OpenAI, Photos, TLS."""
 
 from __future__ import annotations
 
@@ -24,8 +24,7 @@ def build_settings_tab(app, parent: ttk.Frame) -> None:
     canvas.configure(yscrollcommand=ys.set)
 
     app._settings_url_var = tk.StringVar(value=app.settings.legacy_url)
-    app._settings_expense_user_var = tk.StringVar(value=app.settings.expense_username)
-    app._settings_expense_pass_var = tk.StringVar(value=app.get_expense_password())
+    app._settings_approver_var = tk.StringVar(value=app.settings.approver)
     app._settings_model_var = tk.StringVar(value=app.settings.openai_model)
     app._settings_limit_var = tk.StringVar(value=str(app.settings.photos_limit))
     app._settings_export_var = tk.StringVar(value=app.settings.photos_export_dir)
@@ -36,21 +35,22 @@ def build_settings_tab(app, parent: ttk.Frame) -> None:
     ttk.Label(frame, text="Legacy URL").grid(row=r, column=0, sticky="w", pady=6)
     ttk.Entry(frame, textvariable=app._settings_url_var, width=58).grid(row=r, column=1, sticky="we", pady=6)
     r += 1
-    ttk.Label(frame, text="Expense login username").grid(row=r, column=0, sticky="w", pady=6)
-    ttk.Entry(frame, textvariable=app._settings_expense_user_var, width=58).grid(
-        row=r, column=1, sticky="we", pady=6
-    )
-    r += 1
-    ttk.Label(frame, text="Expense login password").grid(row=r, column=0, sticky="w", pady=6)
-    ttk.Entry(frame, textvariable=app._settings_expense_pass_var, width=58, show="*").grid(
+    ttk.Label(frame, text="Approver (Oracle display name)").grid(row=r, column=0, sticky="w", pady=6)
+    ttk.Entry(frame, textvariable=app._settings_approver_var, width=58).grid(
         row=r, column=1, sticky="we", pady=6
     )
     r += 1
     ttk.Label(
         frame,
-        text="Password is stored in the keychain (not in settings.json).",
+        text="Used to find the approver in Oracle. Example: Last, First",
         foreground="#666",
     ).grid(row=r, column=1, sticky="w", pady=(0, 4))
+    r += 1
+    ttk.Label(
+        frame,
+        text="Oracle login is manual in the browser; credentials are not stored.",
+        foreground="#666",
+    ).grid(row=r, column=1, sticky="w", pady=(0, 8))
     r += 1
     ttk.Label(frame, text="OpenAI model").grid(row=r, column=0, sticky="w", pady=6)
     ttk.Entry(frame, textvariable=app._settings_model_var, width=58).grid(row=r, column=1, sticky="we", pady=6)
@@ -104,7 +104,7 @@ def _save(app) -> None:
         return
     new_settings = AppSettings(
         legacy_url=app._settings_url_var.get().strip(),
-        expense_username=app._settings_expense_user_var.get().strip(),
+        approver=app._settings_approver_var.get().strip(),
         openai_model=app._settings_model_var.get().strip() or AppSettings.openai_model,
         openai_http_verify=app._settings_tls_var.get().strip(),
         photos_limit=max(parsed_limit, 1),
@@ -112,15 +112,21 @@ def _save(app) -> None:
     )
     app.save_settings(new_settings)
     app._openai_client = None
-    expense_pass_warning = app.set_expense_password(app._settings_expense_pass_var.get())
     key_warning = app.set_openai_key(app._settings_api_var.get())
-    parts: list[str] = []
-    if expense_pass_warning:
-        parts.append(expense_pass_warning)
+    try:
+        import keychain_credentials
+
+        keychain_credentials.delete_keychain_expense_password()
+    except Exception:
+        pass
+    try:
+        payload = app._read_settings_payload()
+        payload.pop("expense_username", None)
+        app._write_settings_payload(payload)
+    except Exception:
+        pass
     if key_warning:
-        parts.append(key_warning)
-    if parts:
-        app.set_status("Settings saved. " + " ".join(parts))
+        app.set_status("Settings saved. " + key_warning)
     else:
         app.set_status("Settings saved.")
     app.refresh_all_tabs()
