@@ -38,11 +38,7 @@ python -m pip install -q -r requirements.txt -r requirements-build.txt
 python "$ROOT/packaging/generate_icons.py"
 python "$ROOT/packaging/generate_dmg_background.py"
 
-BUNDLE_DIR="$ROOT/packaging/build/ms-playwright"
-export PLAYWRIGHT_BROWSERS_PATH="$BUNDLE_DIR"
-rm -rf "$BUNDLE_DIR"
-mkdir -p "$BUNDLE_DIR"
-python -m playwright install chromium
+# Chromium is downloaded on first launch (not bundled — saves ~500 MB).
 
 rm -rf "$ROOT/build" "$ROOT/dist"
 
@@ -53,12 +49,6 @@ if [[ ! -d "$APP" ]]; then
   echo "Expected $APP" >&2
   exit 1
 fi
-
-# Chromium lives beside the bundle (PyInstaller cannot embed nested .app browsers — codesign).
-RES="$APP/Contents/Resources"
-mkdir -p "$RES"
-rm -rf "$RES/ms-playwright"
-cp -R "$BUNDLE_DIR" "$RES/ms-playwright"
 
 DMG="$ROOT/dist/Expense Automator.dmg"
 rm -f "$DMG"

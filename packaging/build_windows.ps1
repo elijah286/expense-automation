@@ -20,11 +20,7 @@ python -m pip install -q -r requirements.txt -r requirements-build.txt
 
 python (Join-Path $Root "packaging\generate_icons.py")
 
-$BundleDir = Join-Path $Root "packaging\build\ms-playwright"
-$env:PLAYWRIGHT_BROWSERS_PATH = $BundleDir
-if (Test-Path $BundleDir) { Remove-Item -Recurse -Force $BundleDir }
-New-Item -ItemType Directory -Force -Path $BundleDir | Out-Null
-python -m playwright install chromium
+# Chromium is downloaded on first launch (not bundled — saves ~500 MB).
 
 if (Test-Path (Join-Path $Root "build")) { Remove-Item -Recurse -Force (Join-Path $Root "build") }
 if (Test-Path (Join-Path $Root "dist")) { Remove-Item -Recurse -Force (Join-Path $Root "dist") }
@@ -35,10 +31,6 @@ $Out = Join-Path $Root "dist\ExpenseAutomator\ExpenseAutomator.exe"
 if (-not (Test-Path $Out)) {
     Write-Error "Expected $Out"
 }
-
-$WinBrowsers = Join-Path $Root "dist\ExpenseAutomator\ms-playwright"
-if (Test-Path $WinBrowsers) { Remove-Item -Recurse -Force $WinBrowsers }
-Copy-Item -Recurse -Force $BundleDir $WinBrowsers
 
 Write-Host "Built: $Out"
 Write-Host "Optional: install Inno Setup and run: iscc packaging\ExpenseAutomator.iss"

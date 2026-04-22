@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,21 +19,34 @@ from web.env_paths import env_file_paths, is_frozen, user_data_dir
 
 
 def _bootstrap_playwright_browsers() -> None:
-    """Point Playwright at bundled Chromium (copied next to the exe / in .app Resources)."""
+    """Ensure Playwright Chromium is available, downloading on first launch if needed."""
+    browsers_dir = user_data_dir() / "ms-playwright"
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browsers_dir))
+
     if not is_frozen():
         return
+
+    # Also check bundled locations (legacy installs that still ship Chromium).
     exe = Path(sys.executable).resolve()
-    candidates: list[Path] = [
-        exe.parent / "ms-playwright",
-    ]
+    bundled: list[Path] = [exe.parent / "ms-playwright"]
     if sys.platform == "darwin" and exe.parent.name == "MacOS":
-        candidates.insert(0, exe.parent.parent / "Resources" / "ms-playwright")
+        bundled.insert(0, exe.parent.parent / "Resources" / "ms-playwright")
     if hasattr(sys, "_MEIPASS"):
-        candidates.append(Path(sys._MEIPASS) / "ms-playwright")
-    for p in candidates:
+        bundled.append(Path(sys._MEIPASS) / "ms-playwright")
+    for p in bundled:
         if p.is_dir():
-            os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(p))
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(p)
             return
+
+    # No bundled Chromium — download on demand into ~/.expense-automator/ms-playwright.
+    if not any(browsers_dir.glob("chromium-*")):
+        log = logging.getLogger("expense_automator")
+        log.info("Chromium not found — downloading via Playwright (one-time setup)...")
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(browsers_dir)},
+            check=True,
+        )
 
 
 _bootstrap_playwright_browsers()
