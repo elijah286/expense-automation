@@ -1,0 +1,35 @@
+# Build the Windows installer on every push to main (download from Actions artifacts).
+name: Windows Installer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build app with PyInstaller
+        run: .\packaging\build_windows.ps1
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        run: iscc packaging\ExpenseAutomator.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Expense-Automator-Windows
+          path: dist\ExpenseAutomator_Setup.exe
+          if-no-files-found: error

@@ -2,6 +2,17 @@
 
 Automates expense-report entry by driving a real browser against the legacy expense portal. Instead of tedious copy-paste, the tool scrapes your credit-card transactions, matches them to receipt photos, and fills everything in for you.
 
+## Download
+
+| Platform | Installer |
+|----------|-----------|
+| **macOS** | [Expense Automator.dmg](https://github.com/elijah286/oracle-expense-automation/actions/workflows/macos-dmg.yml) — download the latest DMG from Actions → Artifacts |
+| **Windows** | [ExpenseAutomator_Setup.exe](https://github.com/elijah286/oracle-expense-automation/actions/workflows/windows-installer.yml) — download the latest installer from Actions → Artifacts |
+
+> Go to the linked Actions page → click the latest successful run → scroll to **Artifacts** → download.
+
+---
+
 ### How it works & what it does with your data
 
 This app does **exactly what you would do by hand** — it opens a real browser window, logs into Oracle with your credentials, reads your credit-card transactions, and types values into the expense-report form. You can watch every step happen live on screen.

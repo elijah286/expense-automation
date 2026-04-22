@@ -2,8 +2,10 @@
 ; Install: https://jrsoftware.org/isinfo.php
 ; Run from repo root: iscc packaging\ExpenseAutomator.iss
 
+#define VerFile FileOpen(SourcePath + "..\VERSION")
+#define MyAppVersion Trim(FileRead(VerFile))
+#expr FileClose(VerFile)
 #define MyAppName "Expense Automator"
-#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Expense Automator"
 #define MyAppExeName "ExpenseAutomator.exe"
 

@@ -11,6 +11,7 @@ from PyInstaller.utils.hooks import collect_all
 # Directory containing this .spec file (packaging/)
 _SPEC_DIR = Path(SPEC).resolve().parent
 PROJECT = _SPEC_DIR.parent
+_VERSION = (PROJECT / "VERSION").read_text().strip()
 ICON_DIR = PROJECT / "packaging" / "icons"
 ICON_MAC = ICON_DIR / "ExpenseAutomator.icns"
 ICON_WIN = ICON_DIR / "ExpenseAutomator.ico"
@@ -117,8 +118,8 @@ if IS_MAC:
             "NSHighResolutionCapable": True,
             "CFBundleDisplayName": "Expense Automator",
             "CFBundleName": "Expense Automator",
-            "CFBundleShortVersionString": "1.0.0",
-            "CFBundleVersion": "1.0.0",
+            "CFBundleShortVersionString": _VERSION,
+            "CFBundleVersion": _VERSION,
         },
     )
 elif IS_WIN:
