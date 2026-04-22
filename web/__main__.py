@@ -13,6 +13,22 @@ from pathlib import Path
 if __name__ == "__main__":
     multiprocessing.freeze_support()
 
+    # --install-chromium: download Chromium and exit (used by installers).
+    if "--install-chromium" in sys.argv:
+        from web.env_paths import user_data_dir as _udd
+
+        _dest = _udd() / "ms-playwright"
+        _dest.mkdir(parents=True, exist_ok=True)
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_dest)
+        import subprocess as _sp
+
+        _sp.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(_dest)},
+            check=True,
+        )
+        sys.exit(0)
+
 from dotenv import load_dotenv
 
 from web.env_paths import env_file_paths, is_frozen, user_data_dir
