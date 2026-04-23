@@ -2196,7 +2196,7 @@ class ReportSubmitter(TransactionScraper):
                 self.browser_page.wait_for_timeout(500)
 
                 # Navigate to iExpenses and detect existing report
-                self.set_status("Expanding NIC iExpenses…")
+                self.set_status("Expanding iExpenses in Navigator…")
                 self._oracle_expand_nic_iexpenses_menu()
                 self._wait_for_oracle_page_stable(settle_ms=600)
 

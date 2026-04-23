@@ -25,7 +25,7 @@ import keychain_credentials
 keychain_credentials.enable_keychain_access_gate()
 
 from web.service import ExpenseService, ExpenseReportGroup, MatchReviewItem, ReceiptDoc, ReportReadiness, TransactionRow
-from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS
+from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS, get_expense_type_options
 from web.activity_log import activity_log
 
 svc = ExpenseService()
@@ -4294,11 +4294,12 @@ def page_classification():
                     for v in rows:
                         mk = v["merchant_key"]
                         current_type = v["expense_type"]
+                        opts = get_expense_type_options()
                         with ui.element("div").classes("classify-row"):
                             ui.label(mk).classes("classify-merchant")
                             ui.select(
-                                options=PORTAL_EXPENSE_TYPE_OPTIONS,
-                                value=current_type if current_type in PORTAL_EXPENSE_TYPE_OPTIONS else None,
+                                options=opts,
+                                value=current_type if current_type in opts else None,
                                 on_change=lambda e, key=mk: (
                                     svc.set_vendor_classification(key, e.value),
                                     ui.notify(f"Set {key} \u2192 {e.value}", type="positive"),
@@ -4724,6 +4725,12 @@ def page_settings():
                 label="Approver (display name in Oracle)",
                 value=current.get("approver", ""),
                 placeholder='e.g. "Sethi, Siddharth"',
+            ).classes("w-full mb-3").props('outlined dense')
+
+            nav_label_input = ui.input(
+                label="Navigator menu label (iExpenses folder name)",
+                value=current.get("nav_menu_label", ""),
+                placeholder='e.g. "NIC iExpenses" — leave blank for default',
             ).classes("w-full").props('outlined dense')
 
             ui.label(
@@ -4737,6 +4744,7 @@ def page_settings():
                 approver=approver_input.value,
                 openai_key=openai_key_input.value or None,
                 openai_model=openai_model_input.value,
+                nav_menu_label=nav_label_input.value,
             )
             if warnings:
                 for w in warnings:

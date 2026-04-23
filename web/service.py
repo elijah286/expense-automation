@@ -1240,7 +1240,7 @@ class ExpenseService:
                 "Oracle approver not configured. Set the approver display name in Settings."
             )
 
-        scraper = TransactionScraper(on_status=on_status)
+        scraper = TransactionScraper(on_status=on_status, nav_menu_label=raw.get("nav_menu_label", ""))
         rows = scraper.scrape(portal_url, approver)
         return len(rows)
 
@@ -1370,7 +1370,7 @@ class ExpenseService:
         pending = self.get_pending_submission(report_id)
         resume_cdp_url = pending.get("cdp_url") if pending else None
 
-        submitter = ReportSubmitter(on_status=on_status)
+        submitter = ReportSubmitter(on_status=on_status, nav_menu_label=raw.get("nav_menu_label", ""))
         try:
             result = submitter.submit(
                 portal_url,
@@ -1411,6 +1411,7 @@ class ExpenseService:
             "openai_key_set": bool(openai_key),
             "openai_key_hint": f"...{openai_key[-4:]}" if len(openai_key) >= 4 else "",
             "openai_model": raw.get("openai_model", "gpt-4.1-mini"),
+            "nav_menu_label": raw.get("nav_menu_label", ""),
         }
 
     def credentials_ready(self) -> bool:
@@ -1440,6 +1441,7 @@ class ExpenseService:
         approver: str | None = None,
         openai_key: str | None = None,
         openai_model: str | None = None,
+        nav_menu_label: str | None = None,
     ) -> list[str]:
         """Persist settings. Returns list of warnings (empty = all good)."""
         warnings: list[str] = []
@@ -1451,6 +1453,8 @@ class ExpenseService:
             raw["approver"] = approver.strip()
         if openai_model is not None:
             raw["openai_model"] = openai_model.strip()
+        if nav_menu_label is not None:
+            raw["nav_menu_label"] = nav_menu_label.strip()
         raw.pop("expense_username", None)
 
         self._settings_path().parent.mkdir(parents=True, exist_ok=True)

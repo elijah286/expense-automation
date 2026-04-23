@@ -88,7 +88,6 @@ StatusCallback = Callable[[str], None]
 
 _ORACLE_LOGGED_IN_MARKERS = (
     "Update Expense Reports",
-    "NIC iExpenses",
     "Create Expense Report",
     "Expenses Home",
     "Track Submitted",
@@ -99,8 +98,9 @@ _ORACLE_LOGGED_IN_MARKERS = (
 class TransactionScraper:
     """Headless Oracle iExpenses transaction scraper driven by Playwright."""
 
-    def __init__(self, *, on_status: StatusCallback | None = None) -> None:
+    def __init__(self, *, on_status: StatusCallback | None = None, nav_menu_label: str = "") -> None:
         self._on_status = on_status or (lambda _msg: None)
+        self._nav_menu_label = nav_menu_label or "iExpenses"
         self.playwright: Playwright | None = None
         self.browser: Browser | None = None
         self.browser_context: BrowserContext | None = None
@@ -350,7 +350,10 @@ class TransactionScraper:
         """True when the iExpenses shell (or wizard) is visible — past the login screen."""
         if not self.browser_page:
             return False
-        for m in _ORACLE_LOGGED_IN_MARKERS:
+        markers = list(_ORACLE_LOGGED_IN_MARKERS)
+        if self._nav_menu_label:
+            markers.append(self._nav_menu_label)
+        for m in markers:
             if self._body_contains_text(m):
                 return True
         if self._wizard_any_frame_on_step(1) or self._wizard_any_frame_on_step(2):
@@ -573,17 +576,18 @@ class TransactionScraper:
     def _oracle_expand_nic_iexpenses_menu(self) -> None:
         if not self.browser_page:
             return
+        nav_label = self._nav_menu_label
         if self._body_contains_text("Create Expense Report"):
             return
-        self._oracle_expand_navigator_row_for_label("NIC iExpenses")
+        self._oracle_expand_navigator_row_for_label(nav_label)
         self.browser_page.wait_for_timeout(900)
         if self._body_contains_text("Create Expense Report"):
             return
-        self.click_text_in_any_frame("NIC iExpenses")
+        self.click_text_in_any_frame(nav_label)
         self.browser_page.wait_for_timeout(1000)
         if self._body_contains_text("Create Expense Report"):
             return
-        self._oracle_expand_navigator_row_for_label("NIC iExpenses")
+        self._oracle_expand_navigator_row_for_label(nav_label)
         self.browser_page.wait_for_timeout(700)
 
     # ------------------------------------------------------------------
@@ -1802,7 +1806,7 @@ class TransactionScraper:
             assert self.browser_page is not None
             self.browser_page.wait_for_timeout(500)
 
-            self.set_status("Expanding NIC iExpenses in Navigator…")
+            self.set_status("Expanding iExpenses in Navigator…")
             self._oracle_expand_nic_iexpenses_menu()
             self.browser_page.wait_for_timeout(400)
 

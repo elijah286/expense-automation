@@ -102,7 +102,7 @@ from llm_query_cache import (
 )
 from classification.service import classify_transactions
 from matching.pipeline import match_transactions_to_receipts
-from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS
+from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS, get_expense_type_options
 from receipt_matching import (
     REVIEW_CONFIDENCE_THRESHOLD,
     match_one_expense_line_to_receipts,
@@ -117,8 +117,8 @@ UI_LAYOUT_FILE = APP_DIR / "ui_layout.json"
 VENDOR_EXPENSE_CACHE_FILE = APP_DIR / "vendor_expense_types.json"
 ENV_OPENAI_KEY = "OPENAI_API_KEY"
 SETTINGS_OPENAI_KEY = "openai_api_key"
-DEBUG_LOG_PATH = Path("/Users/elijahkerry/expense-automator/.cursor/debug-c7332b.log")
-DEBUG_SESSION_ID = "c7332b"
+DEBUG_LOG_PATH = APP_DIR / "debug.log"
+DEBUG_SESSION_ID = "debug"
 INCLUDE_CHECKED = "[x]"
 INCLUDE_UNCHECKED = "[ ]"
 AUTO_INCLUDE_CONFIDENCE_THRESHOLD = REVIEW_CONFIDENCE_THRESHOLD
@@ -132,7 +132,7 @@ except Exception:
 
 # Ordered resume anchors for Step 3 (create expense report). Keys must match _execute_populate_from phases.
 POPULATE_RESUME_STEPS: list[tuple[str, str]] = [
-    ("nic_iexpenses", "Step 3: Navigate to Expenses Home (NIC iExpenses)"),
+    ("nic_iexpenses", "Step 3: Navigate to Expenses Home (iExpenses Navigator)"),
     ("create_report", "Step 4.0: Open Create Expense Report (new report path)"),
     ("wait_step1", "Step 4.1 (Oracle Step 1 of 6): Verify purpose and approver"),
     ("select_template", "Step 4.1 internal: verify Travel template"),
@@ -347,12 +347,13 @@ def _match_label_to_options(label: str, options: list[str]) -> str | None:
 
 @dataclass
 class AppSettings:
-    legacy_url: str = "https://ebiz-app.natinst.com/OA_HTML/AppsLocalLogin.jsp"
+    legacy_url: str = ""
     approver: str = ""
     openai_model: str = "gpt-4.1-mini"
     openai_http_verify: str = ""
     photos_limit: int = 5
     photos_export_dir: str = "./photos-exports"
+    nav_menu_label: str = ""
 
 
 # Preview pane: keep source bounded so pan/zoom stays responsive; sharpen after gestures settle.
@@ -943,7 +944,7 @@ class ReceiptAutomationUI:
         by_id = {str(r.get("transaction_id", "") or "").strip(): r for r in suggestions if isinstance(r, dict)}
         combo = getattr(self, "_classification_type_combo", None)
         if combo is not None:
-            combo.configure(values=list(PORTAL_EXPENSE_TYPE_OPTIONS))
+            combo.configure(values=list(get_expense_type_options()))
         for line in lines:
             lid = str(line.get("line_id", "") or "").strip()
             if not lid:
@@ -1705,7 +1706,7 @@ class ReceiptAutomationUI:
             combo.configure(state=("readonly" if in_opts or not eff else "normal"))
             combo.set(eff or "")
         else:
-            vals = list(PORTAL_EXPENSE_TYPE_OPTIONS)
+            vals = list(get_expense_type_options())
             if eff and eff not in vals:
                 vals = [eff] + vals
             combo.configure(values=vals, state="normal")
@@ -1749,7 +1750,7 @@ class ReceiptAutomationUI:
         if not targets:
             self.set_status("No vendors without an expense type — nothing to scan.")
             return
-        opts = list(PORTAL_EXPENSE_TYPE_OPTIONS)
+        opts = list(get_expense_type_options())
         total = len(targets)
         self._expense_types_scan_worker_active = True
         self.set_status(f"Scanning {total} vendor(s) with LLM…")
@@ -3331,6 +3332,7 @@ class ReceiptAutomationUI:
                 openai_http_verify=str(data.get("openai_http_verify", "") or ""),
                 photos_limit=int(data.get("photos_limit", AppSettings.photos_limit)),
                 photos_export_dir=data.get("photos_export_dir", AppSettings.photos_export_dir),
+                nav_menu_label=data.get("nav_menu_label", AppSettings.nav_menu_label),
             )
         except Exception:
             return AppSettings()
@@ -4404,20 +4406,19 @@ class ReceiptAutomationUI:
             return 600.0
 
     def _expense_portal_shell_visible(self) -> bool:
-        """True when the main iExpenses shell is visible — past the username/password login screen.
-
-        Includes markers that appear after SSO even before opening NIC iExpenses (e.g. header / Expenses Home tab).
-        """
+        """True when the main iExpenses shell is visible — past the username/password login screen."""
         if not self.browser_page:
             return False
-        markers = (
+        markers = [
             "Update Expense Reports",
-            "NIC iExpenses",
             "Create Expense Report",
             "Expenses Home",
             "Track Submitted",
             "Logged In As",
-        )
+        ]
+        nav_label = getattr(self.settings, "nav_menu_label", "") or ""
+        if nav_label:
+            markers.append(nav_label)
         return any(self._body_contains_text(m) for m in markers)
 
     def _wait_for_expense_portal_logged_in(self, *, context: str = "resume") -> None:
@@ -4450,7 +4451,7 @@ class ReceiptAutomationUI:
                 self.log_event(
                     "browser",
                     f"{context}: still on login or redirect — finish signing in; looking for portal shell "
-                    "(Expenses Home, Logged In As, NIC iExpenses, Create/Update Expense Reports, …)…",
+                    "(Expenses Home, Logged In As, Create/Update Expense Reports, …)…",
                 )
                 self.set_status(
                     "Still waiting — finish login in the Chromium window (SSO/2FA). "
@@ -4459,19 +4460,19 @@ class ReceiptAutomationUI:
             self.browser_page.wait_for_timeout(450)
         raise RuntimeError(
             "Timed out waiting for the expense portal after login. "
-            "Sign in until the logged-in shell appears (e.g. Expenses Home, NIC iExpenses, or Create Expense Report), "
+            "Sign in until the logged-in shell appears (e.g. Expenses Home or Create Expense Report), "
             "then try Resume again."
         )
 
     def _navigate_to_expenses_home_for_resume(self) -> None:
-        """Resume path: NIC iExpenses → Expenses Home tab, same as manual flow (not *Create Expense Report*)."""
+        """Resume path: iExpenses Navigator → Expenses Home tab, same as manual flow (not *Create Expense Report*)."""
         if not self.browser_page:
             return
         if self._body_contains_text("Update Expense Reports"):
             self.log_event("browser", "Resume: Update Expense Reports already visible.")
             return
-        self.set_status("Resume: NIC iExpenses → Expenses Home (same as manual — then Update pencil)…")
-        self.log_event("browser", "Resume: expanding NIC iExpenses; opening Expenses Home (not Create Expense Report).")
+        self.set_status("Resume: iExpenses Navigator → Expenses Home (same as manual — then Update pencil)…")
+        self.log_event("browser", "Resume: expanding iExpenses Navigator; opening Expenses Home (not Create Expense Report).")
         self._oracle_expand_nic_iexpenses_menu()
         self.browser_page.wait_for_timeout(800)
         clicked = False
@@ -4515,7 +4516,7 @@ class ReceiptAutomationUI:
             self.browser_page.wait_for_timeout(400)
         self.log_event(
             "warn",
-            "Resume: “Update Expense Reports” not found after NIC iExpenses / Expenses Home — try manual navigation.",
+            "Resume: “Update Expense Reports” not found after iExpenses Navigator / Expenses Home — try manual navigation.",
         )
 
     def _enable_crash_resume_button(self) -> None:
@@ -5349,7 +5350,7 @@ class ReceiptAutomationUI:
         Worker thread: for each unique merchant on lines without a vendor-cache expense type,
         call the LLM (portal option list) and persist. Refreshes report / Expense types tabs on UI thread.
         """
-        opts = list(PORTAL_EXPENSE_TYPE_OPTIONS)
+        opts = list(get_expense_type_options())
         cache = dict(self._load_vendor_expense_cache())
         # Fast path: deterministic/user-memory classification suggestions before spending LLM calls.
         classifications = classify_transactions(line_list, user_memory=cache)
@@ -7618,20 +7619,21 @@ class ReceiptAutomationUI:
         return False
 
     def _oracle_expand_nic_iexpenses_menu(self) -> None:
-        """Ensure NIC iExpenses Navigator folder is expanded so children (e.g. Create Expense Report) appear."""
+        """Ensure the Navigator folder is expanded so children (e.g. Create Expense Report) appear."""
         if not self.browser_page:
             return
+        nav_label = getattr(self.settings, "nav_menu_label", "") or "iExpenses"
         if self._body_contains_text("Create Expense Report"):
             return
-        self._oracle_expand_navigator_row_for_label("NIC iExpenses")
+        self._oracle_expand_navigator_row_for_label(nav_label)
         self.browser_page.wait_for_timeout(900)
         if self._body_contains_text("Create Expense Report"):
             return
-        self.click_text_in_any_frame("NIC iExpenses")
+        self.click_text_in_any_frame(nav_label)
         self.browser_page.wait_for_timeout(1000)
         if self._body_contains_text("Create Expense Report"):
             return
-        self._oracle_expand_navigator_row_for_label("NIC iExpenses")
+        self._oracle_expand_navigator_row_for_label(nav_label)
         self.browser_page.wait_for_timeout(700)
 
     def _frames_preferred_first(self, preferred: Frame | None) -> list[Frame]:
@@ -10381,7 +10383,7 @@ class ReceiptAutomationUI:
             self._populate_ui_current = "nic_iexpenses"
             self._last_populate_step = "nic_iexpenses"
             self._refresh_activity_panel()
-            self.set_status("Expanding NIC iExpenses in Navigator…")
+            self.set_status("Expanding iExpenses in Navigator…")
             self._oracle_expand_nic_iexpenses_menu()
             self.browser_page.wait_for_timeout(400)
 
@@ -10399,7 +10401,7 @@ class ReceiptAutomationUI:
             if not self.click_text_in_any_frame("Create Expense Report"):
                 raise RuntimeError(
                     "Could not click 'Create Expense Report'. "
-                    "Expand “NIC iExpenses” in the left Navigator (folder/disclosure) until the link appears, "
+                    "Expand the iExpenses folder in the left Navigator (folder/disclosure) until the link appears, "
                     "then use Resume from this step."
                 )
 
