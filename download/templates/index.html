@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Expense Automator — Download</title>
+  <meta name="description" content="Automate Oracle expense reports. Matches receipts to transactions, fills forms, and submits — all running locally on your machine." />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+<!-- ─── Hero ─────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-badge">v1.0.0</div>
+    <h1>Expense Automator</h1>
+    <p class="hero-subtitle">
+      Stop copy-pasting receipts into Oracle.<br />
+      Let the app match, classify, and submit your expense reports automatically.
+    </p>
+
+    <div class="download-buttons">
+      <a href="https://github.com/elijah286/expense-automation/actions/workflows/macos-dmg.yml" class="btn btn-primary" target="_blank" rel="noopener">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5C17.88 20.74 17 21.95 15.66 21.97C14.32 21.99 13.89 21.18 12.37 21.18C10.84 21.18 10.37 21.95 9.1 21.99C7.79 22.03 6.8 20.68 5.96 19.47C4.25 16.97 2.94 12.45 4.7 9.39C5.57 7.87 7.13 6.91 8.82 6.88C10.1 6.86 11.32 7.75 12.11 7.75C12.89 7.75 14.37 6.68 15.92 6.84C16.57 6.87 18.39 7.1 19.56 8.82C19.47 8.88 17.39 10.1 17.41 12.63C17.44 15.65 20.06 16.66 20.09 16.67C20.06 16.74 19.67 18.11 18.71 19.5ZM13 3.5C13.73 2.67 14.94 2.04 15.94 2C16.07 3.17 15.6 4.35 14.9 5.19C14.21 6.04 13.07 6.7 11.95 6.61C11.8 5.46 12.36 4.26 13 3.5Z"/></svg>
+        Download for macOS
+      </a>
+      <a href="https://github.com/elijah286/expense-automation/actions/workflows/windows-installer.yml" class="btn btn-secondary" target="_blank" rel="noopener">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M3 12V6.75L9 5.43V11.91L3 12ZM20 3V11.75L10 11.97V5.21L20 3ZM3 13L9 13.09V19.9L3 18.75V13ZM10 13.2L20 13V22L10 20.09V13.2Z"/></svg>
+        Download for Windows
+      </a>
+    </div>
+    <p class="download-hint">
+      Click your platform → latest successful run → <strong>Artifacts</strong> → download the ZIP.
+    </p>
+  </div>
+</section>
+
+<!-- ─── What It Does ─────────────────────────────────────── -->
+<section class="features">
+  <div class="container">
+    <h2>What it does</h2>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🔍</div>
+        <h3>Scrapes Transactions</h3>
+        <p>Opens a real browser, logs into Oracle, and pulls your corporate card transactions automatically.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🧾</div>
+        <h3>Matches Receipts</h3>
+        <p>Uses AI to read receipt photos and match them to the right transaction by amount, date, and vendor.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📝</div>
+        <h3>Classifies Expenses</h3>
+        <p>Automatically assigns the correct expense type (meals, transport, lodging, etc.) to each line.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🚀</div>
+        <h3>Submits Reports</h3>
+        <p>Fills in every field and submits the expense report — you just review and approve.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── How It Works ─────────────────────────────────────── -->
+<section class="how-it-works">
+  <div class="container">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-number">1</div>
+        <div class="step-content">
+          <h3>Export receipts</h3>
+          <p>Take photos of your receipts or export them from your photo library. The app reads amounts, dates, and vendor names using AI.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">2</div>
+        <div class="step-content">
+          <h3>Scan &amp; match</h3>
+          <p>The app logs into Oracle, scrapes your credit card transactions, and matches each one to the right receipt.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">3</div>
+        <div class="step-content">
+          <h3>Review &amp; submit</h3>
+          <p>Check the matches, adjust anything that looks off, then hit submit. The app fills every form field and attaches the receipts for you.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Privacy ───────────────────────────────────────────── -->
+<section class="privacy">
+  <div class="container">
+    <h2>Privacy &amp; security</h2>
+    <div class="privacy-grid">
+      <div class="privacy-item">
+        <strong>100% local</strong>
+        <p>Runs entirely on your machine. No data is sent to any server other than Oracle itself and, optionally, the OpenAI API for receipt reading.</p>
+      </div>
+      <div class="privacy-item">
+        <strong>Keychain storage</strong>
+        <p>Passwords are stored in your OS keychain (macOS Keychain / Windows Credential Manager) — never in plain text.</p>
+      </div>
+      <div class="privacy-item">
+        <strong>Open source</strong>
+        <p>Every line of code is public. Audit it yourself or have someone you trust review it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Requirements ─────────────────────────────────────── -->
+<section class="requirements">
+  <div class="container">
+    <h2>System requirements</h2>
+    <div class="req-grid">
+      <div class="req-card">
+        <h3>macOS</h3>
+        <ul>
+          <li>macOS 12 Monterey or later</li>
+          <li>Apple Silicon or Intel</li>
+          <li>~300 MB disk space</li>
+        </ul>
+      </div>
+      <div class="req-card">
+        <h3>Windows</h3>
+        <ul>
+          <li>Windows 10 or later</li>
+          <li>64-bit (x86_64)</li>
+          <li>~300 MB disk space</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Footer ────────────────────────────────────────────── -->
+<footer>
+  <div class="container">
+    <p>
+      <a href="https://github.com/elijah286/expense-automation" target="_blank" rel="noopener">Source on GitHub</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -10,6 +10,8 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,14 +21,15 @@ jobs:
         run: brew install create-dmg
       - name: Build app and disk image
         run: ./packaging/build_macos.sh
-      - uses: actions/upload-artifact@v4
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
         with:
-          name: macos-dmg
-          path: dist/Expense Automator.dmg
-          if-no-files-found: error
+          files: dist/Expense Automator.dmg
 
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,26 +41,7 @@ jobs:
         run: choco install innosetup -y --no-progress
       - name: Build installer
         run: iscc packaging\ExpenseAutomator.iss
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-installer
-          path: dist\ExpenseAutomator_Setup.exe
-          if-no-files-found: error
-
-  release:
-    needs: [build-macos, build-windows]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create GitHub Release
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          files: |
-            artifacts/macos-dmg/Expense Automator.dmg
-            artifacts/windows-installer/ExpenseAutomator_Setup.exe
+          files: dist/ExpenseAutomator_Setup.exe
