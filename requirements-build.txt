@@ -1,0 +1,2 @@
+# Frozen desktop builds (see packaging/README.md)
+pyinstaller>=6.0

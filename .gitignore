@@ -1,0 +1,21 @@
+.env
+.venv/
+.venv-rpa/
+.venv-build/
+
+# PyInstaller / local Playwright bundle for packaging
+packaging/build/
+build/
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+.cursor/
+.claude/
+.vscode/
+
+# Runtime/cache artifacts
+photos-exports/
+*.log
+*.sqlite3
+

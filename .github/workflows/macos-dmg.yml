@@ -1,0 +1,32 @@
+# Build the macOS .app + DMG on every push to main (download the DMG from Actions artifacts).
+name: macOS DMG
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build app and disk image
+        run: ./packaging/build_macos.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Expense-Automator-macOS
+          path: dist/Expense Automator.dmg
+          if-no-files-found: error
