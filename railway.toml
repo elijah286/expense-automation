@@ -1,9 +1,8 @@
 [build]
-builder = "nixpacks"
-buildCommand = "pip install flask gunicorn"
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "gunicorn download.server:app --bind 0.0.0.0:$PORT"
 healthcheckPath = "/health"
 healthcheckTimeout = 10
 restartPolicyType = "on_failure"
