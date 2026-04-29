@@ -1401,7 +1401,7 @@ _REPORT_PAGES = {"Documents", "Transactions", "Matching", "Submit"}
 
 
 def _setup_required_overlay():
-    """Full-page overlay until URL, OpenAI key, and approver are saved."""
+    """Full-page dialog until URL, OpenAI key, and approver are saved."""
     if svc.credentials_ready():
         return
 
@@ -1409,127 +1409,119 @@ def _setup_required_overlay():
     oa_hint = current["openai_key_hint"]
     oa_ph = f"Already saved {oa_hint}" if current["openai_key_set"] else "sk-..."
 
-    with ui.element("div").style(
-        "position:fixed;inset:0;z-index:9999;"
-        "background:rgba(15,23,42,0.75);"
-        "display:flex;align-items:center;justify-content:center;padding:24px;"
+    with ui.dialog() as setup_dlg, ui.card().style(
+        "width:min(780px,calc(100vw - 48px));max-width:780px;"
+        "border-radius:20px;padding:36px 40px;"
+        "box-shadow:0 25px 50px rgba(0,0,0,0.25);"
     ):
-        with ui.card().style(
-            "width:min(780px,calc(100vw - 48px));max-width:780px;"
-            "border-radius:20px;padding:36px 40px;"
-            "box-shadow:0 25px 50px rgba(0,0,0,0.25);"
-            "background:var(--bg-card);pointer-events:auto;"
-        ):
-            with ui.column().classes("w-full gap-0 items-stretch"):
-                with ui.row().classes("w-full justify-center mb-3"):
-                    with ui.element("div").style(
-                        "width:56px;height:56px;border-radius:14px;"
-                        "background:linear-gradient(135deg,#3b82f6,#8b5cf6);"
-                        "display:flex;align-items:center;justify-content:center;"
-                    ):
-                        ui.icon("lock").style("color:#fff;font-size:28px")
+        with ui.column().classes("w-full gap-0 items-stretch"):
+            with ui.row().classes("w-full justify-center mb-3"):
+                with ui.element("div").style(
+                    "width:56px;height:56px;border-radius:14px;"
+                    "background:linear-gradient(135deg,#3b82f6,#8b5cf6);"
+                    "display:flex;align-items:center;justify-content:center;"
+                ):
+                    ui.icon("lock").style("color:#fff;font-size:28px")
 
-                ui.label("Setup required").classes(
-                    "text-h5 font-bold w-full text-center"
-                ).style("color:var(--text-primary);letter-spacing:-0.02em")
+            ui.label("Setup required").classes(
+                "text-h5 font-bold w-full text-center"
+            ).style("color:var(--text-primary);letter-spacing:-0.02em")
 
-                ui.html(
-                    """
-                    <div style="text-align:left;color:var(--text-body);font-size:0.9rem;
-                        line-height:1.5;width:100%;margin:12px 0 16px 0">
-                      <ul style="margin:0;padding-left:1.2rem">
-                        <li style="margin:0 0 6px 0">Matches receipts to lines and fills your Oracle report using your browser.</li>
-                        <li style="margin:0 0 6px 0">Oracle username and password are <b>not</b> stored—you sign in in the browser when needed.</li>
-                        <li style="margin:0 0 6px 0">Your data stays on this computer.</li>
-                        <li style="margin:0">OpenAI reads receipt images for matching—do <b>not</b> use with receipts you cannot send to OpenAI.</li>
-                      </ul>
-                    </div>
-                    """
-                )
+            ui.html(
+                """
+                <div style="text-align:left;color:var(--text-body);font-size:0.9rem;
+                    line-height:1.5;width:100%;margin:12px 0 16px 0">
+                  <ul style="margin:0;padding-left:1.2rem">
+                    <li style="margin:0 0 6px 0">Matches receipts to lines and fills your Oracle report using your browser.</li>
+                    <li style="margin:0 0 6px 0">Oracle username and password are <b>not</b> stored—you sign in in the browser when needed.</li>
+                    <li style="margin:0 0 6px 0">Your data stays on this computer.</li>
+                    <li style="margin:0">OpenAI reads receipt images for matching—do <b>not</b> use with receipts you cannot send to OpenAI.</li>
+                  </ul>
+                </div>
+                """
+            )
 
-                need_url = not (current["oracle_url"] or "").strip()
-                ui.label(
-                    "Enter the following to get started"
-                    + (" (portal URL, API key, and approver)" if need_url else " (API key and approver)")
-                ).classes("text-sm font-semibold w-full").style(
-                    "color:var(--text-muted);margin-bottom:4px"
-                )
+            need_url = not (current["oracle_url"] or "").strip()
+            ui.label(
+                "Enter the following to get started"
+                + (" (portal URL, API key, and approver)" if need_url else " (API key and approver)")
+            ).classes("text-sm font-semibold w-full").style(
+                "color:var(--text-muted);margin-bottom:4px"
+            )
 
-                url_in: ui.input | None
-                with ui.column().classes("w-full gap-3"):
-                    if need_url:
-                        url_in = ui.input(
-                            label="Oracle expense portal URL",
-                            value="",
-                            placeholder="https://…",
-                        ).classes("w-full").props("outlined dense clearable autofocus")
-                    else:
-                        url_in = None
+            url_in: ui.input | None
+            with ui.column().classes("w-full gap-3"):
+                if need_url:
+                    url_in = ui.input(
+                        label="Oracle expense portal URL",
+                        value="",
+                        placeholder="https://…",
+                    ).classes("w-full").props("outlined dense clearable autofocus")
+                else:
+                    url_in = None
 
-                    with ui.column().classes("w-full gap-1"):
-                        openai_in = ui.input(
-                            label="OpenAI API key",
-                            password=True,
-                            password_toggle_button=True,
-                            placeholder=oa_ph,
-                        ).classes("w-full").props("outlined dense clearable")
-                        openai_in.style("pointer-events:auto")
-                        ui.html(
-                            '<a href="https://platform.openai.com/api-keys" target="_blank" style="font-size:0.8rem;color:#3b82f6;text-decoration:underline">Get your API key →</a>'
-                        )
-
-                    appr_in = ui.input(
-                        label="Expense report approver (exactly as in Oracle)",
-                        value=current.get("approver", "") or "",
-                        placeholder='e.g. "Last, First"',
+                with ui.column().classes("w-full gap-1"):
+                    openai_in = ui.input(
+                        label="OpenAI API key",
+                        password=True,
+                        password_toggle_button=True,
+                        placeholder=oa_ph,
                     ).classes("w-full").props("outlined dense clearable")
-                    appr_in.style("pointer-events:auto")
+                    ui.html(
+                        '<a href="https://platform.openai.com/api-keys" target="_blank" style="font-size:0.8rem;color:#3b82f6;text-decoration:underline">Get your API key →</a>'
+                    )
 
-                if url_in is not None:
-                    url_in.style("pointer-events:auto")
+                appr_in = ui.input(
+                    label="Expense report approver (exactly as in Oracle)",
+                    value=current.get("approver", "") or "",
+                    placeholder='e.g. "Last, First"',
+                ).classes("w-full").props("outlined dense clearable")
 
-                ui.label(
-                    "You can change these anytime in Settings."
-                ).classes("text-center w-full").style(
-                    "color:var(--text-muted);font-size:0.75rem;margin-top:10px;line-height:1.4"
-                )
+            ui.label(
+                "You can change these anytime in Settings."
+            ).classes("text-center w-full").style(
+                "color:var(--text-muted);font-size:0.75rem;margin-top:10px;line-height:1.4"
+            )
 
-                with ui.row().classes("w-full justify-center gap-2 mt-5"):
-                    ui.link("Open full Settings", "/settings").classes(
-                        "text-sm self-center"
-                    ).style("color:#3b82f6")
+            with ui.row().classes("w-full justify-center gap-2 mt-5"):
+                ui.link("Open full Settings", "/settings").classes(
+                    "text-sm self-center"
+                ).style("color:#3b82f6")
 
-                    def _save_overlay() -> None:
-                        key_val = (openai_in.value or "").strip()
-                        url_val = (
-                            (url_in.value or "").strip()
-                            if url_in is not None
-                            else (current["oracle_url"] or "").strip()
+                def _save_overlay() -> None:
+                    key_val = (openai_in.value or "").strip()
+                    url_val = (
+                        (url_in.value or "").strip()
+                        if url_in is not None
+                        else (current["oracle_url"] or "").strip()
+                    )
+                    warnings = svc.save_settings(
+                        oracle_url=url_val,
+                        approver=appr_in.value,
+                        openai_key=key_val if key_val else None,
+                        openai_model=current["openai_model"],
+                    )
+                    for w in warnings:
+                        ui.notify(w, type="warning", timeout=8000)
+                    if svc.credentials_ready():
+                        ui.notify("Saved. You're all set.", type="positive")
+                        ui.timer(0.35, lambda: ui.navigate.reload(), once=True)
+                    else:
+                        miss = svc.missing_credentials()
+                        ui.notify(
+                            "Still need: " + ", ".join(miss),
+                            type="warning",
+                            timeout=6000,
                         )
-                        warnings = svc.save_settings(
-                            oracle_url=url_val,
-                            approver=appr_in.value,
-                            openai_key=key_val if key_val else None,
-                            openai_model=current["openai_model"],
-                        )
-                        for w in warnings:
-                            ui.notify(w, type="warning", timeout=8000)
-                        if svc.credentials_ready():
-                            ui.notify("Saved. You're all set.", type="positive")
-                            ui.timer(0.35, lambda: ui.navigate.reload(), once=True)
-                        else:
-                            miss = svc.missing_credentials()
-                            ui.notify(
-                                "Still need: " + ", ".join(miss),
-                                type="warning",
-                                timeout=6000,
-                            )
 
-                    ui.button(
-                        "Save and continue",
-                        icon="check",
-                        on_click=_save_overlay,
-                    ).props("no-caps unelevated color=primary").classes("action-btn")
+                ui.button(
+                    "Save and continue",
+                    icon="check",
+                    on_click=_save_overlay,
+                ).props("no-caps unelevated color=primary").classes("action-btn")
+
+    setup_dlg.props('persistent')
+    setup_dlg.open()
 
 
 _DARK_MODE_JS = """<script>
