@@ -6,12 +6,22 @@ import logging
 import multiprocessing
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+
+    def _install_playwright_chromium() -> None:
+        """Install Playwright Chromium without spawning the frozen executable again."""
+        from playwright.__main__ import main as playwright_main
+
+        argv_prev = sys.argv[:]
+        try:
+            sys.argv = [argv_prev[0], "install", "chromium"]
+            playwright_main()
+        finally:
+            sys.argv = argv_prev
 
     # --install-chromium: download Chromium and exit (used by installers).
     if "--install-chromium" in sys.argv:
@@ -20,13 +30,7 @@ if __name__ == "__main__":
         _dest = _udd() / "ms-playwright"
         _dest.mkdir(parents=True, exist_ok=True)
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_dest)
-        import subprocess as _sp
-
-        _sp.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(_dest)},
-            check=True,
-        )
+        _install_playwright_chromium()
         sys.exit(0)
 
     from dotenv import load_dotenv
@@ -36,10 +40,6 @@ if __name__ == "__main__":
 
     def _bootstrap_playwright_browsers() -> None:
         """Ensure Playwright Chromium is available, downloading on first launch if needed."""
-        # Skip bootstrap if we're in a subprocess context (env var set by parent process).
-        if os.environ.get("_EXPENSE_AUTOMATOR_BOOTSTRAPPED"):
-            return
-
         browsers_dir = user_data_dir() / "ms-playwright"
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browsers_dir))
 
@@ -62,17 +62,7 @@ if __name__ == "__main__":
         if not any(browsers_dir.glob("chromium-*")):
             log = logging.getLogger("expense_automator")
             log.info("Chromium not found — downloading via Playwright (one-time setup)...")
-            # Mark that we're bootstrapping so subprocess doesn't re-bootstrap.
-            env = {**os.environ, "_EXPENSE_AUTOMATOR_BOOTSTRAPPED": "1"}
-            subprocess.run(
-                [sys.executable, "-m", "playwright", "install", "chromium"],
-                env=env,
-                check=True,
-            )
-
-
-    # Mark that we're the main process (prevents subprocess re-execution loop).
-    os.environ["_EXPENSE_AUTOMATOR_BOOTSTRAPPED"] = "1"
+            _install_playwright_chromium()
 
     _bootstrap_playwright_browsers()
 
