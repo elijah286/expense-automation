@@ -39,6 +39,12 @@ def index():
     return render_template("index.html", app_version=_read_version())
 
 
+@app.route("/macos-setup")
+def macos_setup():
+    """Show macOS setup instructions and start the download automatically."""
+    return render_template("macos-setup.html", app_version=_read_version())
+
+
 @app.route("/health")
 def health():
     return {"status": "ok"}
