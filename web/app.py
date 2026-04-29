@@ -216,6 +216,11 @@ def _show_keychain_secure_storage_dialog(client_id: str) -> None:
 def _schedule_keychain_consent_if_needed() -> None:
     if not keychain_credentials.is_keychain_access_gated():
         return
+    # Don't show keychain consent when setup is still needed — there is no
+    # API key to store yet, and opening a second dialog on top of the setup
+    # dialog breaks keyboard focus in WKWebView.
+    if not svc.credentials_ready():
+        return
     try:
         client_id = str(ui.context.client.id)
     except Exception:
