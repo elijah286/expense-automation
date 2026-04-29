@@ -1462,22 +1462,26 @@ def _setup_required_overlay():
                             label="Oracle expense portal URL",
                             value="",
                             placeholder="https://…",
-                        ).classes("w-full").props("outlined dense")
+                        ).classes("w-full").props("outlined dense clearable")
                     else:
                         url_in = None
 
-                    openai_in = ui.input(
-                        label="OpenAI API key",
-                        password=True,
-                        password_toggle_button=True,
-                        placeholder=oa_ph,
-                    ).classes("w-full").props("outlined dense")
+                    with ui.column().classes("w-full gap-1"):
+                        openai_in = ui.input(
+                            label="OpenAI API key",
+                            password=True,
+                            password_toggle_button=True,
+                            placeholder=oa_ph,
+                        ).classes("w-full").props("outlined dense clearable")
+                        ui.html(
+                            '<a href="https://platform.openai.com/api-keys" target="_blank" style="font-size:0.8rem;color:#3b82f6;text-decoration:underline">Get your API key →</a>'
+                        )
 
                     appr_in = ui.input(
                         label="Expense report approver (exactly as in Oracle)",
                         value=current.get("approver", "") or "",
                         placeholder='e.g. "Last, First"',
-                    ).classes("w-full").props("outlined dense")
+                    ).classes("w-full").props("outlined dense clearable")
 
                 ui.label(
                     "You can change these anytime in Settings."
@@ -4701,17 +4705,21 @@ def page_settings():
         with ui.card().classes("w-full mb-6").style("border-radius:16px;padding:32px;max-width:640px"):
             ui.label("OpenAI").classes("text-base font-bold text-slate-800 mb-4")
 
-            openai_key_input = ui.input(
-                label="API Key",
-                password=True,
-                password_toggle_button=True,
-                placeholder="sk-..." + (f"  (saved: {current['openai_key_hint']})" if current["openai_key_set"] else ""),
-            ).classes("w-full mb-3").props('outlined dense')
+            with ui.column().classes("w-full mb-3 gap-2"):
+                openai_key_input = ui.input(
+                    label="API Key",
+                    password=True,
+                    password_toggle_button=True,
+                    placeholder="sk-..." + (f"  (saved: {current['openai_key_hint']})" if current["openai_key_set"] else ""),
+                ).classes("w-full").props('outlined dense clearable')
+                ui.html(
+                    '<a href="https://platform.openai.com/api-keys" target="_blank" style="font-size:0.8rem;color:#3b82f6;text-decoration:underline">Get your API key →</a>'
+                )
 
             openai_model_input = ui.input(
                 label="Model",
                 value=current["openai_model"],
-            ).classes("w-full").props('outlined dense')
+            ).classes("w-full").props('outlined dense clearable')
 
         with ui.card().classes("w-full mb-6").style("border-radius:16px;padding:32px;max-width:640px"):
             ui.label("Oracle Expense Portal").classes("text-base font-bold text-slate-800 mb-4")
@@ -4719,19 +4727,19 @@ def page_settings():
             oracle_url_input = ui.input(
                 label="Portal URL",
                 value=current["oracle_url"],
-            ).classes("w-full mb-3").props('outlined dense')
+            ).classes("w-full mb-3").props('outlined dense clearable')
 
             approver_input = ui.input(
                 label="Approver (display name in Oracle)",
                 value=current.get("approver", ""),
                 placeholder='e.g. "Sethi, Siddharth"',
-            ).classes("w-full mb-3").props('outlined dense')
+            ).classes("w-full mb-3").props('outlined dense clearable')
 
             nav_label_input = ui.input(
                 label="Navigator menu label (iExpenses folder name)",
                 value=current.get("nav_menu_label", ""),
                 placeholder='e.g. "NIC iExpenses" — leave blank for default',
-            ).classes("w-full").props('outlined dense')
+            ).classes("w-full").props('outlined dense clearable')
 
             ui.label(
                 "Oracle username and password are never saved. You sign in manually in the "
