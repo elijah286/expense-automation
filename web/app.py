@@ -14,6 +14,7 @@ import sys
 import time
 import threading
 import urllib.parse
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -1467,9 +1468,9 @@ def _setup_required_overlay():
                         password_toggle_button=True,
                         placeholder=oa_ph,
                     ).classes("w-full").props("outlined dense clearable")
-                    ui.html(
-                        '<a href="https://platform.openai.com/api-keys" target="_blank" style="font-size:0.8rem;color:#3b82f6;text-decoration:underline">Get your API key →</a>'
-                    )
+                    ui.label("Get your API key →").style(
+                        "font-size:0.8rem;color:#3b82f6;text-decoration:underline;cursor:pointer"
+                    ).on("click", lambda: webbrowser.open("https://platform.openai.com/api-keys"))
 
                 appr_in = ui.input(
                     label="Expense report approver (exactly as in Oracle)",
@@ -4710,9 +4711,9 @@ def page_settings():
                     placeholder="sk-..." + (f"  (saved: {current['openai_key_hint']})" if current["openai_key_set"] else ""),
                 ).classes("w-full").props('outlined dense clearable')
                 openai_key_input.style("pointer-events:auto")
-                ui.html(
-                    '<a href="https://platform.openai.com/api-keys" target="_blank" style="font-size:0.8rem;color:#3b82f6;text-decoration:underline">Get your API key →</a>'
-                )
+                ui.label("Get your API key →").style(
+                    "font-size:0.8rem;color:#3b82f6;text-decoration:underline;cursor:pointer"
+                ).on("click", lambda: webbrowser.open("https://platform.openai.com/api-keys"))
 
             openai_model_input = ui.input(
                 label="Model",
