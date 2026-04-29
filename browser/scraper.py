@@ -215,7 +215,7 @@ class TransactionScraper:
             time.sleep(0.2)
         raise RuntimeError(f"Chromium CDP did not become ready at {http_base} ({last_exc})")
 
-    def _spawn_chromium(self) -> str:
+    def _spawn_chromium(self, initial_url: str = "about:blank") -> str:
         CHROMIUM_USER_DATA.mkdir(parents=True, exist_ok=True)
         port = self._find_free_port()
         http_base = f"http://127.0.0.1:{port}"
@@ -237,7 +237,7 @@ class TransactionScraper:
                 if os.environ.get("AUTOMATED_EXPENSES_CHROMIUM_ENABLE_GPU", "").strip() in ("1", "true", "yes")
                 else ("--disable-gpu",)
             ),
-            "about:blank",
+            initial_url,
         ]
         proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self._chromium_proc = proc
@@ -266,10 +266,17 @@ class TransactionScraper:
                         p.close()
                 except Exception:
                     pass
-        page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+        # Navigate only if the page isn't already on the target URL
+        # (Chromium was launched with the URL directly).
+        try:
+            current = page.url or ""
+        except Exception:
+            current = ""
+        if not current.startswith(target_url.rstrip("/")):
+            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
 
     def open_browser(self, url: str) -> None:
-        http_base = self._spawn_chromium()
+        http_base = self._spawn_chromium(initial_url=url)
         self._attach_to_cdp(http_base, url)
 
     def _reconnect_to_cdp(self, http_base: str) -> bool:
@@ -1799,7 +1806,7 @@ class TransactionScraper:
             raise RuntimeError("Approver display name is required (set it in Settings).")
 
         try:
-            self.set_status("Launching Chromium…")
+            self.set_status(f"Launching Chromium → {portal_url}")
             self.open_browser(portal_url)
 
             self.wait_for_manual_oracle_login()

@@ -2188,7 +2188,7 @@ class ReportSubmitter(TransactionScraper):
                     )
 
             if start_from_step == 0:
-                self.set_status("Launching Chromium…")
+                self.set_status(f"Launching Chromium → {portal_url}")
                 self.open_browser(portal_url)
 
                 self.wait_for_manual_oracle_login()
