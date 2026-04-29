@@ -1475,7 +1475,7 @@ def _setup_required_overlay():
                 appr_in = ui.input(
                     label="Expense report approver (exactly as in Oracle)",
                     value=current.get("approver", "") or "",
-                    placeholder='e.g. "Last, First"',
+                    placeholder='e.g. John Richard Smith → "Smith, John Richard"',
                 ).classes("w-full").props("outlined dense clearable")
 
             ui.label(
@@ -4733,7 +4733,7 @@ def page_settings():
             approver_input = ui.input(
                 label="Approver (display name in Oracle)",
                 value=current.get("approver", ""),
-                placeholder='e.g. "Sethi, Siddharth"',
+                placeholder='e.g. John Richard Smith → "Smith, John Richard"',
             ).classes("w-full mb-3").props('outlined dense clearable')
             approver_input.style("pointer-events:auto")
 
