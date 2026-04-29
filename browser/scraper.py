@@ -92,6 +92,13 @@ _ORACLE_LOGGED_IN_MARKERS = (
     "Expenses Home",
     "Track Submitted",
     "Logged In As",
+    # Broader Oracle EBS post-login markers (user may land on home page)
+    "Navigator",
+    "Home Page",
+    "Oracle Applications",
+    "Responsibilities",
+    "Preferences",
+    "Notifications",
 )
 
 
@@ -383,11 +390,21 @@ class TransactionScraper:
             "Waiting for you to sign in to Oracle in the browser (including 2FA if prompted)…"
         )
         deadline = time.monotonic() + timeout_s
+        last_url_report = 0.0
         while time.monotonic() < deadline:
             if self._oracle_shell_ready():
                 self._wait_for_oracle_page_stable(settle_ms=500)
                 self.set_status("Oracle session detected — continuing automation…")
                 return
+            # Periodic status with current URL so user can diagnose issues
+            now = time.monotonic()
+            if now - last_url_report > 10.0:
+                try:
+                    cur_url = self.browser_page.url or "(unknown)"
+                except Exception:
+                    cur_url = "(error reading URL)"
+                self.set_status(f"Still waiting for Oracle login… (page: {cur_url})")
+                last_url_report = now
             self.browser_page.wait_for_timeout(400)
 
         raise RuntimeError(
