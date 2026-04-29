@@ -13,11 +13,25 @@ app = Flask(__name__)
 
 
 def _read_version() -> str:
-    try:
-        root = Path(__file__).resolve().parent.parent
-        return root.joinpath("VERSION").read_text(encoding="utf-8").strip()
-    except Exception:
-        return "unknown"
+    # Try environment variable first (set during build).
+    if env_version := os.environ.get("APP_VERSION"):
+        return env_version.strip()
+    
+    # Try multiple file paths.
+    possible_paths = [
+        Path(__file__).resolve().parent.parent / "VERSION",  # Development
+        Path("/app/VERSION"),  # Docker/Railway container root
+        Path.cwd() / "VERSION",  # Current working directory
+    ]
+    
+    for path in possible_paths:
+        try:
+            if path.is_file():
+                return path.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    
+    return "unknown"
 
 
 @app.route("/")
