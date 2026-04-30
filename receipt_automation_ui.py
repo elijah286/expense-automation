@@ -10451,7 +10451,7 @@ class ReceiptAutomationUI:
             if not approver:
                 raise RuntimeError(
                     "Approver not configured — set the approver display name in Settings "
-                    '(e.g. "Sethi, Siddharth").'
+                    '(e.g. "Smith, John").'
                 )
             if not self.fill_approver_in_any_frame(approver):
                 raise RuntimeError("Could not locate Approver field.")
