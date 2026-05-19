@@ -1212,9 +1212,50 @@ class ExpenseService:
         rp = state.get("receipt_paths", [])
         if isinstance(rp, list):
             state["receipt_paths"] = [p for p in rp if p not in paths_to_remove]
-            state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Also clean up receipt-report assignments
+        assignments = state.get("receipt_report_assignments", {})
+        if isinstance(assignments, dict):
+            state["receipt_report_assignments"] = {
+                k: v for k, v in assignments.items() if k not in paths_to_remove
+            }
+        state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
         return len(paths_to_remove)
+
+    # ------------------------------------------------------------------
+    # Receipt ↔ report direct assignments
+    # ------------------------------------------------------------------
+
+    def get_receipt_report_assignments(self) -> dict[str, str]:
+        """Return {source_file: report_id} for receipts directly assigned to a report."""
+        state_path = self.app_dir / "state.json"
+        if not state_path.exists():
+            return {}
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        raw = state.get("receipt_report_assignments", {})
+        return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+    def assign_receipts_to_report(self, source_files: list[str], report_id: str) -> None:
+        """Directly assign receipt files to a report so they appear under that report's filter."""
+        if not source_files or not report_id:
+            return
+        state_path = self.app_dir / "state.json"
+        state: dict[str, Any] = {}
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+        assignments: dict[str, str] = state.get("receipt_report_assignments", {})
+        if not isinstance(assignments, dict):
+            assignments = {}
+        for sf in source_files:
+            assignments[sf] = report_id
+        state["receipt_report_assignments"] = assignments
+        state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Transaction scraping (Playwright / Oracle)

@@ -413,7 +413,8 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".tiff"
 
 
 @app.post("/api/upload")
-async def api_upload(files: list[UploadFile]) -> JSONResponse:
+async def api_upload(request: Request, files: list[UploadFile]) -> JSONResponse:
+    report_id = (request.query_params.get("report") or "").strip()
     imported: list[str] = []
     for f in files:
         ext = Path(f.filename or "").suffix.lower()
@@ -423,6 +424,8 @@ async def api_upload(files: list[UploadFile]) -> JSONResponse:
         dest = svc.import_uploaded_content(f.filename or "upload", content)
         if dest:
             imported.append(dest)
+    if report_id and imported:
+        svc.assign_receipts_to_report(imported, report_id)
     return JSONResponse({"imported": imported, "count": len(imported)})
 
 
@@ -1407,16 +1410,14 @@ _REPORT_PAGES = {"Documents", "Transactions", "Matching", "Submit"}
 
 
 def _setup_required_overlay():
-    """Full-page dialog until URL, OpenAI key, and approver are saved."""
+    """Full-page dialog directing user to Settings when credentials are missing."""
     if svc.credentials_ready():
         return
 
-    current = svc.get_settings()
-    oa_hint = current["openai_key_hint"]
-    oa_ph = f"Already saved {oa_hint}" if current["openai_key_set"] else "sk-..."
+    missing = svc.missing_credentials()
 
     with ui.dialog() as setup_dlg, ui.card().style(
-        "width:min(780px,calc(100vw - 48px));max-width:780px;"
+        "width:min(560px,calc(100vw - 48px));max-width:560px;"
         "border-radius:20px;padding:36px 40px;"
         "box-shadow:0 25px 50px rgba(0,0,0,0.25);"
     ):
@@ -1427,7 +1428,7 @@ def _setup_required_overlay():
                     "background:linear-gradient(135deg,#3b82f6,#8b5cf6);"
                     "display:flex;align-items:center;justify-content:center;"
                 ):
-                    ui.icon("lock").style("color:#fff;font-size:28px")
+                    ui.icon("settings").style("color:#fff;font-size:28px")
 
             ui.label("Setup required").classes(
                 "text-h5 font-bold w-full text-center"
@@ -1447,84 +1448,18 @@ def _setup_required_overlay():
                 """
             )
 
-            need_url = not (current["oracle_url"] or "").strip()
             ui.label(
-                "Enter the following to get started"
-                + (" (portal URL, API key, and approver)" if need_url else " (API key and approver)")
-            ).classes("text-sm font-semibold w-full").style(
-                "color:var(--text-muted);margin-bottom:4px"
+                "Still needed: " + ", ".join(missing)
+            ).classes("text-sm font-semibold w-full text-center").style(
+                "color:var(--text-muted);margin-bottom:16px"
             )
 
-            url_in: ui.input | None
-            with ui.column().classes("w-full gap-3"):
-                if need_url:
-                    url_in = ui.input(
-                        label="Oracle expense portal URL",
-                        value="",
-                        placeholder="https://…",
-                    ).classes("w-full").props("outlined dense clearable autofocus")
-                else:
-                    url_in = None
-
-                with ui.column().classes("w-full gap-1"):
-                    openai_in = ui.input(
-                        label="OpenAI API key",
-                        password=True,
-                        password_toggle_button=True,
-                        placeholder=oa_ph,
-                    ).classes("w-full").props("outlined dense clearable")
-                    ui.label("Get your API key →").style(
-                        "font-size:0.8rem;color:#3b82f6;text-decoration:underline;cursor:pointer"
-                    ).on("click", lambda: webbrowser.open("https://platform.openai.com/api-keys"))
-
-                appr_in = ui.input(
-                    label="Expense report approver (exactly as in Oracle)",
-                    value=current.get("approver", "") or "",
-                    placeholder='e.g. John Richard Smith → "Smith, John Richard"',
-                ).classes("w-full").props("outlined dense clearable")
-
-            ui.label(
-                "You can change these anytime in Settings."
-            ).classes("text-center w-full").style(
-                "color:var(--text-muted);font-size:0.75rem;margin-top:10px;line-height:1.4"
-            )
-
-            with ui.row().classes("w-full justify-center gap-2 mt-5"):
-                ui.link("Open full Settings", "/settings").classes(
-                    "text-sm self-center"
-                ).style("color:#3b82f6")
-
-                def _save_overlay() -> None:
-                    key_val = (openai_in.value or "").strip()
-                    url_val = (
-                        (url_in.value or "").strip()
-                        if url_in is not None
-                        else (current["oracle_url"] or "").strip()
-                    )
-                    warnings = svc.save_settings(
-                        oracle_url=url_val,
-                        approver=appr_in.value,
-                        openai_key=key_val if key_val else None,
-                        openai_model=current["openai_model"],
-                    )
-                    for w in warnings:
-                        ui.notify(w, type="warning", timeout=8000)
-                    if svc.credentials_ready():
-                        ui.notify("Saved. You're all set.", type="positive")
-                        ui.timer(0.35, lambda: ui.navigate.reload(), once=True)
-                    else:
-                        miss = svc.missing_credentials()
-                        ui.notify(
-                            "Still need: " + ", ".join(miss),
-                            type="warning",
-                            timeout=6000,
-                        )
-
+            with ui.row().classes("w-full justify-center gap-3"):
                 ui.button(
-                    "Save and continue",
-                    icon="check",
-                    on_click=_save_overlay,
-                ).props("no-caps unelevated color=primary").classes("action-btn")
+                    "Open Settings",
+                    icon="settings",
+                    on_click=lambda: ui.navigate.to("/settings"),
+                ).props("no-caps unelevated color=primary size=lg").classes("action-btn")
 
     setup_dlg.props('persistent')
     setup_dlg.open()
@@ -1921,6 +1856,11 @@ def page_documents(request: Request):
                     t = item.transaction
                     if t.report_id == report_filter_id and t.matched_receipt:
                         report_receipt_paths.add(t.matched_receipt)
+                # Also include receipts directly assigned to this report
+                assigned = svc.get_receipt_report_assignments()
+                for src, rid in assigned.items():
+                    if rid == report_filter_id:
+                        report_receipt_paths.add(src)
                 receipts = [r for r in receipts if r.source_file in report_receipt_paths]
             used_count = sum(1 for r in receipts if r.used)
             unreviewed_count = sum(1 for r in receipts if not r.analyzed)
@@ -1966,37 +1906,42 @@ def page_documents(request: Request):
                             "background:#7c3aed !important;color:white !important"
                         )
 
+                        _upload_report_id = report_filter_id or ""
+                        _upload_url = (
+                            f"/api/upload?report={urllib.parse.quote(_upload_report_id, safe='')}"
+                            if _upload_report_id else "/api/upload"
+                        )
                         ui.button(
                             "Add Files",
                             icon="upload_file",
                         ).props("color=primary no-caps unelevated").classes("action-btn").on(
                             "click",
-                            js_handler='''() => {
+                            js_handler=f'''() => {{
                                 const input = document.createElement("input");
                                 input.type = "file";
                                 input.multiple = true;
                                 input.accept = ".jpg,.jpeg,.png,.gif,.webp,.heic,.tiff,.pdf";
                                 input.style.display = "none";
                                 document.body.appendChild(input);
-                                input.onchange = async () => {
-                                    if (!input.files.length) {
+                                input.onchange = async () => {{
+                                    if (!input.files.length) {{
                                         document.body.removeChild(input);
                                         return;
-                                    }
+                                    }}
                                     const fd = new FormData();
                                     for (const f of input.files) fd.append("files", f);
-                                    try {
-                                        const resp = await fetch("/api/upload", {method: "POST", body: fd});
+                                    try {{
+                                        const resp = await fetch("{_upload_url}", {{method: "POST", body: fd}});
                                         const data = await resp.json();
                                         document.body.removeChild(input);
                                         if (data.count > 0) location.reload();
-                                    } catch (e) {
+                                    }} catch (e) {{
                                         document.body.removeChild(input);
                                         console.error("Upload failed:", e);
-                                    }
-                                };
+                                    }}
+                                }};
                                 input.click();
-                            }''',
+                            }}''',
                         )
 
             results_container.clear()
@@ -2132,6 +2077,26 @@ def page_documents(request: Request):
                                 "text-sm text-slate-400"
                             )
                     else:
+                        def _make_remove_single(path):
+                            def _do():
+                                svc.remove_receipts([path])
+                                state["selected"].discard(path)
+                                if state["selected_doc"] == path:
+                                    state["selected_doc"] = None
+                                ui.notify("Removed receipt", type="positive")
+                                _render_documents()
+                            return _do
+
+                        def _make_rescan_single(path):
+                            def _do():
+                                ui.notify("Rescanning receipt...", type="info")
+                                _run_background(
+                                    "Receipt Rescan",
+                                    lambda on_status: svc.rescan_receipts([path], on_status=on_status),
+                                    "Finished rescanning receipt",
+                                )
+                            return _do
+
                         for r in receipts:
                             is_sel = r.source_file in state["selected"]
                             is_focused = state["selected_doc"] == r.source_file
@@ -2140,6 +2105,8 @@ def page_documents(request: Request):
                                 selected=is_sel,
                                 focused=is_focused,
                                 on_row_click=lambda doc=r: _select_doc(doc.source_file),
+                                on_remove=_make_remove_single(r.source_file),
+                                on_rescan=_make_rescan_single(r.source_file),
                             )
 
             _sync_doc_detail_drawer()
@@ -2473,6 +2440,8 @@ def _receipt_row(
     on_toggle=None,
     on_row_click=None,
     on_click=None,
+    on_remove=None,
+    on_rescan=None,
 ):
     """Compact horizontal card for one receipt — thumbnail + key data."""
     if r.used:
@@ -2485,11 +2454,24 @@ def _receipt_row(
     sel_bg = "background:var(--bg-row-selected);" if selected else ""
     focus_cls = " receipt-selected" if focused else ""
     row_click = on_row_click or on_click
-    with ui.element("div").classes(f"receipt-card{focus_cls}").style(
+    row_el = ui.element("div").classes(f"receipt-card{focus_cls}").style(
         "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px;"
         f"align-items:center;gap:0;padding:0;margin-bottom:8px;cursor:pointer;"
         f"user-select:none;min-width:700px;{border_style}{opacity_style}{sel_bg}"
-    ):
+    )
+    with row_el:
+        # Right-click context menu
+        with ui.menu().props("context-menu") as ctx_menu:
+            if on_remove:
+                ui.menu_item(
+                    "Remove",
+                    on_click=lambda: (ctx_menu.close(), on_remove()),
+                ).props("dense").style("color:#dc2626")
+            if on_rescan:
+                ui.menu_item(
+                    "Rescan with LLM",
+                    on_click=lambda: (ctx_menu.close(), on_rescan()),
+                ).props("dense")
         # Thumbnail
         if r.is_image and Path(r.source_file).is_file():
             rotation = r.rotation * 90
