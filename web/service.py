@@ -30,6 +30,7 @@ from expense_lines_cache import (
     load_submitted_receipts,
     load_vendor_expense_types_flat,
     purge_expired_deletions,
+    remove_expense_lines_by_ids,
     restore_pending_deletion,
     save_approved_matches,
     save_expense_report_groups,
@@ -541,6 +542,27 @@ class ExpenseService:
             raw[report_id]["line_ids"] = current
 
         save_expense_report_groups(self.app_dir, raw)
+
+    def delete_transactions(self, line_ids: list[str]) -> int:
+        """Delete transactions by line_id. Also removes from matches, approvals, and report groups."""
+        ids = set(line_ids)
+        if not ids:
+            return 0
+        removed, _ = remove_expense_lines_by_ids(self.app_dir, ids)
+        # Also remove from report groups
+        raw = load_expense_report_groups(self.app_dir)
+        changed = False
+        for rid, data in raw.items():
+            existing = data.get("line_ids", [])
+            if not isinstance(existing, list):
+                existing = []
+            filtered = [x for x in existing if str(x) not in ids]
+            if len(filtered) != len(existing):
+                data["line_ids"] = filtered
+                changed = True
+        if changed:
+            save_expense_report_groups(self.app_dir, raw)
+        return removed
 
     def get_grouped_line_ids(self) -> dict[str, str]:
         """Return {line_id: report_id} for all assigned transactions."""

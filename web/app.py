@@ -49,7 +49,7 @@ _running_tasks: dict[str, dict[str, Any]] = {}
 _STALE_TASK_TIMEOUT_S = 90
 
 
-def _run_background(task_name: str, fn, on_done_msg: str):
+def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | None = None):
     """Run fn in a background thread, tracking status."""
     with _task_lock:
         existing = _running_tasks.get(task_name)
@@ -86,6 +86,8 @@ def _run_background(task_name: str, fn, on_done_msg: str):
             result = fn(on_status=_on_status)
             status_lines.append(f"Done: {result}")
             activity_log.emit("success", f"{task_name} complete")
+            if on_done:
+                on_done(result)
         except Exception as exc:
             status_lines.append(f"Error: {exc}")
             activity_log.emit("error", f"{task_name} failed: {exc}")
@@ -2892,10 +2894,20 @@ def page_transactions(request: Request):
                         def _do_scrape(on_status):
                             return svc.run_scrape(on_status=on_status)
 
+                        def _on_scrape_done(result):
+                            count = int(result) if isinstance(result, (int, float)) else 0
+                            ui.notify(
+                                f"Scrape complete — {count} transaction{'s' if count != 1 else ''} found.",
+                                type="positive",
+                                timeout=10000,
+                            )
+                            ui.navigate.to("/transactions")
+
                         _run_background(
                             "Scrape Transactions",
                             _do_scrape,
-                            "Transaction scrape complete — reload page to see new rows.",
+                            "Transaction scrape complete.",
+                            on_done=_on_scrape_done,
                         )
 
                     _open_oracle_manual_login_dialog(_run_after_notice)
@@ -3212,6 +3224,12 @@ def page_transactions(request: Request):
                     ).classes("text-white")
 
                     ui.button(
+                        "Delete",
+                        icon="delete_outline",
+                        on_click=lambda: _confirm_delete_selected(),
+                    ).props("flat no-caps size=sm color=red-4")
+
+                    ui.button(
                         "Deselect",
                         icon="close",
                         on_click=lambda: _clear_selection(),
@@ -3236,6 +3254,39 @@ def page_transactions(request: Request):
                 type="positive",
             )
             _refresh_all()
+
+        def _confirm_delete_selected():
+            line_ids = list(state["selected"])
+            n = len(line_ids)
+            if not n:
+                return
+            with ui.dialog() as dlg, ui.card().style(
+                "min-width:400px;border-radius:16px;padding:28px"
+            ):
+                ui.label("Delete Transactions").classes(
+                    "text-lg font-bold text-slate-800 mb-2"
+                )
+                ui.label(
+                    f"Delete {n} transaction{'s' if n != 1 else ''}? "
+                    "This also removes any associated matches and approvals."
+                ).classes("text-sm text-slate-600 mb-6")
+                with ui.row().classes("items-center justify-end gap-3"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
+
+                    def _do_delete():
+                        removed = svc.delete_transactions(line_ids)
+                        state["selected"] = set()
+                        dlg.close()
+                        ui.notify(
+                            f"Deleted {removed} transaction{'s' if removed != 1 else ''}",
+                            type="positive",
+                        )
+                        _refresh_all()
+
+                    ui.button(
+                        f"Delete {n}", icon="delete_outline", on_click=_do_delete,
+                    ).props("color=negative no-caps unelevated").classes("action-btn")
+            dlg.open()
 
         def _clear_selection():
             state["selected"] = set()
