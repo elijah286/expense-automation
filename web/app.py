@@ -511,7 +511,8 @@ body {
     color: var(--text-primary);
 }
 
-.q-drawer { background: #0f172a !important; }
+.q-drawer { background: #ffffff !important; border-right: 1px solid #e2e8f0; }
+body.body--dark .q-drawer { background: #0f172a !important; border-right: 1px solid rgba(255,255,255,0.07); }
 .q-drawer.detail-side-drawer {
     background: var(--bg-card) !important;
     border-left: 1px solid var(--border-default);
@@ -753,8 +754,31 @@ body {
     white-space: nowrap;
     overflow: hidden;
 }
-.nav-item:hover { background: #1e293b; color: #e2e8f0; }
+.nav-item { color: #475569; }
+.nav-item:hover { background: #f1f5f9; color: #1e293b; }
 .nav-item.active { background: #3b82f6; color: white; }
+body.body--dark .nav-item { color: #94a3b8; }
+body.body--dark .nav-item:hover { background: #1e293b; color: #e2e8f0; }
+
+/* Header light/dark */
+.ea-header { background: #ffffff !important; border-bottom: 1px solid #e2e8f0 !important; }
+.ea-header .header-title { color: #0f172a; }
+.ea-header .header-menu-btn { color: #475569; }
+body.body--dark .ea-header { background: #0f172a !important; border-bottom: 1px solid rgba(255,255,255,0.07) !important; }
+body.body--dark .ea-header .header-title { color: #f1f5f9; }
+body.body--dark .ea-header .header-menu-btn { color: rgba(255,255,255,0.65); }
+
+/* Theme switcher light/dark */
+.ea-theme-toggle-btn { color: #475569; }
+body.body--dark .ea-theme-toggle-btn { color: rgba(255,255,255,0.65); }
+.ea-theme-dropdown { background: #ffffff; border: 1px solid #e2e8f0; }
+body.body--dark .ea-theme-dropdown { background: #1e293b; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 28px rgba(0,0,0,0.45); }
+.ea-theme-menu-item { color: #334155; }
+body.body--dark .ea-theme-menu-item { color: #e2e8f0; }
+
+/* Sidebar section titles light/dark */
+.q-drawer .nav-section-title { color: #94a3b8; }
+body.body--dark .q-drawer .nav-section-title { color: #475569; }
 
 /* Hamburger menu button — hidden on wide viewports */
 .hamburger-btn { display: none !important; }
@@ -1148,18 +1172,18 @@ def _img_url(path: str) -> str:
 
 
 def shared_header(nav_drawer=None):
-    with ui.header().classes("items-center px-4").style(
-        "background: #0f172a; border-bottom: 1px solid rgba(255,255,255,0.07); box-shadow: none"
+    with ui.header().classes("items-center px-4 ea-header").style(
+        "box-shadow: none"
     ):
         with ui.row().classes("items-center gap-3 w-full"):
             if nav_drawer is not None:
                 ui.button(
                     icon="menu", on_click=nav_drawer.toggle
-                ).props("flat dense round").classes("hamburger-btn").style("color: rgba(255,255,255,0.65)")
+                ).props("flat dense round").classes("hamburger-btn header-menu-btn")
             ui.icon("receipt_long").classes("text-2xl").style("color: #3b82f6")
             ui.label("Expense Automator").classes(
-                "text-lg font-bold tracking-tight"
-            ).style("color: #f1f5f9")
+                "text-lg font-bold tracking-tight header-title"
+            )
             ui.html(_THEME_SWITCHER_HTML).style("margin-left: auto")
 
 
@@ -1171,12 +1195,12 @@ def shared_nav(active: str, report_id: str = ""):
     """
     _REPORT_NAV_PAGES = {"documents", "transactions", "matching", "submit"}
     drawer = ui.left_drawer(value=True, fixed=True, bordered=False).classes(
-        "bg-slate-900"
+        ""
     ).props('width=170 :breakpoint=768')
     with drawer:
         ui.html(
-            '<div style="font-size:0.6rem;font-weight:600;'
-            'color:#475569;letter-spacing:0.1em;padding:10px 14px 4px">'
+            '<div class="nav-section-title" style="font-size:0.6rem;font-weight:600;'
+            'letter-spacing:0.1em;padding:10px 14px 4px">'
             'WORKFLOW</div>'
         )
         items = [
@@ -1202,8 +1226,8 @@ def shared_nav(active: str, report_id: str = ""):
         ui.element("div").style("flex:1")
 
         ui.html(
-            '<div style="font-size:0.6rem;font-weight:600;'
-            'color:#475569;letter-spacing:0.1em;padding:10px 14px 4px">'
+            '<div class="nav-section-title" style="font-size:0.6rem;font-weight:600;'
+            'letter-spacing:0.1em;padding:10px 14px 4px">'
             'SETTINGS</div>'
         )
         settings_items = [
@@ -1223,8 +1247,8 @@ def shared_nav(active: str, report_id: str = ""):
         ui.element("div").style("flex:1")
 
         ui.html(
-            f'<div id="about-link" style="padding:8px 14px 12px;font-size:0.65rem;'
-            f'color:#475569;cursor:pointer;display:flex;align-items:center;gap:4px"'
+            f'<div id="about-link" class="nav-section-title" style="padding:8px 14px 12px;font-size:0.65rem;'
+            f'cursor:pointer;display:flex;align-items:center;gap:4px"'
             f' onclick="document.getElementById(\'about-dialog\').style.display=\'flex\'">'
             f'<span class="material-icons" style="font-size:0.8rem">info_outline</span>'
             f'v{_VERSION}</div>'
@@ -1558,25 +1582,29 @@ _THEME_SWITCHER_HTML = """
 <div id="ea-theme-btn" style="position:relative">
   <button
     title="Switch theme"
-    style="background:transparent;border:none;cursor:pointer;width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.65);transition:background 0.15s,color 0.15s"
+    class="ea-theme-toggle-btn"
+    style="background:transparent;border:none;cursor:pointer;width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;transition:background 0.15s,color 0.15s"
   >
     <span id="ea-theme-icon" class="material-icons" style="font-size:20px">brightness_auto</span>
   </button>
-  <div id="ea-theme-menu" style="display:none;position:absolute;right:0;top:calc(100% + 6px);background:#1e293b;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:4px;min-width:148px;box-shadow:0 8px 28px rgba(0,0,0,0.45);z-index:9999">
+  <div id="ea-theme-menu" class="ea-theme-dropdown" style="display:none;position:absolute;right:0;top:calc(100% + 6px);border-radius:10px;padding:4px;min-width:148px;box-shadow:0 8px 28px rgba(0,0,0,0.15);z-index:9999">
     <div id="ea-theme-item-light"
-      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;color:#e2e8f0;font-size:13.5px;font-family:inherit">
+      class="ea-theme-menu-item"
+      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;font-size:13.5px;font-family:inherit">
       <span class="material-icons" style="font-size:16px;color:#fbbf24">light_mode</span>
       <span>Light</span>
       <span id="ea-theme-check-light" class="material-icons" style="font-size:14px;margin-left:auto;color:#3b82f6;opacity:0">check</span>
     </div>
     <div id="ea-theme-item-dark"
-      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;color:#e2e8f0;font-size:13.5px;font-family:inherit">
+      class="ea-theme-menu-item"
+      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;font-size:13.5px;font-family:inherit">
       <span class="material-icons" style="font-size:16px;color:#818cf8">dark_mode</span>
       <span>Dark</span>
       <span id="ea-theme-check-dark" class="material-icons" style="font-size:14px;margin-left:auto;color:#3b82f6;opacity:0">check</span>
     </div>
     <div id="ea-theme-item-system"
-      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;color:#e2e8f0;font-size:13.5px;font-family:inherit">
+      class="ea-theme-menu-item"
+      style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;font-size:13.5px;font-family:inherit">
       <span class="material-icons" style="font-size:16px;color:#94a3b8">brightness_auto</span>
       <span>System</span>
       <span id="ea-theme-check-system" class="material-icons" style="font-size:14px;margin-left:auto;color:#3b82f6;opacity:0">check</span>
