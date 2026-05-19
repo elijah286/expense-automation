@@ -1595,7 +1595,7 @@ def page_frame(active: str, report_id: str = ""):
     if active in _REPORT_PAGES:
         report_header_bar(active.lower(), report_id)
     if active != "Settings" and not svc.credentials_ready():
-        _setup_required_overlay()
+        ui.navigate.to("/settings")
 
 
 # ---------------------------------------------------------------------------
