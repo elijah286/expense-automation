@@ -2047,11 +2047,11 @@ def page_documents(request: Request):
                     # Table header
                     sc, sa = state["sort_col"], state["sort_asc"]
                     with ui.element("div").style(
-                        "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px;"
+                        "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px 40px;"
                         "gap:0;padding:8px 20px;font-size:0.7rem;font-weight:700;text-transform:uppercase;"
                         "letter-spacing:0.06em;color:var(--text-muted);align-items:center;"
                         "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
-                        "position:sticky;top:0;z-index:10;min-width:700px;"
+                        "position:sticky;top:0;z-index:10;min-width:740px;"
                     ):
                         ui.element("div")
                         for col_key, col_label in [
@@ -2455,9 +2455,9 @@ def _receipt_row(
     focus_cls = " receipt-selected" if focused else ""
     row_click = on_row_click or on_click
     row_el = ui.element("div").classes(f"receipt-card{focus_cls}").style(
-        "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px;"
+        "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px 40px;"
         f"align-items:center;gap:0;padding:0;margin-bottom:8px;cursor:pointer;"
-        f"user-select:none;min-width:700px;{border_style}{opacity_style}{sel_bg}"
+        f"user-select:none;min-width:740px;{border_style}{opacity_style}{sel_bg}"
     )
     with row_el:
         # Right-click context menu
@@ -2570,6 +2570,17 @@ def _receipt_row(
                     '<span class="material-icons" style="font-size:0.85rem">link_off</span>'
                     'Unmatched</span>'
                 )
+
+        # Remove button (visible on hover via CSS .receipt-card .remove-doc)
+        if on_remove:
+            ui.button(
+                icon="close",
+                on_click=lambda _, cb=on_remove: cb(),
+            ).props("flat dense round size=sm").classes("remove-doc").style(
+                "min-width:0;padding:2px"
+            )
+        else:
+            ui.element("div")
 
 
 _VIEWER_JS = """
