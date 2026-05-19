@@ -4691,12 +4691,36 @@ def page_settings():
             ui.label("OpenAI").classes("text-base font-bold text-slate-800 mb-4")
 
             with ui.column().classes("w-full mb-3 gap-2"):
-                openai_key_input = ui.input(
-                    label="API Key",
-                    password=True,
-                    password_toggle_button=True,
-                    placeholder="sk-..." + (f"  (saved: {current['openai_key_hint']})" if current["openai_key_set"] else ""),
-                ).classes("w-full").props('outlined dense clearable')
+                if current["openai_key_set"]:
+                    with ui.row().classes("items-center gap-2 w-full").style(
+                        "background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;"
+                        "padding:8px 12px;margin-bottom:4px"
+                    ):
+                        ui.icon("check_circle").style("color:#16a34a;font-size:1.1rem")
+                        ui.label(f"API key saved ({current['openai_key_hint']})").style(
+                            "color:#15803d;font-size:0.85rem;font-weight:500"
+                        )
+                    openai_key_input = ui.input(
+                        label="Replace API Key",
+                        password=True,
+                        password_toggle_button=True,
+                        placeholder="Enter a new key to replace the saved one",
+                    ).classes("w-full").props('outlined dense clearable')
+                else:
+                    with ui.row().classes("items-center gap-2 w-full").style(
+                        "background:#fef2f2;border:1px solid #fecaca;border-radius:8px;"
+                        "padding:8px 12px;margin-bottom:4px"
+                    ):
+                        ui.icon("warning").style("color:#dc2626;font-size:1.1rem")
+                        ui.label("No API key saved — required for receipt analysis").style(
+                            "color:#991b1b;font-size:0.85rem;font-weight:500"
+                        )
+                    openai_key_input = ui.input(
+                        label="API Key",
+                        password=True,
+                        password_toggle_button=True,
+                        placeholder="sk-...",
+                    ).classes("w-full").props('outlined dense clearable')
                 openai_key_input.style("pointer-events:auto")
                 ui.label("Get your API key →").style(
                     "font-size:0.8rem;color:#3b82f6;text-decoration:underline;cursor:pointer"
