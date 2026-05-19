@@ -4834,9 +4834,8 @@ def page_settings():
                 for w in warnings:
                     ui.notify(w, type="warning", timeout=8000)
             ui.notify("Settings saved", type="positive")
-            if svc.credentials_ready():
-                ui.notify("All set! Redirecting to Dashboard…", type="positive")
-                ui.timer(1.5, lambda: ui.navigate.to("/"), once=True)
+            # Reload the settings page so the API key status indicator updates
+            ui.timer(0.5, lambda: ui.navigate.to("/settings"), once=True)
 
         ui.button("Save Settings", icon="save", on_click=_save).props(
             "no-caps unelevated color=primary"
