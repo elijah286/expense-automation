@@ -852,6 +852,8 @@ class ExpenseService:
         from receipt_matching import match_one_expense_line_to_receipts
 
         llm_updated = 0
+        consecutive_connection_errors = 0
+        _CONNECTION_ERROR_LIMIT = 3
         for i, line in enumerate(unmatched):
             lid = str(line.get("line_id", "")).strip()
             merchant = str(line.get("merchant_name", "")).strip() or "unknown"
@@ -871,6 +873,7 @@ class ExpenseService:
                     analyses=analyses,
                     on_status=lambda msg: activity_log.emit("llm", msg),
                 )
+                consecutive_connection_errors = 0
                 if result.get("best_receipt"):
                     rname = Path(str(result["best_receipt"])).name
                     rconf = float(result.get("confidence", 0))
@@ -883,7 +886,32 @@ class ExpenseService:
                 else:
                     activity_log.emit("info", f"No match found for {merchant}")
             except Exception as exc:
+                exc_text = f"{exc!r}"
+                is_connection_error = any(
+                    kw in exc_text.upper()
+                    for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS", "TIMEOUT", "NETWORK")
+                )
+                if is_connection_error:
+                    consecutive_connection_errors += 1
+                else:
+                    consecutive_connection_errors = 0
+
                 activity_log.emit("error", f"LLM error for {merchant}: {exc}")
+
+                if consecutive_connection_errors >= _CONNECTION_ERROR_LIMIT:
+                    activity_log.mark_item_done(lid)
+                    activity_log.emit(
+                        "error",
+                        f"Stopping — {_CONNECTION_ERROR_LIMIT} consecutive connection "
+                        "failures. Some corporate VPNs block OpenAI API calls. "
+                        "Disconnect from VPN and try again, or verify your API key "
+                        "is valid in Settings.",
+                    )
+                    raise RuntimeError(
+                        f"OpenAI API unreachable ({_CONNECTION_ERROR_LIMIT} consecutive failures). "
+                        "Your VPN may be blocking the connection. Disconnect from VPN "
+                        "and try again, or check your API key in Settings."
+                    ) from exc
             finally:
                 activity_log.mark_item_done(lid)
 
@@ -953,6 +981,7 @@ class ExpenseService:
                 if str(l.get("line_id", "")).strip() not in matches
                 or not str(matches.get(str(l.get("line_id", "")).strip(), {}).get("best_receipt") or "").strip()
             ]
+            consecutive_connection_errors = 0
             for i, line in enumerate(still_unmatched):
                 lid = str(line.get("line_id", "")).strip()
                 merchant = str(line.get("merchant_name", "")).strip() or "unknown"
@@ -963,11 +992,28 @@ class ExpenseService:
                         api_key=api_key, model=model, line=line, analyses=analyses,
                         on_status=lambda msg: activity_log.emit("llm", msg),
                     )
+                    consecutive_connection_errors = 0
                     if result.get("best_receipt"):
                         matches[lid] = result
                         llm_updated += 1
                 except Exception as exc:
+                    exc_text = f"{exc!r}"
+                    is_conn = any(
+                        kw in exc_text.upper()
+                        for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS", "TIMEOUT", "NETWORK")
+                    )
+                    if is_conn:
+                        consecutive_connection_errors += 1
+                    else:
+                        consecutive_connection_errors = 0
                     activity_log.emit("error", f"LLM error for {merchant}: {exc}")
+                    if consecutive_connection_errors >= 3:
+                        activity_log.mark_item_done(lid)
+                        raise RuntimeError(
+                            "OpenAI API unreachable (3 consecutive failures). "
+                            "Your VPN may be blocking the connection. Disconnect "
+                            "from VPN and try again, or check your API key in Settings."
+                        ) from exc
                 finally:
                     activity_log.mark_item_done(lid)
 
@@ -1002,6 +1048,7 @@ class ExpenseService:
             return {"updated": 0, "message": "All lines already matched"}
 
         updated = 0
+        consecutive_connection_errors = 0
         for i, line in enumerate(unmatched):
             lid = str(line.get("line_id", "")).strip()
             log(f"Matching {i+1}/{len(unmatched)}: {line.get('merchant_name', 'unknown')}")
@@ -1013,11 +1060,27 @@ class ExpenseService:
                     analyses=analyses,
                     on_status=log,
                 )
+                consecutive_connection_errors = 0
                 if result.get("best_receipt"):
                     matches[lid] = result
                     updated += 1
             except Exception as exc:
+                exc_text = f"{exc!r}"
+                is_conn = any(
+                    kw in exc_text.upper()
+                    for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS", "TIMEOUT", "NETWORK")
+                )
+                if is_conn:
+                    consecutive_connection_errors += 1
+                else:
+                    consecutive_connection_errors = 0
                 log(f"Error matching {lid}: {exc}")
+                if consecutive_connection_errors >= 3:
+                    raise RuntimeError(
+                        "OpenAI API unreachable (3 consecutive failures). "
+                        "Your VPN may be blocking the connection. Disconnect "
+                        "from VPN and try again, or check your API key in Settings."
+                    ) from exc
 
         save_receipt_line_matches(self.app_dir, matches)
         return {"updated": updated, "attempted": len(unmatched)}

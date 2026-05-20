@@ -674,18 +674,28 @@ def analyze_receipts_with_llm(
                 "type": "input_image",
                 "image_url": f"data:{mime_type};base64,{encoded}",
             }
-        response = client.responses.create(
-            model=model,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        file_content,
-                    ],
-                }
-            ],
-        )
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            file_content,
+                        ],
+                    }
+                ],
+            )
+        except Exception as exc:
+            exc_text = f"{exc!r}"
+            if any(kw in exc_text.upper() for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS")):
+                raise RuntimeError(
+                    "OpenAI API unreachable — connection or TLS error. "
+                    "Some corporate VPNs block OpenAI API calls. "
+                    "Disconnect from VPN and try again, or verify your API key in Settings."
+                ) from exc
+            raise
         raw_text = response.output_text or "{}"
         json_text = normalize_json_text(raw_text)
         try:
