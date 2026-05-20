@@ -107,6 +107,57 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def _start_auto_match():
+    """Check for unscanned documents before running auto-match; prompt user if any found."""
+    unscanned = [r for r in svc.get_receipts() if not r.analyzed]
+    if not unscanned:
+        _run_background("Matching", svc.run_full_matching_pipeline, "Matching complete")
+        return
+
+    count = len(unscanned)
+    with ui.dialog() as dlg, ui.card().style(
+        "min-width:420px;max-width:520px;border-radius:16px;padding:28px"
+    ):
+        ui.label("Unscanned documents").classes("text-lg font-bold mb-2")
+        ui.html(
+            f"""
+            <div style="font-size:0.9rem;line-height:1.55;color:#475569">
+              <p style="margin:0 0 12px 0">
+                <b>{count} document{'s have' if count != 1 else ' has'}</b> been added but not yet
+                reviewed for vendor and currency information.
+              </p>
+              <p style="margin:0 0 12px 0">
+                Would you like to scan these first before running the match?
+                Unscanned items will not be evaluated for a match.
+              </p>
+            </div>
+            """
+        )
+        with ui.row().classes("items-center justify-end gap-2 w-full mt-4"):
+            def _skip():
+                dlg.close()
+                _run_background("Matching", svc.run_full_matching_pipeline, "Matching complete")
+
+            def _scan_first():
+                dlg.close()
+
+                def _do_scan(on_status):
+                    svc.analyze_receipts(on_status=on_status)
+                    return svc.run_full_matching_pipeline(on_status=on_status)
+
+                _run_background(
+                    "Scan & Match",
+                    _do_scan,
+                    "Scan and matching complete",
+                )
+
+            ui.button("Skip, match anyway", on_click=_skip).props("flat no-caps")
+            ui.button("Scan first, then match", on_click=_scan_first).props(
+                "no-caps unelevated color=primary"
+            ).classes("action-btn")
+    dlg.open()
+
+
 def _open_oracle_manual_login_dialog(on_continue: Callable[[], None]) -> None:
     """Explain that Oracle credentials are entered only in the browser; then run *on_continue*."""
     with ui.dialog() as dlg, ui.card().style(
@@ -1684,9 +1735,7 @@ def page_dashboard():
                     ui.button(
                         "Run Auto-Match",
                         icon="auto_fix_high",
-                        on_click=lambda: (
-                            _run_background("Matching", svc.run_full_matching_pipeline, "Matching complete"),
-                        ),
+                        on_click=_start_auto_match,
                     ).props("color=primary no-caps unelevated").classes("action-btn")
                     ui.button("Go to Matching", on_click=lambda: ui.navigate.to("/matching")).props(
                         "no-caps outline"
@@ -3554,9 +3603,7 @@ def page_matching(request: Request):
                 ui.button(
                     "Run Auto-Match",
                     icon="auto_fix_high",
-                    on_click=lambda: (
-                        _run_background("Matching", svc.run_full_matching_pipeline, "Matching complete"),
-                    ),
+                    on_click=_start_auto_match,
                 ).props("no-caps outline size=sm").classes("action-btn")
 
         def _on_match_search(e):
