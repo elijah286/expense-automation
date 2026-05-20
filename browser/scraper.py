@@ -121,6 +121,51 @@ class TransactionScraper:
         self._on_status(msg)
 
     # ------------------------------------------------------------------
+    # Connectivity check
+    # ------------------------------------------------------------------
+
+    _UNREACHABLE_INDICATORS = (
+        "ERR_NAME_NOT_RESOLVED",
+        "ERR_CONNECTION_REFUSED",
+        "ERR_CONNECTION_TIMED_OUT",
+        "ERR_TIMED_OUT",
+        "ERR_INTERNET_DISCONNECTED",
+        "ERR_NETWORK_CHANGED",
+        "ERR_ADDRESS_UNREACHABLE",
+        "ERR_SSL_PROTOCOL_ERROR",
+        "ERR_CERT_",
+        "DNS_PROBE_FINISHED",
+        "This site can't be reached",
+        "Unable to connect",
+    )
+
+    def _verify_portal_reachable(self, portal_url: str) -> None:
+        """Check that the portal page loaded. If Chromium shows a network error,
+        close the browser and raise with a user-friendly message."""
+        if not self.browser_page:
+            raise RuntimeError("Browser page not available.")
+        # Give the page a moment to settle after launch
+        self.browser_page.wait_for_timeout(3000)
+        try:
+            body_text = self.browser_page.text_content("body", timeout=5000) or ""
+        except Exception:
+            body_text = ""
+        try:
+            page_url = self.browser_page.url or ""
+        except Exception:
+            page_url = ""
+        # Check for Chromium error page indicators
+        is_error = any(ind in body_text for ind in self._UNREACHABLE_INDICATORS)
+        is_error = is_error or any(ind in page_url for ind in ("chrome-error://",))
+        if is_error:
+            self.close_browser()
+            raise RuntimeError(
+                f"Could not reach {portal_url}. "
+                "Please check that your VPN is connected and the portal URL "
+                "in Settings is correct, then try again."
+            )
+
+    # ------------------------------------------------------------------
     # Page-readiness helpers (Oracle EBS is slow / iframe-heavy)
     # ------------------------------------------------------------------
 
@@ -1826,11 +1871,18 @@ class TransactionScraper:
             self.set_status(f"Launching Chromium → {portal_url}")
             self.open_browser(portal_url)
 
+            # ------ Connectivity / VPN check ------
+            self.set_status("Checking portal connectivity…")
+            self._verify_portal_reachable(portal_url)
+
+            self.set_status(
+                "[LOGIN_REQUIRED] Waiting for you to sign in to Oracle…"
+            )
             self.wait_for_manual_oracle_login()
             assert self.browser_page is not None
             self.browser_page.wait_for_timeout(500)
 
-            self.set_status("Expanding iExpenses in Navigator…")
+            self.set_status("[AUTOMATING] Expanding iExpenses in Navigator…")
             self._oracle_expand_nic_iexpenses_menu()
             self.browser_page.wait_for_timeout(400)
 

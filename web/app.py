@@ -87,12 +87,15 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
             status_lines.append(f"Done: {result}")
             activity_log.emit("success", f"{task_name} complete")
             if on_done:
-                on_done(result)
+                # Schedule UI callback on the main event loop, not from this thread
+                ui.timer(0.1, lambda: on_done(result), once=True)
         except Exception as exc:
             status_lines.append(f"Error: {exc}")
             activity_log.emit("error", f"{task_name} failed: {exc}")
             try:
-                ui.notify(f"{task_name} failed: {exc}", type="negative", timeout=15000)
+                ui.timer(0.1, lambda: ui.notify(
+                    f"{task_name} failed: {exc}", type="negative", timeout=15000
+                ), once=True)
             except Exception:
                 pass
         finally:
@@ -2933,7 +2936,7 @@ def page_transactions(request: Request):
                                 type="positive",
                                 timeout=10000,
                             )
-                            ui.navigate.to("/transactions")
+                            ui.navigate.to("/transactions", new_tab=False)
 
                         _run_background(
                             "Scrape Transactions",
