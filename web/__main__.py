@@ -59,9 +59,19 @@ if __name__ == "__main__":
                 return
 
         # No bundled Chromium — download on demand into ~/.expense-automator/ms-playwright.
-        if not any(browsers_dir.glob("chromium-*")):
+        # Check that the *correct* Chromium revision exists, not just any old one.
+        try:
+            from playwright.sync_api import sync_playwright as _sw
+            _p = _sw().start()
+            _expected_exe = Path(_p.chromium.executable_path)
+            _p.stop()
+            _need_install = not _expected_exe.exists()
+        except Exception:
+            _need_install = not any(browsers_dir.glob("chromium-*"))
+
+        if _need_install:
             log = logging.getLogger("expense_automator")
-            log.info("Chromium not found — downloading via Playwright (one-time setup)...")
+            log.info("Chromium not found or outdated — downloading via Playwright (one-time setup)...")
             _install_playwright_chromium()
 
     _bootstrap_playwright_browsers()

@@ -91,6 +91,10 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
         except Exception as exc:
             status_lines.append(f"Error: {exc}")
             activity_log.emit("error", f"{task_name} failed: {exc}")
+            try:
+                ui.notify(f"{task_name} failed: {exc}", type="negative", timeout=15000)
+            except Exception:
+                pass
         finally:
             with _task_lock:
                 _running_tasks[task_name] = {"running": False, "status": status_lines}

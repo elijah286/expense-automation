@@ -618,8 +618,9 @@ def analyze_receipts_with_llm(
             on_status(f"LLM: waiting for model to read receipt {path_obj.name}…")
         mime_type = mimetypes.guess_type(path_obj.name)[0] or "image/jpeg"
         encoded = base64.b64encode(path_obj.read_bytes()).decode("utf-8")
+        doc_kind = "document" if mime_type == "application/pdf" else "image"
         prompt = (
-            "Inspect this receipt image and return strict JSON with keys: "
+            f"Inspect this receipt {doc_kind} and return strict JSON with keys: "
             "vendor, receipt_date, currency, subtotal, tax, total_amount, "
             "matched_amount, line_items, card_charged_amount, card_charged_currency, "
             "estimated_usd_total, estimated_usd_fx_note, confidence, notes, display_rotation_quarter_turns. "
@@ -663,6 +664,16 @@ def analyze_receipts_with_llm(
             "so the receipt reads upright in a normal viewer (total at bottom, text horizontal). "
             "Use 0 if already upright."
         )
+        if mime_type == "application/pdf":
+            file_content = {
+                "type": "input_file",
+                "file_data": f"data:{mime_type};base64,{encoded}",
+            }
+        else:
+            file_content = {
+                "type": "input_image",
+                "image_url": f"data:{mime_type};base64,{encoded}",
+            }
         response = client.responses.create(
             model=model,
             input=[
@@ -670,10 +681,7 @@ def analyze_receipts_with_llm(
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": prompt},
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:{mime_type};base64,{encoded}",
-                        },
+                        file_content,
                     ],
                 }
             ],
