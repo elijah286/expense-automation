@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,17 @@ log = logging.getLogger("expense_automator.updater")
 
 _GITHUB_REPO = "elijah286/expense-automation"
 _RELEASES_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Build an SSL context that works in frozen PyInstaller bundles on macOS."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
+    # Fallback: try the default context (works on non-frozen installs)
+    return ssl.create_default_context()
 
 # ---------------------------------------------------------------------------
 # Version comparison
@@ -54,11 +66,12 @@ def check_for_update(current_version: str) -> dict[str, Any] | None:
     Keys: version, tag, macos_url, windows_url, notes, published_at
     """
     try:
+        ctx = _ssl_context()
         req = urllib.request.Request(
             _RELEASES_URL,
             headers={"Accept": "application/vnd.github+json"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             data = json.loads(resp.read())
     except Exception as exc:
         log.warning("Update check failed: %s", exc)
@@ -98,9 +111,10 @@ def download_update(url: str, on_progress=None) -> Path:
 
     on_progress(bytes_downloaded, total_bytes) is called periodically.
     """
+    ctx = _ssl_context()
     req = urllib.request.Request(url)
     dest = Path(tempfile.mkdtemp()) / url.rsplit("/", 1)[-1]
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         downloaded = 0
         with open(dest, "wb") as f:

@@ -38,6 +38,7 @@ for pkg in (
     "dotenv",
     "dns",
     "jaraco",
+    "certifi",
 ):
     try:
         d, b, h = collect_all(pkg)
