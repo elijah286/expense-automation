@@ -1336,61 +1336,11 @@ def shared_nav(active: str, report_id: str = ""):
         ui.html(
             f'<div id="about-link" class="nav-section-title" style="padding:8px 14px 12px;font-size:0.65rem;'
             f'cursor:pointer;display:flex;align-items:center;gap:4px"'
-            f' onclick="document.getElementById(\'about-dialog\').style.display=\'flex\'">'
+            f' onclick="var b=document.getElementById(\'ea-check-update-btn\');if(b)b.click()">'
             f'<span class="material-icons" style="font-size:0.8rem">info_outline</span>'
             f'v{_VERSION}</div>'
         )
-        ui.html(
-            '<div class="nav-section-title" style="padding:0 14px 12px;font-size:0.6rem;'
-            'cursor:pointer;display:flex;align-items:center;gap:4px;color:#64748b"'
-            ' onclick="var b=document.getElementById(\'ea-check-update-btn\');if(b)b.click()"'
-            ' onmouseenter="this.style.color=\'#3b82f6\'" onmouseleave="this.style.color=\'#64748b\'"'
-            '>'
-            '<span class="material-icons" style="font-size:0.75rem">system_update</span>'
-            'Check for Updates</div>'
-        )
-    ui.html(f'''
-    <div id="about-dialog" style="
-        display:none; position:fixed; inset:0; z-index:9999;
-        align-items:center; justify-content:center;
-        background:rgba(0,0,0,0.45); backdrop-filter:blur(4px);
-    " onclick="if(event.target===this)this.style.display='none'">
-      <div style="
-        background:#1e293b; border:1px solid rgba(255,255,255,0.08);
-        border-radius:12px; padding:28px 32px; max-width:380px; width:90%;
-        color:#e2e8f0; box-shadow:0 20px 60px rgba(0,0,0,0.5);
-      ">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
-          <span class="material-icons" style="font-size:1.5rem;color:#3b82f6">receipt_long</span>
-          <span style="font-size:1.1rem;font-weight:700;color:#f1f5f9">Expense Automator</span>
-          <span style="font-size:0.7rem;color:#64748b;margin-left:auto">v{_VERSION}</span>
-        </div>
-        <p style="font-size:0.82rem;line-height:1.55;color:#94a3b8;margin:0 0 14px">
-          Automates the tedious parts of expense reporting&mdash;scanning receipts,
-          matching them to credit-card transactions, classifying expense types,
-          and preparing submissions.
-        </p>
-        <p style="font-size:0.75rem;line-height:1.5;color:#64748b;margin:0 0 18px;
-                  padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:6px;
-                  border-left:2px solid #3b82f6">
-          <span class="material-icons" style="font-size:0.8rem;vertical-align:middle;margin-right:3px;color:#3b82f6">lock</span>
-          All data stays on this machine. Nothing is sent to external servers.
-        </p>
-        <div style="font-size:0.72rem;color:#475569">
-          Built by <span style="color:#94a3b8;font-weight:600">Elijah Kerry</span>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
-          <button onclick="this.closest('#about-dialog').style.display='none';
-            var b=document.getElementById('ea-check-update-btn');if(b)b.click()"
-                  style="background:transparent;color:#60a5fa;border:1px solid #334155;padding:5px 14px;
-                         border-radius:6px;font-size:0.75rem;cursor:pointer">Check for Updates</button>
-          <button onclick="this.closest('#about-dialog').style.display='none'"
-                  style="background:#334155;color:#e2e8f0;border:none;padding:5px 16px;
-                         border-radius:6px;font-size:0.75rem;cursor:pointer">Close</button>
-        </div>
-      </div>
-    </div>
-    ''')
+    return drawer
 
 
 def _parse_date_sort_key(d: str) -> str:
