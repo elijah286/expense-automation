@@ -20,7 +20,16 @@ if __name__ == "__main__":
         argv_prev = sys.argv[:]
         try:
             sys.argv = [argv_prev[0], "install", "chromium"]
-            playwright_main()
+            # Suppress noisy download progress output (Chromium, FFmpeg, etc.)
+            _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
+            sys.stdout = open(os.devnull, "w")
+            sys.stderr = open(os.devnull, "w")
+            try:
+                playwright_main()
+            finally:
+                sys.stdout.close()
+                sys.stderr.close()
+                sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
         finally:
             sys.argv = argv_prev
 
