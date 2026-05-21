@@ -74,23 +74,72 @@ if __name__ == "__main__":
             log = logging.getLogger("expense_automator")
             log.info("Chromium not found or outdated — will download in background...")
             from web import startup as _startup
-            _startup.set_downloading(True)
+            _startup.set_chromium_downloading(True)
 
     _bootstrap_playwright_browsers()
 
-    def _background_chromium_download() -> None:
-        """Download Chromium in background so the UI can launch immediately."""
-        from web import startup as _startup
+    def _background_launch_setup() -> None:
+        """Run all first-launch tasks: check for update, download if available,
+        then download Chromium if needed.  Splash screen tracks progress."""
+        from web import startup as _st
+        from web.updater import check_for_update, download_update
         log = logging.getLogger("expense_automator")
+
+        # --- Phase 1: Check for updates ---
+        _st.set_update_checking(True)
         try:
-            log.info("Starting background Chromium download...")
-            _install_playwright_chromium()
-            log.info("Chromium download complete.")
+            from web.app import _VERSION
+            info = check_for_update(_VERSION)
+            _st.set_update_info(info)
         except Exception as exc:
-            log.error("Chromium download failed: %s", exc)
-            _startup.set_error(str(exc))
+            log.warning("Update check failed: %s", exc)
+            info = None
         finally:
-            _startup.set_downloading(False)
+            _st.set_update_checking(False)
+
+        # --- Phase 2: Download & apply update if available ---
+        if info and getattr(sys, "frozen", False) and sys.platform == "darwin":
+            asset_url = info.get("macos_url", "")
+            if asset_url:
+                _st.set_update_downloading(True)
+                try:
+                    def _on_progress(downloaded, total):
+                        if total > 0:
+                            _st.set_update_progress(downloaded / total)
+
+                    log.info("Downloading update v%s...", info["version"])
+                    dmg_path = download_update(asset_url, on_progress=_on_progress)
+                    _st.set_update_downloading(False)
+                    _st.set_update_applying(True)
+
+                    from web.updater import apply_macos_update
+                    log.info("Applying update...")
+                    apply_macos_update(dmg_path)
+
+                    import time; time.sleep(1)
+                    import nicegui
+                    nicegui.app.shutdown()
+                    return  # App will restart with new version
+                except Exception as exc:
+                    log.error("Auto-update failed: %s", exc)
+                    _st.set_update_error(str(exc))
+                finally:
+                    _st.set_update_downloading(False)
+                    _st.set_update_applying(False)
+
+        # --- Phase 3: Download Chromium if needed ---
+        if _st.chromium_downloading():
+            try:
+                log.info("Starting Chromium download...")
+                _install_playwright_chromium()
+                log.info("Chromium download complete.")
+            except Exception as exc:
+                log.error("Chromium download failed: %s", exc)
+                _st.set_chromium_error(str(exc))
+            finally:
+                _st.set_chromium_downloading(False)
+
+        _st.set_setup_done(True)
 
     _env_file, _env_example = env_file_paths()
     if is_frozen():
@@ -132,10 +181,8 @@ if __name__ == "__main__":
         "favicon": "💰",
     }
 
-    # Start background Chromium download if needed (UI launches immediately).
-    from web import startup as _startup_state
-    if _startup_state.is_downloading():
-        threading.Thread(target=_background_chromium_download, daemon=True).start()
+    # Start background launch setup (update check + Chromium download).
+    threading.Thread(target=_background_launch_setup, daemon=True).start()
 
     if use_embedded_webview():
         ui.run(
