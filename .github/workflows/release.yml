@@ -25,6 +25,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/Expense Automator.dmg
+          make_latest: true
 
   build-windows:
     runs-on: windows-latest
@@ -45,3 +46,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/ExpenseAutomator_Setup.exe
+          make_latest: true

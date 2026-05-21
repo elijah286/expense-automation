@@ -24,7 +24,7 @@ from typing import Any
 log = logging.getLogger("expense_automator.updater")
 
 _GITHUB_REPO = "elijah286/expense-automation"
-_RELEASES_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+_RELEASES_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases"
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -68,15 +68,31 @@ def check_for_update(current_version: str) -> dict[str, Any] | None:
     try:
         ctx = _ssl_context()
         req = urllib.request.Request(
-            _RELEASES_URL,
+            _RELEASES_URL + "?per_page=10",
             headers={"Accept": "application/vnd.github+json"},
         )
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            data = json.loads(resp.read())
+            releases = json.loads(resp.read())
     except Exception as exc:
         log.warning("Update check failed: %s", exc)
         return None
 
+    # Find the release with the highest version number
+    best = None
+    best_ver: tuple[int, ...] = (0,)
+    for rel in releases:
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        tag = rel.get("tag_name", "")
+        ver = _parse_version(tag)
+        if ver > best_ver:
+            best_ver = ver
+            best = rel
+
+    if not best:
+        return None
+
+    data = best
     tag = data.get("tag_name", "")
     latest = tag.lstrip("v")
     if not latest or not _is_newer(latest, current_version):
