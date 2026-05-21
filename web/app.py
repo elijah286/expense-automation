@@ -498,6 +498,25 @@ async def serve_image(path: str) -> Response:
     return Response(status_code=404, content="Not found")
 
 
+@app.get("/api/pdf-thumb")
+async def serve_pdf_thumb(path: str) -> Response:
+    """Return a PNG thumbnail of the first page of a PDF."""
+    p = Path(path).expanduser()
+    if not p.is_file() or p.suffix.lower() != ".pdf":
+        return Response(status_code=404, content="Not found")
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(str(p))
+        page = doc[0]
+        pix = page.get_pixmap(dpi=72)
+        png_bytes = pix.tobytes("png")
+        doc.close()
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception:
+        return Response(status_code=500, content="Could not render PDF thumbnail")
+
+
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".tiff", ".pdf"}
 
 
@@ -1256,6 +1275,10 @@ def _badge_html(status: str, confidence: float = 0.0, *, label: str | None = Non
 
 def _img_url(path: str) -> str:
     return f"/api/image?path={urllib.parse.quote(path, safe='')}"
+
+
+def _pdf_thumb_url(path: str) -> str:
+    return f"/api/pdf-thumb?path={urllib.parse.quote(path, safe='')}"
 
 
 def shared_header(nav_drawer=None):
@@ -2126,6 +2149,7 @@ def page_documents(request: Request):
                             "Receipt Rescan",
                             lambda on_status: svc.rescan_receipts(paths, on_status=on_status),
                             f"Finished rescanning {n} receipt{'s' if n != 1 else ''}",
+                            on_done=lambda _: _render_documents(),
                         )
 
                     ui.button(
@@ -2192,6 +2216,7 @@ def page_documents(request: Request):
                                 "Receipt Analysis",
                                 lambda on_status: svc.analyze_receipts(on_status=on_status),
                                 f"Finished analyzing receipts",
+                                on_done=lambda _: _render_documents(),
                             )
 
                         ui.button(
@@ -2392,6 +2417,7 @@ def page_documents(request: Request):
                                     "Receipt Rescan",
                                     lambda on_status: svc.rescan_receipts([path], on_status=on_status),
                                     "Finished rescanning receipt",
+                                    on_done=lambda _: _render_documents(),
                                 )
                             return _do
 
@@ -2543,6 +2569,14 @@ def page_documents(request: Request):
                             if rotation:
                                 img_style += f"transform:rotate({rotation}deg);"
                             ui.image(_img_url(doc.source_file)).style(img_style)
+                    elif Path(doc.source_file).is_file() and Path(doc.source_file).suffix.lower() == ".pdf":
+                        with ui.element("div").style(
+                            "width:100%;max-height:260px;overflow:hidden;"
+                            "border-radius:8px;border:1px solid var(--border-default);cursor:pointer;"
+                        ).on("click", lambda _, d=doc: _open_receipt_viewer(d)):
+                            ui.image(_pdf_thumb_url(doc.source_file)).style(
+                                "width:100%;height:100%;object-fit:contain;"
+                            )
                     elif Path(doc.source_file).is_file():
                         with ui.element("div").style(
                             "height:100px;background:var(--bg-surface);border-radius:8px;"
@@ -2780,6 +2814,13 @@ def _receipt_row(
             if rotation:
                 style += f"transform:rotate({rotation}deg);"
             ui.image(_img_url(r.source_file)).style(style).on(
+                "click", lambda _, cb=row_click: cb() if cb else None,
+            )
+        elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
+            ui.image(_pdf_thumb_url(r.source_file)).style(
+                "width:72px;height:56px;object-fit:cover;"
+                "border-radius:0;cursor:pointer;"
+            ).on(
                 "click", lambda _, cb=row_click: cb() if cb else None,
             )
         else:
@@ -3104,6 +3145,42 @@ def _open_receipt_viewer(doc: ReceiptDoc):
                     fit_btn = ui.button(icon="fit_screen").props("flat round dense size=sm outline")
 
             js = _VIEWER_JS.replace("__CID__", container_id).replace("__ROT__", str(rotation))
+
+            zoom_in_btn.on("click", lambda: ui.run_javascript(
+                f'document.getElementById("{container_id}")?._vzoom(1.2)'
+            ))
+            zoom_out_btn.on("click", lambda: ui.run_javascript(
+                f'document.getElementById("{container_id}")?._vzoom(1/1.2)'
+            ))
+            fit_btn.on("click", lambda: ui.run_javascript(
+                f'document.getElementById("{container_id}")?._vreset()'
+            ))
+
+            async def _init_viewer():
+                await ui.run_javascript(js)
+
+            dlg.on("show", _init_viewer)
+        elif Path(doc.source_file).is_file() and Path(doc.source_file).suffix.lower() == ".pdf":
+            img_src = _pdf_thumb_url(doc.source_file)
+            container_id = f"rv{id(doc)}"
+
+            with ui.element("div").style("flex:1 1 0;min-height:0;position:relative;width:100%"):
+                ui.html(
+                    f'<div id="{container_id}" style="position:absolute;top:0;left:0;right:0;bottom:0;overflow:hidden;'
+                    f'cursor:grab;background:var(--bg-surface);">'
+                    f'<img src="{img_src}" style="transform-origin:0 0;position:absolute;'
+                    f'top:0;left:0;user-select:none;pointer-events:none;" />'
+                    f'</div>'
+                ).style("position:absolute;top:0;left:0;right:0;bottom:0")
+
+                with ui.row().style(
+                    "position:absolute;top:8px;left:8px;z-index:10;gap:4px;"
+                ):
+                    zoom_in_btn = ui.button(icon="zoom_in").props("flat round dense size=sm outline")
+                    zoom_out_btn = ui.button(icon="zoom_out").props("flat round dense size=sm outline")
+                    fit_btn = ui.button(icon="fit_screen").props("flat round dense size=sm outline")
+
+            js = _VIEWER_JS.replace("__CID__", container_id).replace("__ROT__", "0")
 
             zoom_in_btn.on("click", lambda: ui.run_javascript(
                 f'document.getElementById("{container_id}")?._vzoom(1.2)'
@@ -4337,6 +4414,15 @@ def page_matching(request: Request):
                                 ).style("position:absolute;top:0;left:0;right:0;bottom:0")
                             _pjs = _CARD_PREVIEW_JS.replace("__CID__", preview_cid).replace("__ROT__", str(rotation))
                             ui.timer(0.2, lambda _js=_pjs: ui.run_javascript(_js), once=True)
+                        elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
+                            with ui.element("div").style(
+                                "width:100%;height:380px;position:relative;"
+                                "border-radius:8px;border:1px solid var(--border-default);overflow:hidden;"
+                                "background:var(--bg-surface);cursor:pointer;"
+                            ).on("click", lambda _, d=r: _open_receipt_viewer(d)):
+                                ui.image(_pdf_thumb_url(r.source_file)).style(
+                                    "width:100%;height:100%;object-fit:contain;"
+                                )
                         else:
                             with ui.element("div").style(
                                 "height:120px;background:var(--bg-surface);border-radius:8px;"
@@ -4552,6 +4638,10 @@ def _open_manual_pick_dialog(line_id: str, receipts: list[ReceiptDoc], on_done):
                     ):
                         if r.is_image and Path(r.source_file).is_file():
                             ui.image(_img_url(r.source_file)).style(
+                                "width:100%;height:160px;object-fit:cover;border-radius:8px"
+                            )
+                        elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
+                            ui.image(_pdf_thumb_url(r.source_file)).style(
                                 "width:100%;height:160px;object-fit:cover;border-radius:8px"
                             )
                         else:
