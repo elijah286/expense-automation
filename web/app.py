@@ -5365,9 +5365,11 @@ def _kill_existing_on_port(port: int) -> None:
 
     try:
         if sys.platform == "win32":
+            _cflags = subprocess.CREATE_NO_WINDOW
             result = subprocess.run(
                 ["netstat", "-ano"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=_cflags,
             )
             pids: set[int] = set()
             for line in result.stdout.splitlines():
@@ -5384,6 +5386,7 @@ def _kill_existing_on_port(port: int) -> None:
                     subprocess.run(
                         ["taskkill", "/F", "/PID", str(pid)],
                         capture_output=True, timeout=5,
+                        creationflags=_cflags,
                     )
                 except Exception:
                     pass
