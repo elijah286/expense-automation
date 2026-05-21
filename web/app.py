@@ -1786,22 +1786,30 @@ def _open_update_check_dialog():
                     ui.button("Download Update", icon="download",
                               on_click=_open_dl).props("no-caps unelevated color=primary")
 
+        _check_done = {"value": False, "info": None}
+
         def _check():
             with _update_lock:
                 _update_checked_val = _update_checked
                 cached_info = _update_info
 
-            # Use cached result if we already checked this session
             if _update_checked_val:
-                ui.timer(0.1, lambda: _show_result(cached_info), once=True)
+                _check_done["info"] = cached_info
+                _check_done["value"] = True
                 return
 
             _check_update_background()
             with _update_lock:
-                info = _update_info
-            ui.timer(0.1, lambda: _show_result(info), once=True)
+                _check_done["info"] = _update_info
+            _check_done["value"] = True
+
+        def _poll_check():
+            if _check_done["value"]:
+                poll_timer.deactivate()
+                _show_result(_check_done["info"])
 
         threading.Thread(target=_check, daemon=True).start()
+        poll_timer = ui.timer(0.3, _poll_check)
 
     dlg.open()
 
