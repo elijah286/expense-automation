@@ -117,9 +117,7 @@ if __name__ == "__main__":
                     apply_macos_update(dmg_path)
 
                     import time; time.sleep(1)
-                    import nicegui
-                    nicegui.app.shutdown()
-                    return  # App will restart with new version
+                    os._exit(0)  # Force-quit so updater script can replace the .app
                 except Exception as exc:
                     log.error("Auto-update failed: %s", exc)
                     _st.set_update_error(str(exc))
