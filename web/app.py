@@ -1340,13 +1340,15 @@ def shared_nav(active: str, report_id: str = ""):
             f'<span class="material-icons" style="font-size:0.8rem">info_outline</span>'
             f'v{_VERSION}</div>'
         )
-
-    _about_dialog()
-    return drawer
-
-
-def _about_dialog():
-    """Render a lightweight About overlay using raw HTML/CSS."""
+        ui.html(
+            '<div class="nav-section-title" style="padding:0 14px 12px;font-size:0.6rem;'
+            'cursor:pointer;display:flex;align-items:center;gap:4px;color:#64748b"'
+            ' onclick="var b=document.getElementById(\'ea-check-update-btn\');if(b)b.click()"'
+            ' onmouseenter="this.style.color=\'#3b82f6\'" onmouseleave="this.style.color=\'#64748b\'"'
+            '>'
+            '<span class="material-icons" style="font-size:0.75rem">system_update</span>'
+            'Check for Updates</div>'
+        )
     ui.html(f'''
     <div id="about-dialog" style="
         display:none; position:fixed; inset:0; z-index:9999;
@@ -1721,27 +1723,138 @@ def page_frame(active: str, report_id: str = ""):
         ui.navigate.to("/settings")
     _launch_splash()
 
-    # Manual "Check for Updates" from the about dialog
+    # Manual "Check for Updates" — opens a dialog with status + upgrade option
     def _manual_update_check():
         global _update_info, _update_checked
-        with _update_lock:
-            _update_checked = False
-            _update_info = None
-        ui.notify("Checking for updates\u2026", type="info")
 
-        def _check():
-            _check_update_background()
-            with _update_lock:
-                info = _update_info
-            if info:
-                ui.timer(0.1, lambda: ui.notify(
-                    f"Version {info['version']} will be installed on next launch.",
-                    type="info", timeout=5000,
-                ), once=True)
-            else:
-                ui.timer(0.1, lambda: ui.notify("You're on the latest version!", type="positive"), once=True)
+        with ui.dialog() as dlg, ui.card().style(
+            "min-width:420px;max-width:520px;border-radius:14px;padding:24px 28px"
+        ):
+            with ui.row().classes("items-center gap-3 w-full mb-3"):
+                ui.icon("system_update").classes("text-blue-500").style("font-size:1.4rem")
+                ui.label("Software Update").classes("text-lg font-bold")
 
-        threading.Thread(target=_check, daemon=True).start()
+            status_label = ui.label("Checking for updates\u2026").style(
+                "font-size:0.9rem;color:#64748b"
+            )
+            spinner = ui.spinner(size="sm").classes("mt-1")
+
+            result_container = ui.element("div").style("display:none")
+
+            progress_container = ui.element("div").style("display:none")
+            with progress_container:
+                progress_label = ui.label("Downloading update\u2026").style(
+                    "font-size:0.85rem;color:#64748b;margin-bottom:6px"
+                )
+                progress_bar = ui.linear_progress(value=0, show_value=False).props(
+                    "color=primary"
+                ).style("width:100%")
+
+            btn_row = ui.row().classes("items-center justify-end gap-2 w-full mt-3")
+            with btn_row:
+                close_btn = ui.button("Close", on_click=dlg.close).props("flat no-caps")
+
+            def _show_result(info):
+                spinner.visible = False
+                if not info:
+                    status_label.text = f"You're on the latest version (v{_VERSION})."
+                    status_label.style("color:#16a34a")
+                    return
+
+                version = info["version"]
+                status_label.text = f"Version {version} is available!"
+                status_label.style("color:#1e40af;font-weight:600")
+
+                is_mac = sys.platform == "darwin"
+                is_frozen = getattr(sys, "frozen", False)
+                asset_url = info.get("macos_url", "") if is_mac else info.get("windows_url", "")
+
+                notes = info.get("notes", "").strip()
+                if notes:
+                    result_container.style("display:block")
+                    with result_container:
+                        with ui.element("div").style(
+                            "max-height:160px;overflow-y:auto;font-size:0.82rem;line-height:1.55;"
+                            "color:#475569;background:#f8fafc;border-radius:8px;padding:10px 14px;"
+                            "margin-top:8px;border:1px solid #e2e8f0"
+                        ):
+                            ui.html(f"<div style='white-space:pre-wrap'>{notes}</div>")
+
+                if is_mac and is_frozen and asset_url:
+                    def _do_update():
+                        from web.updater import download_update, apply_macos_update
+                        close_btn.disable()
+                        update_btn.disable()
+                        progress_container.style("display:block")
+
+                        def _download_and_apply():
+                            try:
+                                def _on_progress(downloaded, total):
+                                    if total > 0:
+                                        pct = downloaded / total
+                                        ui.timer(0.05, lambda p=pct: _update_ui_progress(p), once=True)
+
+                                def _update_ui_progress(pct):
+                                    progress_bar.value = pct
+                                    progress_label.text = f"Downloading\u2026 {int(pct * 100)}%"
+
+                                dmg_path = download_update(asset_url, on_progress=_on_progress)
+                                ui.timer(0.1, lambda: _apply(dmg_path), once=True)
+                            except Exception as exc:
+                                ui.timer(0.1, lambda: _dl_failed(str(exc)), once=True)
+
+                        def _apply(dmg_path):
+                            progress_label.text = "Installing update and restarting\u2026"
+                            progress_bar.props("indeterminate")
+                            try:
+                                apply_macos_update(dmg_path)
+                                import time; time.sleep(0.5)
+                                import nicegui
+                                nicegui.app.shutdown()
+                            except Exception as exc:
+                                progress_label.text = f"Update failed: {exc}"
+                                progress_label.style("color:#dc2626")
+                                close_btn.enable()
+
+                        def _dl_failed(msg):
+                            progress_label.text = f"Download failed: {msg}"
+                            progress_label.style("color:#dc2626")
+                            close_btn.enable()
+
+                        threading.Thread(target=_download_and_apply, daemon=True).start()
+
+                    with btn_row:
+                        update_btn = ui.button("Update & Restart", icon="system_update",
+                                               on_click=_do_update).props(
+                            "no-caps unelevated color=primary"
+                        )
+                elif asset_url:
+                    def _open_dl():
+                        import webbrowser
+                        webbrowser.open(asset_url)
+                        dlg.close()
+                    with btn_row:
+                        ui.button("Download Update", icon="download",
+                                  on_click=_open_dl).props("no-caps unelevated color=primary")
+
+            def _check():
+                with _update_lock:
+                    _update_checked_val = _update_checked
+                    cached_info = _update_info
+
+                # Use cached result if we already checked this session
+                if _update_checked_val:
+                    ui.timer(0.1, lambda: _show_result(cached_info), once=True)
+                    return
+
+                _check_update_background()
+                with _update_lock:
+                    info = _update_info
+                ui.timer(0.1, lambda: _show_result(info), once=True)
+
+            threading.Thread(target=_check, daemon=True).start()
+
+        dlg.open()
 
     # Hidden button that the about dialog's raw HTML can trigger
     ui.button(on_click=_manual_update_check).props(
