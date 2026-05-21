@@ -49,7 +49,7 @@ _update_lock = threading.Lock()
 
 
 def _check_update_background() -> None:
-    """Run update check once in background. Stores result in _update_info."""
+    """Run update check in background. Stores result in _update_info."""
     global _update_info, _update_checked
     from web.updater import check_for_update
     try:
@@ -1812,15 +1812,6 @@ def _open_update_check_dialog():
         _check_done = {"value": False, "info": None}
 
         def _check():
-            with _update_lock:
-                _update_checked_val = _update_checked
-                cached_info = _update_info
-
-            if _update_checked_val:
-                _check_done["info"] = cached_info
-                _check_done["value"] = True
-                return
-
             _check_update_background()
             with _update_lock:
                 _check_done["info"] = _update_info
