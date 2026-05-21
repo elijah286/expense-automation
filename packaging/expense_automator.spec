@@ -19,6 +19,7 @@ ICON_WIN = ICON_DIR / "ExpenseAutomator.ico"
 datas: list[tuple[str, str]] = [
     (str(PROJECT / ".env.example"), "."),
     (str(PROJECT / "VERSION"), "."),
+    (str(ICON_DIR / "ExpenseAutomator.ico"), "icons"),
 ]
 binaries: list[tuple[str, str]] = []
 hiddenimports: list[str] = []

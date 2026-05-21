@@ -241,8 +241,21 @@ if __name__ == "__main__":
         """Launch Edge or Chrome in --app mode (chromeless window)."""
         import subprocess as _sp
         import time as _time
-        _time.sleep(1.5)  # Wait for server to be ready
+        import urllib.request
+        import urllib.error
+
+        # Wait for server to actually respond before launching browser
         url = f"http://127.0.0.1:{WEB_PORT}/"
+        deadline = _time.time() + 30.0
+        while _time.time() < deadline:
+            try:
+                resp = urllib.request.urlopen(url, timeout=2)
+                if resp.status == 200:
+                    break
+            except Exception:
+                pass
+            _time.sleep(0.2)
+
         # Try Edge first (available on all modern Windows), then Chrome
         edge_paths = [
             os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
@@ -254,11 +267,24 @@ if __name__ == "__main__":
             os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
             os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
         ]
+        # Use a dedicated user-data-dir so the app window is separate from normal browsing
+        from web.env_paths import user_data_dir
+        app_profile = user_data_dir() / "edge-app-profile"
+        app_profile.mkdir(parents=True, exist_ok=True)
+
         for browser_path in edge_paths + chrome_paths:
             if os.path.isfile(browser_path):
                 _crash_write(f"Launching app-mode browser: {browser_path}")
                 _sp.Popen(
-                    [browser_path, f"--app={url}", "--new-window"],
+                    [
+                        browser_path,
+                        f"--app={url}",
+                        f"--user-data-dir={app_profile}",
+                        "--window-size=1280,800",
+                        "--disable-features=TranslateUI",
+                        "--disable-sync",
+                        "--no-first-run",
+                    ],
                     stdout=_sp.DEVNULL,
                     stderr=_sp.DEVNULL,
                     creationflags=_sp.DETACHED_PROCESS | _sp.CREATE_NO_WINDOW,
@@ -268,11 +294,24 @@ if __name__ == "__main__":
         import webbrowser
         webbrowser.open(url)
 
+    # Resolve the app icon for use as favicon
+    _favicon: str | Path = "💰"
+    if is_frozen():
+        _icon_path = Path(sys.executable).parent / "icons" / "ExpenseAutomator.ico"
+        if not _icon_path.exists() and hasattr(sys, "_MEIPASS"):
+            _icon_path = Path(sys._MEIPASS) / "icons" / "ExpenseAutomator.ico"
+        if _icon_path.exists():
+            _favicon = _icon_path
+    else:
+        _dev_icon = Path(__file__).resolve().parent.parent / "packaging" / "icons" / "ExpenseAutomator.ico"
+        if _dev_icon.exists():
+            _favicon = _dev_icon
+
     _run_kw: dict = {
         "title": "Expense Automator",
         "port": WEB_PORT,
         "reload": False,
-        "favicon": "💰",
+        "favicon": _favicon,
     }
 
     # Start background launch setup (update check + Chromium download).
