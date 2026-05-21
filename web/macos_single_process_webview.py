@@ -32,14 +32,14 @@ def _is_frozen_macos() -> bool:
 
 def patch_nicegui_skip_process_pool_on_frozen_macos() -> None:
     """NiceGUI's run.setup() builds a ProcessPoolExecutor, which allocates multiprocessing
-    queues. On frozen builds (PyInstaller), spawning workers can re-run the frozen executable
-    and cause issues (duplicate Dock icons on macOS, re-entrant startup on Windows).
+    queues. On macOS those spawn a resource_tracker helper that re-runs the frozen .app
+    and often shows a second, non-responsive Dock icon (PyInstaller + multiprocessing).
 
     We do not use NiceGUI's run.cpu_bound in this project; skipping the process pool
-    avoids these problems.
+    avoids the extra process.
     """
     global _POOL_PATCHED
-    if not _is_frozen() or _POOL_PATCHED:
+    if not _is_frozen_macos() or _POOL_PATCHED:
         return
 
     import nicegui.run as ng_run

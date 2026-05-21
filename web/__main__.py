@@ -13,6 +13,27 @@ from pathlib import Path
 if __name__ == "__main__":
     multiprocessing.freeze_support()
 
+    # --- Early crash logging for frozen builds (no console on Windows) ---
+    def _setup_crash_logging():
+        if not getattr(sys, "frozen", False):
+            return
+        try:
+            from web.env_paths import user_data_dir as _udd
+            log_dir = _udd()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "app.log"
+            logging.basicConfig(
+                filename=str(log_file),
+                level=logging.INFO,
+                format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+            logging.getLogger("expense_automator").info("App starting (frozen=%s, platform=%s)", True, sys.platform)
+        except Exception:
+            pass
+
+    _setup_crash_logging()
+
     def _install_playwright_chromium() -> None:
         """Install Playwright Chromium without spawning the frozen executable again."""
         from playwright.__main__ import main as playwright_main
@@ -166,7 +187,15 @@ if __name__ == "__main__":
 
     load_dotenv(_env_file)
 
-    from web.app import _kill_existing_on_port  # noqa: E402 — triggers page registration
+    _log = logging.getLogger("expense_automator")
+    _log.info("Importing web.app...")
+
+    try:
+        from web.app import _kill_existing_on_port  # noqa: E402 — triggers page registration
+    except Exception:
+        _log.exception("Failed to import web.app")
+        raise
+
     from web.macos_single_process_webview import (  # noqa: E402
         patch_nicegui_server_run,
         patch_nicegui_skip_process_pool_on_frozen_macos,
@@ -180,6 +209,8 @@ if __name__ == "__main__":
 
     WEB_PORT = 8080
     _kill_existing_on_port(WEB_PORT)
+
+    _log.info("Starting NiceGUI server on port %d...", WEB_PORT)
 
     # macOS .app (frozen): embedded pywebview on main thread + server in a thread → one Dock
     # icon, no Safari. Override with EXPENSE_AUTOMATOR_USE_BROWSER=1 for Safari.
@@ -200,22 +231,26 @@ if __name__ == "__main__":
     # Start background launch setup (update check + Chromium download).
     threading.Thread(target=_background_launch_setup, daemon=True).start()
 
-    if use_embedded_webview():
-        ui.run(
-            **_run_kw,
-            show=False,
-            native=False,
-            host="127.0.0.1",
-        )
-    elif _use_native:
-        ui.run(
-            **_run_kw,
-            native=True,
-            window_size=(1280, 800),
-        )
-    else:
-        ui.run(
-            **_run_kw,
-            show=True,
-            host="127.0.0.1",
-        )
+    try:
+        if use_embedded_webview():
+            ui.run(
+                **_run_kw,
+                show=False,
+                native=False,
+                host="127.0.0.1",
+            )
+        elif _use_native:
+            ui.run(
+                **_run_kw,
+                native=True,
+                window_size=(1280, 800),
+            )
+        else:
+            ui.run(
+                **_run_kw,
+                show=True,
+                host="127.0.0.1",
+            )
+    except Exception:
+        _log.exception("ui.run() crashed")
+        raise
