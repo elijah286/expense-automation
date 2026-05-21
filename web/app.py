@@ -1834,6 +1834,9 @@ def _launch_splash() -> None:
             ui.label("Expense Automator").classes("splash-title").style(
                 "font-size:1.5rem;font-weight:700;color:#1e293b"
             )
+            ui.label(f"v{_VERSION}").classes("splash-hint").style(
+                "font-size:0.75rem;color:#94a3b8;margin-top:-8px"
+            )
             status_label = ui.label(startup.current_status()).classes("splash-status").style(
                 "font-size:0.95rem;color:#64748b"
             )
