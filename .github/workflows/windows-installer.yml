@@ -31,5 +31,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Expense-Automator-Windows
-          path: dist\ExpenseAutomator_Setup.exe
+          path: dist\ExpenseAutomator_Setup_*.exe
           if-no-files-found: error

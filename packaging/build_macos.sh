@@ -50,7 +50,8 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
-DMG="$ROOT/dist/Expense Automator.dmg"
+VERSION=$(cat "$ROOT/VERSION")
+DMG="$ROOT/dist/Expense.Automator.${VERSION}.dmg"
 rm -f "$DMG"
 
 # Illustrated DMG requires create-dmg (sets Finder background + icon positions).

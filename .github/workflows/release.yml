@@ -24,7 +24,7 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Expense Automator.dmg
+          files: dist/Expense.Automator.*.dmg
           make_latest: true
 
   build-windows:
@@ -45,5 +45,5 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ExpenseAutomator_Setup.exe
+          files: dist/ExpenseAutomator_Setup_*.exe
           make_latest: true

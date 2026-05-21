@@ -238,7 +238,7 @@
         Open the DMG file
       </div>
       <div class="step-content">
-        Go to your Downloads folder and double-click <code>Expense.Automator.dmg</code>.
+        Go to your Downloads folder and double-click <code>Expense.Automator.{{ app_version }}.dmg</code>.
       </div>
     </div>
 
@@ -322,7 +322,8 @@
   // Auto-start the DMG download when page loads
   window.addEventListener('load', function() {
     setTimeout(function() {
-      const downloadUrl = 'https://github.com/elijah286/expense-automation/releases/latest/download/Expense.Automator.dmg';
+      const downloadUrl = '{{ macos_url }}';
+      if (!downloadUrl) return;
       const link = document.createElement('a');
       link.href = downloadUrl;
       link.setAttribute('download', '');

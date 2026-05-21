@@ -28,5 +28,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Expense-Automator-macOS
-          path: dist/Expense Automator.dmg
+          path: dist/Expense.Automator.*.dmg
           if-no-files-found: error
