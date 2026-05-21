@@ -1826,13 +1826,34 @@ def _open_update_check_dialog():
                 with btn_row:
                     ui.button("Download Update", icon="download",
                               on_click=_open_dl).props("no-caps unelevated color=primary")
+            else:
+                # Asset not uploaded yet (CI still building)
+                status_label.text = (
+                    f"Version {version} is available! Build is in progress\u2026"
+                )
+                status_label.style("color:#1e40af;font-weight:600")
+
+                def _open_releases():
+                    import webbrowser
+                    webbrowser.open(
+                        "https://github.com/elijah286/oracle-expense-automation/releases"
+                    )
+                    dlg.close()
+                with btn_row:
+                    ui.button("View Releases", icon="open_in_new",
+                              on_click=_open_releases).props("no-caps unelevated color=primary")
 
         _check_done = {"value": False, "info": None}
 
         def _check():
-            _check_update_background()
+            # Always do a fresh check so we get the latest asset URLs
+            from web.updater import check_for_update
+            result = check_for_update(_VERSION)
             with _update_lock:
-                _check_done["info"] = _update_info
+                global _update_info, _update_checked
+                _update_info = result
+                _update_checked = True
+            _check_done["info"] = result
             _check_done["value"] = True
 
         def _poll_check():

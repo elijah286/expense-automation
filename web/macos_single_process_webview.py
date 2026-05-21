@@ -93,8 +93,6 @@ def patch_nicegui_server_run() -> None:
         if not use_embedded_webview():
             return _original(self, sockets)
 
-        from nicegui import helpers
-
         def _run_all() -> None:
             _original(self, sockets)
 
@@ -105,26 +103,43 @@ def patch_nicegui_server_run() -> None:
         port = int(os.environ.get("NICEGUI_PORT", "8587"))
         protocol = os.environ.get("NICEGUI_PROTOCOL", "http")
         connect_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        base_url = f"{protocol}://{connect_host}:{port}"
+
+        # Wait for the server to respond with HTTP 200, not just open port
+        import urllib.request
+        import urllib.error
 
         deadline = time.time() + 120.0
         while time.time() < deadline:
-            if helpers.is_port_open(connect_host, port):
-                break
-            time.sleep(0.05)
+            try:
+                resp = urllib.request.urlopen(f"{base_url}/", timeout=2)
+                if resp.status == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
         else:
             self.should_exit = True
             thread.join(timeout=5)
-            raise RuntimeError("NiceGUI server did not accept connections on the expected port.")
+            raise RuntimeError("NiceGUI server did not respond on the expected port.")
 
         import webview
 
+        # On Windows, use persistent storage in user data dir to avoid temp dir issues
+        wv_kwargs: dict[str, Any] = {}
+        if sys.platform == "win32":
+            from web.env_paths import user_data_dir
+            storage = user_data_dir() / "webview_data"
+            storage.mkdir(parents=True, exist_ok=True)
+            wv_kwargs["storage_path"] = str(storage)
+
         webview.create_window(
             title="Expense Automator",
-            url=f"{protocol}://{connect_host}:{port}/",
+            url=f"{base_url}/",
             width=1280,
             height=800,
         )
-        webview.start()
+        webview.start(private_mode=False, **wv_kwargs)
         self.should_exit = True
         thread.join(timeout=60)
 
