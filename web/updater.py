@@ -232,3 +232,49 @@ open "$APP_DIR/$NEW_APP_NAME"
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Windows: apply update (run installer, exit app)
+# ---------------------------------------------------------------------------
+
+def apply_windows_update(exe_path: Path) -> None:
+    """Launch the Inno Setup installer in silent mode and exit the running app.
+
+    The installer will wait for this process to exit, then upgrade in place
+    and relaunch the app.
+    """
+    if not exe_path.is_file():
+        raise RuntimeError(f"Installer not found: {exe_path}")
+
+    # Create a small batch script that:
+    # 1. Waits for the current process to exit
+    # 2. Runs the installer silently
+    # 3. Cleans up
+    script = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".cmd", delete=False, prefix="ea_update_",
+    )
+    script_path = script.name
+    script.write(f"""@echo off
+set APP_PID={os.getpid()}
+set INSTALLER={exe_path}
+
+:wait_loop
+tasklist /FI "PID eq %APP_PID%" 2>NUL | find /I "%APP_PID%" >NUL
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >NUL
+    goto wait_loop
+)
+
+start "" "%INSTALLER%" /SILENT /SUPPRESSMSGBOXES /NORESTART
+del "%~f0"
+""")
+    script.close()
+
+    # Launch the batch script detached from this process
+    subprocess.Popen(
+        ["cmd.exe", "/c", script_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+    )

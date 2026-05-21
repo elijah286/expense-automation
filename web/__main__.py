@@ -109,9 +109,11 @@ if __name__ == "__main__":
             _st.set_update_checking(False)
 
         # --- Phase 2: Download & apply update if available ---
-        if info and getattr(sys, "frozen", False) and sys.platform == "darwin":
-            asset_url = info.get("macos_url", "")
-            if asset_url:
+        if info and getattr(sys, "frozen", False):
+            is_mac = sys.platform == "darwin"
+            is_win = sys.platform == "win32"
+            asset_url = info.get("macos_url", "") if is_mac else info.get("windows_url", "")
+            if asset_url and (is_mac or is_win):
                 _st.set_update_downloading(True)
                 try:
                     def _on_progress(downloaded, total):
@@ -119,16 +121,21 @@ if __name__ == "__main__":
                             _st.set_update_progress(downloaded / total)
 
                     log.info("Downloading update v%s...", info["version"])
-                    dmg_path = download_update(asset_url, on_progress=_on_progress)
+                    installer_path = download_update(asset_url, on_progress=_on_progress)
                     _st.set_update_downloading(False)
                     _st.set_update_applying(True)
 
-                    from web.updater import apply_macos_update
-                    log.info("Applying update...")
-                    apply_macos_update(dmg_path)
+                    if is_mac:
+                        from web.updater import apply_macos_update
+                        log.info("Applying macOS update...")
+                        apply_macos_update(installer_path)
+                    else:
+                        from web.updater import apply_windows_update
+                        log.info("Applying Windows update...")
+                        apply_windows_update(installer_path)
 
                     import time; time.sleep(1)
-                    os._exit(0)  # Force-quit so updater script can replace the .app
+                    os._exit(0)  # Force-quit so updater script can replace the app
                 except Exception as exc:
                     log.error("Auto-update failed: %s", exc)
                     _st.set_update_error(str(exc))

@@ -1753,9 +1753,10 @@ def _open_update_check_dialog():
                     ):
                         ui.html(f"<div style='white-space:pre-wrap'>{notes}</div>")
 
-            if is_mac and is_frozen and asset_url:
+            is_win = sys.platform == "win32"
+            if is_frozen and asset_url and (is_mac or is_win):
                 def _do_update():
-                    from web.updater import download_update, apply_macos_update
+                    from web.updater import download_update
                     close_btn.disable()
                     update_btn.disable()
                     progress_container.style("display:block")
@@ -1771,18 +1772,35 @@ def _open_update_check_dialog():
                                 progress_bar.value = pct
                                 progress_label.text = f"Downloading\u2026 {int(pct * 100)}%"
 
-                            dmg_path = download_update(asset_url, on_progress=_on_progress)
-                            ui.timer(0.1, lambda: _apply(dmg_path), once=True)
+                            installer_path = download_update(asset_url, on_progress=_on_progress)
+                            if is_mac:
+                                ui.timer(0.1, lambda: _apply_mac(installer_path), once=True)
+                            else:
+                                ui.timer(0.1, lambda: _apply_win(installer_path), once=True)
                         except Exception as exc:
                             ui.timer(0.1, lambda: _dl_failed(str(exc)), once=True)
 
-                    def _apply(dmg_path):
+                    def _apply_mac(dmg_path):
+                        from web.updater import apply_macos_update
                         progress_label.text = "Installing update and restarting\u2026"
                         progress_bar.props("indeterminate")
                         try:
                             apply_macos_update(dmg_path)
                             import time; time.sleep(0.5)
-                            os._exit(0)  # Force-quit so updater script can replace the .app
+                            os._exit(0)
+                        except Exception as exc:
+                            progress_label.text = f"Update failed: {exc}"
+                            progress_label.style("color:#dc2626")
+                            close_btn.enable()
+
+                    def _apply_win(exe_path):
+                        from web.updater import apply_windows_update
+                        progress_label.text = "Launching installer and closing\u2026"
+                        progress_bar.props("indeterminate")
+                        try:
+                            apply_windows_update(exe_path)
+                            import time; time.sleep(0.5)
+                            os._exit(0)
                         except Exception as exc:
                             progress_label.text = f"Update failed: {exc}"
                             progress_label.style("color:#dc2626")
