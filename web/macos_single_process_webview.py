@@ -99,7 +99,7 @@ def patch_nicegui_server_run() -> None:
         thread.start()
 
         host = os.environ.get("NICEGUI_HOST", "127.0.0.1")
-        port = int(os.environ.get("NICEGUI_PORT", "8080"))
+        port = int(os.environ.get("NICEGUI_PORT", "8587"))
         protocol = os.environ.get("NICEGUI_PROTOCOL", "http")
         connect_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
 

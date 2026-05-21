@@ -210,7 +210,7 @@ if __name__ == "__main__":
     _crash_write("Step: importing nicegui")
     from nicegui import ui  # noqa: E402
 
-    WEB_PORT = 8080
+    WEB_PORT = int(os.environ.get("NICEGUI_PORT", "8587"))
     _kill_existing_on_port(WEB_PORT)
 
     _crash_write(f"Step: starting NiceGUI on port {WEB_PORT}")
