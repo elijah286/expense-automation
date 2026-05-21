@@ -215,15 +215,58 @@ if __name__ == "__main__":
 
     _crash_write(f"Step: starting NiceGUI on port {WEB_PORT}")
 
-    # Frozen builds (macOS .app / Windows .exe): embedded pywebview on main thread +
-    # server in a thread → native window, no browser chrome.
+    # macOS frozen: embedded pywebview on main thread (native window, no Safari).
+    # Windows frozen: launch Edge/Chrome in app mode (chromeless window).
     # Override with EXPENSE_AUTOMATOR_USE_BROWSER=1 to force default browser.
-    # NiceGUI native=True uses a second process for webview → duplicate Dock icons / crash.
     _use_native = os.environ.get("EXPENSE_AUTOMATOR_NATIVE", "").strip().lower() in (
         "1",
         "true",
         "yes",
     )
+    _use_browser = os.environ.get("EXPENSE_AUTOMATOR_USE_BROWSER", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    # On Windows frozen builds, launch Edge in app mode for a professional look
+    _win_app_mode = (
+        sys.platform == "win32"
+        and is_frozen()
+        and not _use_native
+        and not _use_browser
+    )
+
+    def _open_edge_app_mode():
+        """Launch Edge or Chrome in --app mode (chromeless window)."""
+        import subprocess as _sp
+        import time as _time
+        _time.sleep(1.5)  # Wait for server to be ready
+        url = f"http://127.0.0.1:{WEB_PORT}/"
+        # Try Edge first (available on all modern Windows), then Chrome
+        edge_paths = [
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe"),
+        ]
+        chrome_paths = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for browser_path in edge_paths + chrome_paths:
+            if os.path.isfile(browser_path):
+                _crash_write(f"Launching app-mode browser: {browser_path}")
+                _sp.Popen(
+                    [browser_path, f"--app={url}", "--new-window"],
+                    stdout=_sp.DEVNULL,
+                    stderr=_sp.DEVNULL,
+                    creationflags=_sp.DETACHED_PROCESS | _sp.CREATE_NO_WINDOW,
+                )
+                return
+        # Fallback: open default browser normally
+        import webbrowser
+        webbrowser.open(url)
 
     _run_kw: dict = {
         "title": "Expense Automator",
@@ -235,8 +278,17 @@ if __name__ == "__main__":
     # Start background launch setup (update check + Chromium download).
     threading.Thread(target=_background_launch_setup, daemon=True).start()
 
-    _crash_write(f"Step: calling ui.run (webview={use_embedded_webview()}, native={_use_native})")
+    _crash_write(f"Step: calling ui.run (webview={use_embedded_webview()}, native={_use_native}, win_app={_win_app_mode})")
     if use_embedded_webview():
+        ui.run(
+            **_run_kw,
+            show=False,
+            native=False,
+            host="127.0.0.1",
+        )
+    elif _win_app_mode:
+        # Launch Edge in app mode from a background thread, server runs on main thread
+        threading.Thread(target=_open_edge_app_mode, daemon=True).start()
         ui.run(
             **_run_kw,
             show=False,

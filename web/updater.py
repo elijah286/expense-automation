@@ -260,9 +260,9 @@ set APP_PID={os.getpid()}
 set INSTALLER={exe_path}
 
 :wait_loop
-tasklist /FI "PID eq %APP_PID%" 2>NUL | find /I "%APP_PID%" >NUL
-if not errorlevel 1 (
-    timeout /t 1 /nobreak >NUL
+tasklist /FI "PID eq %APP_PID%" /NH 2>NUL | findstr /I /C:"%APP_PID%" >NUL 2>NUL
+if %ERRORLEVEL% EQU 0 (
+    ping -n 2 127.0.0.1 >NUL 2>NUL
     goto wait_loop
 )
 
@@ -271,9 +271,16 @@ del "%~f0"
 """)
     script.close()
 
-    # Launch the batch script detached from this process
+    # Launch the batch script completely hidden via wscript
+    vbs = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vbs", delete=False, prefix="ea_update_",
+    )
+    vbs_path = vbs.name
+    vbs.write(f'CreateObject("WScript.Shell").Run """{script_path}""", 0, False\n')
+    vbs.close()
+
     subprocess.Popen(
-        ["cmd.exe", "/c", script_path],
+        ["wscript.exe", vbs_path],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,

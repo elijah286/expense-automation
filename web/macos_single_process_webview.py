@@ -55,7 +55,8 @@ def patch_nicegui_skip_process_pool_on_frozen_macos() -> None:
 
 
 def use_embedded_webview() -> bool:
-    if sys.platform not in ("darwin", "win32"):
+    """Use pywebview on macOS only. Windows uses Edge app mode instead."""
+    if sys.platform != "darwin":
         return False
     if os.environ.get("EXPENSE_AUTOMATOR_NATIVE", "").strip().lower() in (
         "1",
@@ -82,7 +83,7 @@ def use_embedded_webview() -> bool:
 
 def patch_nicegui_server_run() -> None:
     global _SERVER_RUN_PATCHED
-    if sys.platform not in ("darwin", "win32") or _SERVER_RUN_PATCHED:
+    if sys.platform != "darwin" or _SERVER_RUN_PATCHED:
         return
 
     import nicegui.server as ng_server

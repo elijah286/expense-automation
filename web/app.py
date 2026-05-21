@@ -1895,7 +1895,7 @@ def _launch_splash() -> None:
             ui.label("Expense Automator").classes("splash-title").style(
                 "font-size:1.5rem;font-weight:700;color:#1e293b"
             )
-            ui.label(f"v{_VERSION}").classes("splash-hint").style(
+            version_label = ui.label(f"v{_VERSION}").classes("splash-hint").style(
                 "font-size:0.75rem;color:#94a3b8;margin-top:-8px"
             )
             status_label = ui.label(startup.current_status()).classes("splash-status").style(
@@ -1910,6 +1910,11 @@ def _launch_splash() -> None:
 
             def _poll():
                 status_label.text = startup.current_status()
+
+                # Show target version when available
+                info = startup.update_info()
+                if info and info.get("version"):
+                    version_label.text = f"v{_VERSION}  →  v{info['version']}"
 
                 # Show determinate progress during update download
                 if startup.update_downloading():
