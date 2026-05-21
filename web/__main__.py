@@ -26,6 +26,8 @@ if __name__ == "__main__":
             sys.stderr = open(os.devnull, "w")
             try:
                 playwright_main()
+            except SystemExit:
+                pass  # playwright_main() calls sys.exit(0) on success
             finally:
                 sys.stdout.close()
                 sys.stderr.close()
@@ -208,4 +210,5 @@ if __name__ == "__main__":
         ui.run(
             **_run_kw,
             show=True,
+            host="127.0.0.1",
         )
