@@ -39,6 +39,8 @@ for pkg in (
     "dns",
     "jaraco",
     "certifi",
+    "fitz",
+    "pymupdf",
 ):
     try:
         d, b, h = collect_all(pkg)
