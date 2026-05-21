@@ -1,11 +1,14 @@
 """
-macOS: run WKWebView (pywebview) on the process main thread and NiceGUI/uvicorn in a
-worker thread so the app stays responsive (one Dock icon, no Safari chrome).
+Run pywebview on the main thread and NiceGUI/uvicorn in a worker thread so the app
+looks like a native desktop application (no browser chrome).
+
+macOS: WKWebView (one Dock icon, no Safari chrome).
+Windows: Edge WebView2 (native window, no browser tabs).
 
 NiceGUI's built-in native=True uses multiprocessing for pywebview, which duplicates
-Dock icons. Opening the system browser avoids that but looks like Safari.
+Dock icons on macOS and re-executes the frozen exe on Windows.
 
-Set EXPENSE_AUTOMATOR_USE_BROWSER=1 to force Safari + single process (legacy).
+Set EXPENSE_AUTOMATOR_USE_BROWSER=1 to force opening in the default browser instead.
 """
 
 from __future__ import annotations
@@ -52,7 +55,7 @@ def patch_nicegui_skip_process_pool_on_frozen_macos() -> None:
 
 
 def use_embedded_webview() -> bool:
-    if sys.platform != "darwin":
+    if sys.platform not in ("darwin", "win32"):
         return False
     if os.environ.get("EXPENSE_AUTOMATOR_NATIVE", "").strip().lower() in (
         "1",
@@ -79,7 +82,7 @@ def use_embedded_webview() -> bool:
 
 def patch_nicegui_server_run() -> None:
     global _SERVER_RUN_PATCHED
-    if sys.platform != "darwin" or _SERVER_RUN_PATCHED:
+    if sys.platform not in ("darwin", "win32") or _SERVER_RUN_PATCHED:
         return
 
     import nicegui.server as ng_server

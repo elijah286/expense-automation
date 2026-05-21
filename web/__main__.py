@@ -215,9 +215,10 @@ if __name__ == "__main__":
 
     _crash_write(f"Step: starting NiceGUI on port {WEB_PORT}")
 
-    # macOS .app (frozen): embedded pywebview on main thread + server in a thread → one Dock
-    # icon, no Safari. Override with EXPENSE_AUTOMATOR_USE_BROWSER=1 for Safari.
-    # NiceGUI native=True uses a second process for webview → duplicate Dock icons.
+    # Frozen builds (macOS .app / Windows .exe): embedded pywebview on main thread +
+    # server in a thread → native window, no browser chrome.
+    # Override with EXPENSE_AUTOMATOR_USE_BROWSER=1 to force default browser.
+    # NiceGUI native=True uses a second process for webview → duplicate Dock icons / crash.
     _use_native = os.environ.get("EXPENSE_AUTOMATOR_NATIVE", "").strip().lower() in (
         "1",
         "true",
