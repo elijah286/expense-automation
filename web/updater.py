@@ -1,0 +1,204 @@
+"""In-app update checker and installer for Expense Automator.
+
+Checks GitHub Releases for newer versions and, on macOS, can download
+the DMG, mount it, replace the running .app bundle, and relaunch.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+log = logging.getLogger("expense_automator.updater")
+
+_GITHUB_REPO = "elijah286/expense-automation"
+_RELEASES_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+
+# ---------------------------------------------------------------------------
+# Version comparison
+# ---------------------------------------------------------------------------
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Parse '1.0.20' → (1, 0, 20)."""
+    parts: list[int] = []
+    for p in v.lstrip("v").split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            break
+    return tuple(parts)
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    return _parse_version(latest) > _parse_version(current)
+
+
+# ---------------------------------------------------------------------------
+# Check for updates
+# ---------------------------------------------------------------------------
+
+def check_for_update(current_version: str) -> dict[str, Any] | None:
+    """Return release info dict if a newer version is available, else None.
+
+    Keys: version, tag, macos_url, windows_url, notes, published_at
+    """
+    try:
+        req = urllib.request.Request(
+            _RELEASES_URL,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        log.warning("Update check failed: %s", exc)
+        return None
+
+    tag = data.get("tag_name", "")
+    latest = tag.lstrip("v")
+    if not latest or not _is_newer(latest, current_version):
+        return None
+
+    macos_url = ""
+    windows_url = ""
+    for asset in data.get("assets", []):
+        name = asset.get("name", "")
+        url = asset.get("browser_download_url", "")
+        if name.endswith(".dmg"):
+            macos_url = url
+        elif name.endswith(".exe"):
+            windows_url = url
+
+    return {
+        "version": latest,
+        "tag": tag,
+        "macos_url": macos_url,
+        "windows_url": windows_url,
+        "notes": data.get("body", ""),
+        "published_at": data.get("published_at", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Download with progress
+# ---------------------------------------------------------------------------
+
+def download_update(url: str, on_progress=None) -> Path:
+    """Download the update asset to a temp file. Returns the path.
+
+    on_progress(bytes_downloaded, total_bytes) is called periodically.
+    """
+    req = urllib.request.Request(url)
+    dest = Path(tempfile.mkdtemp()) / url.rsplit("/", 1)[-1]
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        total = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+        with open(dest, "wb") as f:
+            while True:
+                chunk = resp.read(256 * 1024)  # 256 KB chunks
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if on_progress:
+                    on_progress(downloaded, total)
+    return dest
+
+
+# ---------------------------------------------------------------------------
+# macOS: apply update (mount DMG, copy .app, relaunch)
+# ---------------------------------------------------------------------------
+
+def _find_app_bundle() -> Path | None:
+    """Find the running .app bundle path on macOS."""
+    if not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable).resolve()
+    # PyInstaller: .../Expense Automator.app/Contents/MacOS/expense_automator
+    for parent in exe.parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
+def apply_macos_update(dmg_path: Path) -> None:
+    """Mount the DMG, copy the .app over the running one, and relaunch."""
+    current_app = _find_app_bundle()
+    if not current_app:
+        raise RuntimeError("Cannot determine current .app bundle path")
+
+    app_dir = current_app.parent  # e.g. /Applications/
+
+    # Create an updater shell script that runs after this process exits.
+    script = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".sh", delete=False, prefix="ea_update_"
+    )
+    script_path = script.name
+
+    script.write(f"""#!/bin/bash
+set -e
+
+APP_PID={os.getpid()}
+DMG_PATH="{dmg_path}"
+APP_DIR="{app_dir}"
+CURRENT_APP="{current_app}"
+
+# Wait for the app to quit (up to 30 seconds)
+for i in $(seq 1 60); do
+    if ! kill -0 "$APP_PID" 2>/dev/null; then
+        break
+    fi
+    sleep 0.5
+done
+
+# Mount the DMG
+MOUNT_POINT=$(hdiutil attach "$DMG_PATH" -nobrowse -noautoopen -mountrandom /tmp 2>/dev/null | tail -1 | awk '{{print $NF}}')
+
+if [ -z "$MOUNT_POINT" ]; then
+    echo "Failed to mount DMG"
+    exit 1
+fi
+
+# Find the .app inside the mounted volume
+NEW_APP=$(find "$MOUNT_POINT" -maxdepth 1 -name "*.app" -print -quit)
+
+if [ -z "$NEW_APP" ]; then
+    hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+    echo "No .app found in DMG"
+    exit 1
+fi
+
+# Remove the old app and copy the new one
+rm -rf "$CURRENT_APP"
+cp -R "$NEW_APP" "$APP_DIR/"
+
+# Unmount the DMG
+hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+
+# Clean up the DMG
+rm -f "$DMG_PATH"
+
+# Relaunch
+NEW_APP_NAME=$(basename "$NEW_APP")
+open "$APP_DIR/$NEW_APP_NAME"
+""")
+    script.close()
+    os.chmod(script_path, 0o755)
+
+    # Launch the updater script and exit the app
+    subprocess.Popen(
+        ["/bin/bash", script_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )

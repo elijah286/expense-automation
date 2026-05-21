@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 if __name__ == "__main__":
@@ -71,10 +72,25 @@ if __name__ == "__main__":
 
         if _need_install:
             log = logging.getLogger("expense_automator")
-            log.info("Chromium not found or outdated — downloading via Playwright (one-time setup)...")
-            _install_playwright_chromium()
+            log.info("Chromium not found or outdated — will download in background...")
+            from web import startup as _startup
+            _startup.set_downloading(True)
 
     _bootstrap_playwright_browsers()
+
+    def _background_chromium_download() -> None:
+        """Download Chromium in background so the UI can launch immediately."""
+        from web import startup as _startup
+        log = logging.getLogger("expense_automator")
+        try:
+            log.info("Starting background Chromium download...")
+            _install_playwright_chromium()
+            log.info("Chromium download complete.")
+        except Exception as exc:
+            log.error("Chromium download failed: %s", exc)
+            _startup.set_error(str(exc))
+        finally:
+            _startup.set_downloading(False)
 
     _env_file, _env_example = env_file_paths()
     if is_frozen():
@@ -115,6 +131,11 @@ if __name__ == "__main__":
         "reload": False,
         "favicon": "💰",
     }
+
+    # Start background Chromium download if needed (UI launches immediately).
+    from web import startup as _startup_state
+    if _startup_state.is_downloading():
+        threading.Thread(target=_background_chromium_download, daemon=True).start()
 
     if use_embedded_webview():
         ui.run(

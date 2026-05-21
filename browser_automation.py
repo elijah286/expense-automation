@@ -664,10 +664,17 @@ def analyze_receipts_with_llm(
             "so the receipt reads upright in a normal viewer (total at bottom, text horizontal). "
             "Use 0 if already upright."
         )
+        uploaded_file_id = None
         if mime_type == "application/pdf":
+            # Upload PDFs via Files API for reliable processing.
+            uploaded = client.files.create(
+                file=(path_obj.name, path_obj.read_bytes(), mime_type),
+                purpose="user_data",
+            )
+            uploaded_file_id = uploaded.id
             file_content = {
                 "type": "input_file",
-                "file_data": f"data:{mime_type};base64,{encoded}",
+                "file_id": uploaded.id,
             }
         else:
             file_content = {
@@ -696,6 +703,12 @@ def analyze_receipts_with_llm(
                     "Disconnect from VPN and try again, or verify your API key in Settings."
                 ) from exc
             raise
+        finally:
+            if uploaded_file_id:
+                try:
+                    client.files.delete(uploaded_file_id)
+                except Exception:
+                    pass
         raw_text = response.output_text or "{}"
         json_text = normalize_json_text(raw_text)
         try:
