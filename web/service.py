@@ -206,13 +206,23 @@ class ExpenseService:
             ))
         return rows
 
+    def _get_valid_line_ids(self) -> set[str]:
+        """Return the set of line_ids that currently exist in the transaction cache."""
+        lines, _ = load_expense_lines_cache(self.app_dir)
+        return {
+            str(row.get("line_id", "")).strip()
+            for row in lines
+            if str(row.get("line_id", "")).strip()
+        }
+
     def _get_used_receipt_map(self) -> dict[str, list[str]]:
         """Return {receipt_source_file: [line_id, ...]} for receipts attached to an Oracle report."""
         submitted = load_submitted_receipts(self.app_dir)
+        valid_ids = self._get_valid_line_ids()
         usage: dict[str, list[str]] = {}
         for sf, block in submitted.items():
             lid = str((block or {}).get("line_id", "") or "").strip()
-            if sf and lid:
+            if sf and lid and lid in valid_ids:
                 usage.setdefault(sf, []).append(lid)
         return usage
 
@@ -225,10 +235,17 @@ class ExpenseService:
             return ""
 
     def _get_matched_receipt_map(self) -> dict[str, list[str]]:
-        """Return {receipt_source_file: [line_id, ...]} for receipts matched to expense lines."""
+        """Return {receipt_source_file: [line_id, ...]} for receipts matched to expense lines.
+
+        Only includes line_ids that still exist in the transaction cache so
+        that deleting a transaction immediately un-matches its receipt.
+        """
         matches = load_receipt_line_matches(self.app_dir)
+        valid_ids = self._get_valid_line_ids()
         match_map: dict[str, list[str]] = {}
         for lid, block in matches.items():
+            if lid not in valid_ids:
+                continue
             best = str((block or {}).get("best_receipt") or "").strip()
             if best:
                 match_map.setdefault(best, []).append(lid)
