@@ -3434,13 +3434,51 @@ def page_transactions(request: Request):
                             return svc.run_scrape(on_status=on_status)
 
                         def _on_scrape_done(result):
-                            count = int(result) if isinstance(result, (int, float)) else 0
-                            ui.notify(
-                                f"Scrape complete — {count} transaction{'s' if count != 1 else ''} found.",
-                                type="positive",
-                                timeout=10000,
-                            )
-                            ui.navigate.to("/transactions", new_tab=False)
+                            if isinstance(result, dict):
+                                scraped = result.get("scraped", 0)
+                                new = result.get("new", 0)
+                                total = result.get("after", scraped)
+                            else:
+                                scraped = int(result) if isinstance(result, (int, float)) else 0
+                                new = scraped
+                                total = scraped
+
+                            with ui.dialog() as done_dlg, ui.card().style(
+                                "min-width:380px;max-width:460px;border-radius:14px;padding:24px 28px"
+                            ):
+                                with ui.row().classes("items-center gap-3 w-full mb-3"):
+                                    ui.icon("check_circle").classes("text-green-500").style("font-size:1.6rem")
+                                    ui.label("Scrape Complete").classes("text-lg font-bold text-slate-800")
+                                with ui.element("div").style(
+                                    "background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;"
+                                    "padding:16px 20px;margin-bottom:4px"
+                                ):
+                                    with ui.row().classes("items-center gap-3"):
+                                        ui.html(
+                                            f'<span style="font-size:1.8rem;font-weight:700;color:#16a34a">{scraped}</span>'
+                                        )
+                                        ui.label(
+                                            f"transaction{'s' if scraped != 1 else ''} scraped from Oracle"
+                                        ).style("color:#15803d;font-size:0.9rem")
+                                    if new > 0 and new != scraped:
+                                        ui.label(
+                                            f"{new} new transaction{'s' if new != 1 else ''} added"
+                                        ).style("color:#16a34a;font-size:0.82rem;margin-top:4px;font-weight:600")
+                                    elif new == 0 and total > 0:
+                                        ui.label(
+                                            "No new transactions — all were already imported."
+                                        ).style("color:#64748b;font-size:0.82rem;margin-top:4px")
+                                    ui.label(
+                                        f"{total} total transaction{'s' if total != 1 else ''} in library"
+                                    ).style("color:#64748b;font-size:0.78rem;margin-top:2px")
+                                with ui.row().classes("items-center justify-end gap-2 w-full mt-3"):
+                                    def _close_and_reload():
+                                        done_dlg.close()
+                                        ui.navigate.to("/transactions", new_tab=False)
+                                    ui.button("OK", on_click=_close_and_reload).props(
+                                        "no-caps unelevated color=primary"
+                                    ).classes("action-btn")
+                            done_dlg.open()
 
                         _run_background(
                             "Scrape Transactions",

@@ -1346,10 +1346,10 @@ class ExpenseService:
     # Transaction scraping (Playwright / Oracle)
     # ------------------------------------------------------------------
 
-    def run_scrape(self, *, on_status: Callable[[str], None] | None = None) -> int:
+    def run_scrape(self, *, on_status: Callable[[str], None] | None = None) -> dict[str, int]:
         """Launch Chromium, scrape Oracle credit-card transactions, persist to cache.
 
-        Returns the number of rows scraped.
+        Returns dict with keys: scraped, before, after, new.
         """
         from browser.scraper import TransactionScraper
 
@@ -1366,9 +1366,18 @@ class ExpenseService:
                 "Oracle approver not configured. Set the approver display name in Settings."
             )
 
+        before, _ = load_expense_lines_cache(self.app_dir)
+        before_count = len(before)
+
         scraper = TransactionScraper(on_status=on_status, nav_menu_label=raw.get("nav_menu_label", ""))
         rows = scraper.scrape(portal_url, approver)
-        return len(rows)
+        scraped = len(rows)
+
+        after, _ = load_expense_lines_cache(self.app_dir)
+        after_count = len(after)
+        new_count = max(0, after_count - before_count)
+
+        return {"scraped": scraped, "before": before_count, "after": after_count, "new": new_count}
 
     # ------------------------------------------------------------------
     # Submission state (persists CDP URL for resume-on-failure)
