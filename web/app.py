@@ -1738,6 +1738,89 @@ def _open_update_check_dialog():
         with btn_row:
             close_btn = ui.button("Close", on_click=dlg.close).props("flat no-caps")
 
+            # Pre-create action buttons (hidden until check result arrives)
+            _update_state: dict[str, Any] = {"asset_url": ""}
+
+            def _do_update():
+                asset_url = _update_state["asset_url"]
+                if not asset_url:
+                    return
+                from web.updater import download_update
+                close_btn.disable()
+                update_btn.disable()
+                progress_container.style("display:block")
+
+                is_mac = sys.platform == "darwin"
+
+                def _download_and_apply():
+                    try:
+                        def _on_progress(downloaded, total):
+                            if total > 0:
+                                pct = downloaded / total
+                                ui.timer(0.05, lambda p=pct: _update_ui_progress(p), once=True)
+
+                        def _update_ui_progress(pct):
+                            progress_bar.value = pct
+                            progress_label.text = f"Downloading\u2026 {int(pct * 100)}%"
+
+                        installer_path = download_update(asset_url, on_progress=_on_progress)
+                        if is_mac:
+                            ui.timer(0.1, lambda: _apply_mac(installer_path), once=True)
+                        else:
+                            ui.timer(0.1, lambda: _apply_win(installer_path), once=True)
+                    except Exception as exc:
+                        ui.timer(0.1, lambda: _dl_failed(str(exc)), once=True)
+
+                def _apply_mac(dmg_path):
+                    from web.updater import apply_macos_update
+                    progress_label.text = "Installing update and restarting\u2026"
+                    progress_bar.props("indeterminate")
+                    try:
+                        apply_macos_update(dmg_path)
+                        import time; time.sleep(0.5)
+                        os._exit(0)
+                    except Exception as exc:
+                        progress_label.text = f"Update failed: {exc}"
+                        progress_label.style("color:#dc2626")
+                        close_btn.enable()
+
+                def _apply_win(exe_path):
+                    from web.updater import apply_windows_update
+                    progress_label.text = "Launching installer and closing\u2026"
+                    progress_bar.props("indeterminate")
+                    try:
+                        apply_windows_update(exe_path)
+                        import time; time.sleep(0.5)
+                        os._exit(0)
+                    except Exception as exc:
+                        progress_label.text = f"Update failed: {exc}"
+                        progress_label.style("color:#dc2626")
+                        close_btn.enable()
+
+                def _dl_failed(msg):
+                    progress_label.text = f"Download failed: {msg}"
+                    progress_label.style("color:#dc2626")
+                    close_btn.enable()
+
+                threading.Thread(target=_download_and_apply, daemon=True).start()
+
+            update_btn = ui.button(
+                "Update & Restart", icon="system_update", on_click=_do_update
+            ).props("no-caps unelevated color=primary")
+            update_btn.visible = False
+
+            def _open_releases():
+                import webbrowser
+                webbrowser.open(
+                    "https://github.com/elijah286/oracle-expense-automation/releases"
+                )
+                dlg.close()
+
+            releases_btn = ui.button(
+                "View Releases", icon="open_in_new", on_click=_open_releases
+            ).props("no-caps unelevated color=primary")
+            releases_btn.visible = False
+
         def _show_result(info):
             spinner.visible = False
             if not info:
@@ -1746,113 +1829,41 @@ def _open_update_check_dialog():
                 return
 
             version = info["version"]
-            status_label.text = f"Version {version} is available!"
-            status_label.style("color:#1e40af;font-weight:600")
-
             is_mac = sys.platform == "darwin"
             is_frozen = getattr(sys, "frozen", False)
             asset_url = info.get("macos_url", "") if is_mac else info.get("windows_url", "")
-
-            notes = info.get("notes", "").strip()
-            if notes:
-                result_container.style("display:block")
-                with result_container:
-                    with ui.element("div").style(
-                        "max-height:160px;overflow-y:auto;font-size:0.82rem;line-height:1.55;"
-                        "color:#475569;background:#f8fafc;border-radius:8px;padding:10px 14px;"
-                        "margin-top:8px;border:1px solid #e2e8f0"
-                    ):
-                        ui.html(f"<div style='white-space:pre-wrap'>{notes}</div>")
-
             is_win = sys.platform == "win32"
+
             if is_frozen and asset_url and (is_mac or is_win):
-                def _do_update():
-                    from web.updater import download_update
-                    close_btn.disable()
-                    update_btn.disable()
-                    progress_container.style("display:block")
-
-                    def _download_and_apply():
-                        try:
-                            def _on_progress(downloaded, total):
-                                if total > 0:
-                                    pct = downloaded / total
-                                    ui.timer(0.05, lambda p=pct: _update_ui_progress(p), once=True)
-
-                            def _update_ui_progress(pct):
-                                progress_bar.value = pct
-                                progress_label.text = f"Downloading\u2026 {int(pct * 100)}%"
-
-                            installer_path = download_update(asset_url, on_progress=_on_progress)
-                            if is_mac:
-                                ui.timer(0.1, lambda: _apply_mac(installer_path), once=True)
-                            else:
-                                ui.timer(0.1, lambda: _apply_win(installer_path), once=True)
-                        except Exception as exc:
-                            ui.timer(0.1, lambda: _dl_failed(str(exc)), once=True)
-
-                    def _apply_mac(dmg_path):
-                        from web.updater import apply_macos_update
-                        progress_label.text = "Installing update and restarting\u2026"
-                        progress_bar.props("indeterminate")
-                        try:
-                            apply_macos_update(dmg_path)
-                            import time; time.sleep(0.5)
-                            os._exit(0)
-                        except Exception as exc:
-                            progress_label.text = f"Update failed: {exc}"
-                            progress_label.style("color:#dc2626")
-                            close_btn.enable()
-
-                    def _apply_win(exe_path):
-                        from web.updater import apply_windows_update
-                        progress_label.text = "Launching installer and closing\u2026"
-                        progress_bar.props("indeterminate")
-                        try:
-                            apply_windows_update(exe_path)
-                            import time; time.sleep(0.5)
-                            os._exit(0)
-                        except Exception as exc:
-                            progress_label.text = f"Update failed: {exc}"
-                            progress_label.style("color:#dc2626")
-                            close_btn.enable()
-
-                    def _dl_failed(msg):
-                        progress_label.text = f"Download failed: {msg}"
-                        progress_label.style("color:#dc2626")
-                        close_btn.enable()
-
-                    threading.Thread(target=_download_and_apply, daemon=True).start()
-
-                with btn_row:
-                    update_btn = ui.button("Update & Restart", icon="system_update",
-                                           on_click=_do_update).props(
-                        "no-caps unelevated color=primary"
-                    )
+                status_label.text = f"Version {version} is available!"
+                status_label.style("color:#1e40af;font-weight:600")
+                _update_state["asset_url"] = asset_url
+                update_btn.visible = True
             elif asset_url:
-                def _open_dl():
-                    import webbrowser
-                    webbrowser.open(asset_url)
-                    dlg.close()
-                with btn_row:
-                    ui.button("Download Update", icon="download",
-                              on_click=_open_dl).props("no-caps unelevated color=primary")
+                status_label.text = f"Version {version} is available!"
+                status_label.style("color:#1e40af;font-weight:600")
+                _update_state["asset_url"] = asset_url
+                update_btn.visible = True
             else:
-                # Asset not uploaded yet (CI still building)
                 status_label.text = (
                     f"Version {version} is available! Build is in progress\u2026"
                 )
                 status_label.style("color:#1e40af;font-weight:600")
+                releases_btn.visible = True
 
-                def _open_releases():
-                    import webbrowser
-                    webbrowser.open(
-                        "https://github.com/elijah286/oracle-expense-automation/releases"
-                    )
-                    dlg.close()
-                with btn_row:
-                    ui.button("View Releases", icon="open_in_new",
-                              on_click=_open_releases).props("no-caps unelevated color=primary")
+            notes = info.get("notes", "").strip()
+            if notes:
+                result_container.style("display:block")
+                try:
+                    with result_container:
+                        with ui.element("div").style(
+                            "max-height:160px;overflow-y:auto;font-size:0.82rem;line-height:1.55;"
+                            "color:#475569;background:#f8fafc;border-radius:8px;padding:10px 14px;"
+                            "margin-top:8px;border:1px solid #e2e8f0"
+                        ):
+                            ui.html(f"<div style='white-space:pre-wrap'>{notes}</div>")
+                except Exception:
+                    pass
 
         _check_done = {"value": False, "info": None}
 
