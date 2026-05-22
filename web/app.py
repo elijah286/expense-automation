@@ -22,8 +22,34 @@ from typing import Any, Callable
 from nicegui import app, ui
 
 import keychain_credentials
+from persistence.atomic_json import atomic_write_json, load_json_or_quarantine
+from web.env_paths import user_data_dir
 
-keychain_credentials.enable_keychain_access_gate()
+
+def _prefs_path() -> Path:
+    return user_data_dir() / "preferences.json"
+
+
+def _load_prefs() -> dict:
+    return load_json_or_quarantine(_prefs_path(), {})
+
+
+def _save_pref(key: str, value: Any) -> None:
+    prefs = _load_prefs()
+    prefs[key] = value
+    atomic_write_json(_prefs_path(), prefs)
+
+
+# Only gate keychain access if user hasn't previously consented
+_prefs = _load_prefs()
+if not _prefs.get("keychain_consented"):
+    keychain_credentials.enable_keychain_access_gate()
+else:
+    # User previously consented — warm up keychain immediately
+    try:
+        keychain_credentials.warm_up()
+    except Exception:
+        pass
 
 from web.service import ExpenseService, ExpenseReportGroup, MatchReviewItem, ReceiptDoc, ReportReadiness, TransactionRow
 from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS, get_expense_type_options
@@ -233,6 +259,8 @@ def _run_keychain_unlock_then_reload() -> None:
     def worker() -> None:
         try:
             keychain_credentials.grant_keychain_access_after_user_consent()
+            # Persist consent so we don't ask again
+            _save_pref("keychain_consented", True)
         finally:
             done.set()
 
@@ -280,6 +308,9 @@ def _show_keychain_secure_storage_dialog(client_id: str) -> None:
             """
         )
         with ui.row().classes("items-center justify-end gap-2 w-full mt-4"):
+            dont_show = ui.checkbox("Don't show again").props("dense").classes(
+                "text-sm"
+            ).style("margin-right:auto")
             ui.button("Not now", on_click=dlg.close).props("flat no-caps")
 
             def _go() -> None:
@@ -292,6 +323,10 @@ def _show_keychain_secure_storage_dialog(client_id: str) -> None:
             ).classes("action-btn")
 
     def _on_hide() -> None:
+        if dont_show.value:
+            # User chose not to see this again — auto-consent on next launch
+            _save_pref("keychain_consented", True)
+            keychain_credentials.grant_keychain_access_after_user_consent()
         if keychain_credentials.is_keychain_access_gated():
             _finalize_keychain_notice_client(client_id)
 
