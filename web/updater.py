@@ -152,9 +152,10 @@ def _build_changelog(
 
     # If all descriptions are empty, try the compare API as a last resort.
     if entries and all(not e[1]["description"] for e in entries):
+        latest_entry = max(entries, key=lambda t: t[0])
         compare_entries = _changelog_from_compare(
             f"v{current_version}",
-            entries[-1][1]["version"],  # sorted ascending below
+            latest_entry[1]["version"],
         )
         if compare_entries:
             return compare_entries
@@ -165,8 +166,11 @@ def _build_changelog(
 
 
 def _strip_version_prefix(name: str) -> str:
-    """'v1.1.2: fix foo' → 'fix foo'."""
+    """'v1.1.2: fix foo' → 'fix foo'.  Returns '' for bare tags like 'v1.1.2'."""
     import re as _re
+    # If name is purely a version tag (e.g. "v1.1.5"), return empty.
+    if _re.fullmatch(r"v?\d+\.\d+(?:\.\d+)?", name.strip()):
+        return ""
     m = _re.match(r"^v?\d+\.\d+(?:\.\d+)?[:\s]+(.+)", name)
     return m.group(1).strip() if m else name.strip()
 
