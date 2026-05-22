@@ -1906,7 +1906,45 @@ def _open_update_check_dialog():
                 releases_btn.visible = True
 
             notes = info.get("notes", "").strip()
-            if notes:
+            changelog = info.get("changelog", [])
+
+            if changelog:
+                result_container.style("display:block")
+                try:
+                    with result_container:
+                        with ui.expansion("What's new").classes(
+                            "w-full"
+                        ).props("dense header-class='text-sm text-slate-600 font-medium'").style(
+                            "margin-top:8px;border:1px solid #e2e8f0;border-radius:8px;"
+                            "background:#f8fafc"
+                        ) as exp:
+                            exp.style("padding:0")
+                            for entry in changelog:
+                                ver = entry.get("version", "")
+                                desc = entry.get("description", "")
+                                date = entry.get("date", "")
+                                if not desc:
+                                    continue
+                                with ui.element("div").style(
+                                    "padding:6px 14px;border-bottom:1px solid #f1f5f9"
+                                ):
+                                    with ui.row().classes("items-center gap-2"):
+                                        if ver:
+                                            ui.html(
+                                                f'<span style="background:#e0e7ff;color:#3730a3;'
+                                                f'padding:1px 8px;border-radius:999px;font-size:0.7rem;'
+                                                f'font-weight:600">{_esc(ver)}</span>'
+                                            )
+                                        ui.label(desc).style(
+                                            "font-size:0.82rem;color:#334155;line-height:1.4"
+                                        )
+                                    if date:
+                                        ui.label(date).style(
+                                            "font-size:0.7rem;color:#94a3b8;margin-top:1px"
+                                        )
+                except Exception:
+                    pass
+            elif notes:
                 result_container.style("display:block")
                 try:
                     with result_container:

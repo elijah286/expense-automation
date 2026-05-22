@@ -68,7 +68,7 @@ def check_for_update(current_version: str) -> dict[str, Any] | None:
     try:
         ctx = _ssl_context()
         req = urllib.request.Request(
-            _RELEASES_URL + "?per_page=10",
+            _RELEASES_URL + "?per_page=30",
             headers={"Accept": "application/vnd.github+json"},
         )
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
@@ -115,7 +115,93 @@ def check_for_update(current_version: str) -> dict[str, Any] | None:
         "windows_url": windows_url,
         "notes": data.get("body", ""),
         "published_at": data.get("published_at", ""),
+        "changelog": _build_changelog(releases, current_version),
     }
+
+
+def _build_changelog(
+    releases: list[dict[str, Any]], current_version: str
+) -> list[dict[str, str]]:
+    """Build a changelog from releases newer than *current_version*.
+
+    Each entry has keys: version, description, date.
+    Falls back to commit messages via the compare API when release bodies
+    are empty.
+    """
+    current_ver = _parse_version(current_version)
+    entries: list[tuple[tuple[int, ...], dict[str, str]]] = []
+
+    for rel in releases:
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        tag = rel.get("tag_name", "")
+        ver = _parse_version(tag)
+        if ver <= current_ver:
+            continue
+        version_str = tag.lstrip("v")
+        body = (rel.get("body") or "").strip()
+        pub = (rel.get("published_at") or "")[:10]  # YYYY-MM-DD
+        if body:
+            entries.append((ver, {"version": version_str, "description": body, "date": pub}))
+        else:
+            # Release body is empty — try the release name (often the commit
+            # subject, e.g. "v1.1.2: fix Chromium CDP...").
+            name = rel.get("name", "")
+            desc = _strip_version_prefix(name)
+            entries.append((ver, {"version": version_str, "description": desc, "date": pub}))
+
+    # If all descriptions are empty, try the compare API as a last resort.
+    if entries and all(not e[1]["description"] for e in entries):
+        compare_entries = _changelog_from_compare(
+            f"v{current_version}",
+            entries[-1][1]["version"],  # sorted ascending below
+        )
+        if compare_entries:
+            return compare_entries
+
+    # Sort newest-first
+    entries.sort(key=lambda t: t[0], reverse=True)
+    return [e for _, e in entries]
+
+
+def _strip_version_prefix(name: str) -> str:
+    """'v1.1.2: fix foo' → 'fix foo'."""
+    import re as _re
+    m = _re.match(r"^v?\d+\.\d+(?:\.\d+)?[:\s]+(.+)", name)
+    return m.group(1).strip() if m else name.strip()
+
+
+def _changelog_from_compare(
+    base_tag: str, head_tag: str
+) -> list[dict[str, str]]:
+    """Fetch commit messages between two tags via the GitHub compare API."""
+    compare_url = (
+        f"https://api.github.com/repos/{_GITHUB_REPO}"
+        f"/compare/{base_tag}...v{head_tag}"
+    )
+    try:
+        ctx = _ssl_context()
+        req = urllib.request.Request(
+            compare_url,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return []
+
+    entries: list[dict[str, str]] = []
+    for commit in reversed(data.get("commits", [])):
+        msg = (commit.get("commit", {}).get("message", "") or "").split("\n")[0]
+        desc = _strip_version_prefix(msg)
+        if desc:
+            # Extract version from message if present
+            import re as _re
+            m = _re.match(r"^v?(\d+\.\d+(?:\.\d+)?)", msg)
+            ver = m.group(1) if m else ""
+            date_str = (commit.get("commit", {}).get("committer", {}).get("date", "") or "")[:10]
+            entries.append({"version": ver, "description": desc, "date": date_str})
+    return entries
 
 
 # ---------------------------------------------------------------------------
