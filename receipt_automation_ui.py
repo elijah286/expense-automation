@@ -4918,11 +4918,17 @@ class ReceiptAutomationUI:
             s.bind(("127.0.0.1", 0))
             return int(s.getsockname()[1])
 
-    def _wait_cdp_http_ready(self, http_base: str, timeout: float = 45.0) -> None:
+    def _wait_cdp_http_ready(self, http_base: str, timeout: float = 45.0, proc: subprocess.Popen | None = None) -> None:
         version_url = http_base.rstrip("/") + "/json/version"
         deadline = time.monotonic() + timeout
         last_exc: BaseException | None = None
         while time.monotonic() < deadline:
+            # Fail fast if the Chromium process crashed
+            if proc is not None and proc.poll() is not None:
+                raise RuntimeError(
+                    f"Chromium process exited with code {proc.returncode} "
+                    f"before CDP became ready at {http_base}"
+                )
             try:
                 with urllib.request.urlopen(version_url, timeout=2) as resp:
                     if resp.status == 200:
@@ -4934,6 +4940,8 @@ class ReceiptAutomationUI:
 
     def _spawn_chromium_cdp_subprocess(self) -> tuple[str, subprocess.Popen[bytes]]:
         CHROMIUM_USER_DATA.mkdir(parents=True, exist_ok=True)
+        # Clean up stale profile locks from crashed instances
+        self._cleanup_stale_chromium_profile()
         port = self._find_free_port()
         http_base = f"http://127.0.0.1:{port}"
         if not self.playwright:
@@ -4981,8 +4989,52 @@ class ReceiptAutomationUI:
             raise
         if log_fp is not None:
             self._chromium_stderr_log_fp = log_fp
-        self._wait_cdp_http_ready(http_base)
+        self._wait_cdp_http_ready(http_base, proc=proc)
         return http_base, proc
+
+    def _cleanup_stale_chromium_profile(self) -> None:
+        """Remove stale lock files and kill zombie Chromium processes using our profile."""
+        import signal as _signal
+
+        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            lock = CHROMIUM_USER_DATA / lock_name
+            if not lock.exists():
+                continue
+            pid = self._pid_from_singleton_lock(lock)
+            if pid is not None and self._process_alive(pid):
+                try:
+                    os.kill(pid, _signal.SIGTERM)
+                    for _ in range(20):
+                        if not self._process_alive(pid):
+                            break
+                        time.sleep(0.1)
+                    else:
+                        os.kill(pid, _signal.SIGKILL)
+                except OSError:
+                    pass
+            try:
+                lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _pid_from_singleton_lock(lock: Path) -> int | None:
+        try:
+            target = os.readlink(lock)
+            parts = target.rsplit("-", 1)
+            if len(parts) == 2:
+                return int(parts[1])
+        except (OSError, ValueError):
+            pass
+        return None
+
+    @staticmethod
+    def _process_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
     def _close_other_pages(self, keep: Page) -> None:
         """Leave a single tab; session restore / reconnect can leave many pages open."""

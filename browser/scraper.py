@@ -11,8 +11,10 @@ Designed to be called from the web server without any Tk dependency.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import time
@@ -253,11 +255,17 @@ class TransactionScraper:
             return int(s.getsockname()[1])
 
     @staticmethod
-    def _wait_cdp_http_ready(http_base: str, timeout: float = 45.0) -> None:
+    def _wait_cdp_http_ready(http_base: str, timeout: float = 45.0, proc: subprocess.Popen | None = None) -> None:
         version_url = http_base.rstrip("/") + "/json/version"
         deadline = time.monotonic() + timeout
         last_exc: BaseException | None = None
         while time.monotonic() < deadline:
+            # Fail fast if the Chromium process crashed
+            if proc is not None and proc.poll() is not None:
+                raise RuntimeError(
+                    f"Chromium process exited with code {proc.returncode} "
+                    f"before CDP became ready at {http_base}"
+                )
             try:
                 with urllib.request.urlopen(version_url, timeout=2) as resp:
                     if resp.status == 200:
@@ -269,6 +277,8 @@ class TransactionScraper:
 
     def _spawn_chromium(self, initial_url: str = "about:blank") -> str:
         CHROMIUM_USER_DATA.mkdir(parents=True, exist_ok=True)
+        # Clean up stale profile locks from crashed instances
+        self._cleanup_stale_profile()
         port = self._find_free_port()
         http_base = f"http://127.0.0.1:{port}"
         if not self.playwright:
@@ -293,9 +303,59 @@ class TransactionScraper:
         ]
         proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self._chromium_proc = proc
-        self._wait_cdp_http_ready(http_base)
+        self._wait_cdp_http_ready(http_base, proc=proc)
         self._cdp_http_url = http_base
         return http_base
+
+    def _cleanup_stale_profile(self) -> None:
+        """Remove stale lock files and kill zombie Chromium processes using our profile."""
+        # Remove SingletonLock / SingletonSocket / SingletonCookie if the
+        # owning process is no longer alive.
+        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            lock = CHROMIUM_USER_DATA / lock_name
+            if not lock.exists():
+                continue
+            # SingletonLock is a symlink whose target encodes the PID
+            pid = self._pid_from_singleton_lock(lock)
+            if pid is not None and self._process_alive(pid):
+                # The owning Chromium is still alive — kill it so we can
+                # take over the profile cleanly.
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    # Give it a moment to exit
+                    for _ in range(20):
+                        if not self._process_alive(pid):
+                            break
+                        time.sleep(0.1)
+                    else:
+                        os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            try:
+                lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _pid_from_singleton_lock(lock: Path) -> int | None:
+        """Extract the PID encoded in a Chromium SingletonLock symlink target."""
+        try:
+            target = os.readlink(lock)
+            # Format is "hostname-PID" (e.g. "MyMac.local-12345")
+            parts = target.rsplit("-", 1)
+            if len(parts) == 2:
+                return int(parts[1])
+        except (OSError, ValueError):
+            pass
+        return None
+
+    @staticmethod
+    def _process_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
     def _attach_to_cdp(self, http_base: str, target_url: str) -> None:
         if not self.playwright:
