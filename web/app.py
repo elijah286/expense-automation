@@ -5353,6 +5353,65 @@ def page_settings():
             "no-caps unelevated color=primary"
         ).classes("action-btn")
 
+        # ---- Factory reset ----
+        with ui.card().classes("w-full mt-8").style(
+            "border-radius:16px;padding:32px;max-width:640px"
+        ):
+            with ui.row().classes("items-center gap-3 mb-2"):
+                ui.icon("restart_alt").classes("text-xl text-red-600")
+                ui.label("Factory Reset").classes(
+                    "text-base font-bold text-slate-800"
+                )
+            ui.label(
+                "Delete all documents, transactions, matches, settings, and "
+                "cached data. Your OpenAI API key will also be removed from "
+                "the system keychain. This cannot be undone."
+            ).classes("text-xs text-slate-500 mb-4")
+
+            def _confirm_reset():
+                with ui.dialog() as confirm_dlg, ui.card().style(
+                    "min-width:400px;max-width:480px;border-radius:16px;padding:28px"
+                ):
+                    ui.label("Reset everything?").classes(
+                        "text-lg font-bold text-slate-800 mb-2"
+                    )
+                    ui.label(
+                        "All data will be permanently deleted and the app "
+                        "will return to its initial state. This action cannot "
+                        "be undone."
+                    ).classes("text-sm text-slate-600 mb-4")
+                    with ui.row().classes("items-center justify-end gap-2 w-full"):
+                        ui.button("Cancel", on_click=confirm_dlg.close).props(
+                            "flat no-caps"
+                        )
+
+                        def _do_reset():
+                            confirm_dlg.close()
+                            svc.reset_all_data()
+                            ui.notify(
+                                "All data has been reset.",
+                                type="positive",
+                                timeout=4000,
+                            )
+                            ui.timer(
+                                0.5,
+                                lambda: ui.navigate.to("/settings"),
+                                once=True,
+                            )
+
+                        ui.button(
+                            "Reset Everything",
+                            icon="delete_forever",
+                            on_click=_do_reset,
+                        ).props("no-caps unelevated color=negative")
+                confirm_dlg.open()
+
+            ui.button(
+                "Reset to Defaults",
+                icon="restart_alt",
+                on_click=_confirm_reset,
+            ).props("no-caps outline color=negative")
+
         # ---- Pending deletions ----
         svc.purge_expired()
         pending = svc.get_pending_deletions()

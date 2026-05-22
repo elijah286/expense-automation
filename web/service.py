@@ -1631,3 +1631,30 @@ class ExpenseService:
             json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         return f"Saved to settings file (keychain unavailable: {err})"
+
+    # ------------------------------------------------------------------
+    # Factory reset
+    # ------------------------------------------------------------------
+
+    def reset_all_data(self) -> None:
+        """Delete all user data, caches, settings, and keychain entries.
+
+        Wipes ``~/.expense-automator/`` back to an empty state and clears
+        keychain credentials so the app behaves as a fresh install.
+        """
+        # Clear keychain secrets
+        try:
+            keychain_credentials.delete_keychain_openai_key()
+        except Exception:
+            pass
+
+        # Remove every file and subdirectory inside app_dir
+        if self.app_dir.is_dir():
+            for child in list(self.app_dir.iterdir()):
+                try:
+                    if child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                except Exception:
+                    pass
