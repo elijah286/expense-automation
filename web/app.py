@@ -117,16 +117,13 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
             activity_log.emit("success", f"{task_name} complete")
             if on_done:
                 # Schedule UI callback on the main event loop, not from this thread
-                ui.timer(0.1, lambda: on_done(result), once=True)
+                try:
+                    ui.timer(0.1, lambda: on_done(result), once=True)
+                except Exception:
+                    pass
         except Exception as exc:
             status_lines.append(f"Error: {exc}")
             activity_log.emit("error", f"{task_name} failed: {exc}")
-            try:
-                ui.timer(0.1, lambda: ui.notify(
-                    f"{task_name} failed: {exc}", type="negative", timeout=15000
-                ), once=True)
-            except Exception:
-                pass
         finally:
             with _task_lock:
                 _running_tasks[task_name] = {"running": False, "status": status_lines}
@@ -472,11 +469,17 @@ def _format_terminal_entries(entries) -> str:
         ts = time.strftime("%H:%M:%S", time.localtime(e.timestamp))
         cat = e.category
         msg = _e(e.message)
+        raw_text = f"{ts}  {cat.upper()}  {e.message}"
+        # Use JSON encoding for safe embedding in onclick attribute
+        raw_js = json.dumps(raw_text)
         parts.append(
             f'<div class="terminal-line terminal-{cat}">'
             f'<span class="terminal-time">{ts}</span>'
             f'<span class="terminal-cat">{cat}</span>'
             f'<span class="terminal-msg">{msg}</span>'
+            f'<span class="terminal-copy" title="Copy" onclick="navigator.clipboard.writeText({_e(raw_js)});'
+            f'this.textContent=&quot;check&quot;;setTimeout(()=>this.textContent=&quot;content_copy&quot;,800)"'
+            f'>content_copy</span>'
             f'</div>'
         )
     return "".join(parts)
@@ -1200,6 +1203,14 @@ body.body--dark .q-drawer .nav-section-title { color: #475569; }
     min-width: 58px; text-transform: uppercase; letter-spacing: 0.03em;
 }
 .terminal-msg { color: #cbd5e1; word-break: break-word; }
+.terminal-copy {
+    font-family: 'Material Icons'; font-size: 14px; color: #475569;
+    cursor: pointer; opacity: 0; transition: opacity 0.15s;
+    flex-shrink: 0; margin-left: auto; padding: 0 4px;
+    user-select: none;
+}
+.terminal-line:hover .terminal-copy { opacity: 0.7; }
+.terminal-copy:hover { opacity: 1 !important; color: #94a3b8; }
 
 .terminal-llm .terminal-cat { color: #60a5fa; }
 .terminal-llm .terminal-msg { color: #93c5fd; }
@@ -2247,11 +2258,25 @@ def page_documents(request: Request):
                                 ui.notify("All receipts already reviewed", type="info")
                                 return
                             ui.notify(f"Starting LLM review of {cnt} receipt(s)...", type="info")
+                            # Refresh the table periodically while analysis runs
+                            _analysis_timer = ui.timer(
+                                2.0,
+                                lambda: _render_documents(),
+                                active=True,
+                            )
+                            state["_analysis_timer"] = _analysis_timer
+
+                            def _on_analysis_done(_result):
+                                t = state.pop("_analysis_timer", None)
+                                if t:
+                                    t.deactivate()
+                                _render_documents()
+
                             _run_background(
                                 "Receipt Analysis",
                                 lambda on_status: svc.analyze_receipts(on_status=on_status),
                                 f"Finished analyzing receipts",
-                                on_done=lambda _: _render_documents(),
+                                on_done=_on_analysis_done,
                             )
 
                         ui.button(
