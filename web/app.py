@@ -1739,7 +1739,14 @@ def _open_update_check_dialog():
             close_btn = ui.button("Close", on_click=dlg.close).props("flat no-caps")
 
             # Pre-create action buttons (hidden until check result arrives)
-            _update_state: dict[str, Any] = {"asset_url": ""}
+            _update_state: dict[str, Any] = {
+                "asset_url": "",
+                "dl_progress": -1.0,       # -1 = not started
+                "dl_done_path": None,       # path when download completes
+                "dl_error": None,           # error message if failed
+                "applying": False,
+                "apply_error": None,
+            }
 
             def _do_update():
                 asset_url = _update_state["asset_url"]
@@ -1749,6 +1756,8 @@ def _open_update_check_dialog():
                 close_btn.disable()
                 update_btn.disable()
                 progress_container.style("display:block")
+                _update_state["dl_progress"] = 0.0
+                _dl_poll_timer.activate()
 
                 is_mac = sys.platform == "darwin"
 
@@ -1756,40 +1765,55 @@ def _open_update_check_dialog():
                     try:
                         def _on_progress(downloaded, total):
                             if total > 0:
-                                pct = downloaded / total
-                                ui.timer(0.05, lambda p=pct: _update_ui_progress(p), once=True)
-
-                        def _update_ui_progress(pct):
-                            progress_bar.value = pct
-                            progress_label.text = f"Downloading\u2026 {int(pct * 100)}%"
+                                _update_state["dl_progress"] = downloaded / total
 
                         installer_path = download_update(asset_url, on_progress=_on_progress)
-                        if is_mac:
-                            ui.timer(0.1, lambda: _apply_mac(installer_path), once=True)
-                        else:
-                            ui.timer(0.1, lambda: _apply_win(installer_path), once=True)
+                        _update_state["dl_done_path"] = str(installer_path)
                     except Exception as exc:
-                        ui.timer(0.1, lambda: _dl_failed(str(exc)), once=True)
+                        _update_state["dl_error"] = str(exc)
 
-                def _apply_mac(dmg_path):
+                threading.Thread(target=_download_and_apply, daemon=True).start()
+
+            def _dl_poll():
+                """Poll download state from main thread and update UI."""
+                pct = _update_state["dl_progress"]
+                if pct >= 0:
+                    progress_bar.value = pct
+                    progress_label.text = f"Downloading\u2026 {int(pct * 100)}%"
+
+                err = _update_state.get("dl_error")
+                if err:
+                    _dl_poll_timer.deactivate()
+                    progress_label.text = f"Download failed: {err}"
+                    progress_label.style("color:#dc2626")
+                    close_btn.enable()
+                    return
+
+                done_path = _update_state.get("dl_done_path")
+                if done_path:
+                    _dl_poll_timer.deactivate()
+                    _apply_update(Path(done_path))
+
+            def _apply_update(installer_path: Path):
+                is_mac = sys.platform == "darwin"
+                if is_mac:
                     from web.updater import apply_macos_update
                     progress_label.text = "Installing update and restarting\u2026"
                     progress_bar.props("indeterminate")
                     try:
-                        apply_macos_update(dmg_path)
+                        apply_macos_update(installer_path)
                         import time; time.sleep(0.5)
                         os._exit(0)
                     except Exception as exc:
                         progress_label.text = f"Update failed: {exc}"
                         progress_label.style("color:#dc2626")
                         close_btn.enable()
-
-                def _apply_win(exe_path):
+                else:
                     from web.updater import apply_windows_update
                     progress_label.text = "Launching installer and closing\u2026"
                     progress_bar.props("indeterminate")
                     try:
-                        apply_windows_update(exe_path)
+                        apply_windows_update(installer_path)
                         import time; time.sleep(0.5)
                         os._exit(0)
                     except Exception as exc:
@@ -1797,12 +1821,7 @@ def _open_update_check_dialog():
                         progress_label.style("color:#dc2626")
                         close_btn.enable()
 
-                def _dl_failed(msg):
-                    progress_label.text = f"Download failed: {msg}"
-                    progress_label.style("color:#dc2626")
-                    close_btn.enable()
-
-                threading.Thread(target=_download_and_apply, daemon=True).start()
+            _dl_poll_timer = ui.timer(0.3, _dl_poll, active=False)
 
             update_btn = ui.button(
                 "Update & Restart", icon="system_update", on_click=_do_update
