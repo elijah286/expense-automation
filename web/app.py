@@ -2107,6 +2107,14 @@ def page_documents(request: Request):
         search_container = ui.element("div")
         results_container = ui.element("div")
 
+        # Page-level timer for live refresh during receipt analysis
+        # (must be outside header_container so it survives re-renders)
+        def _analysis_poll():
+            if state.get("_analysis_running"):
+                _render_documents()
+
+        _analysis_refresh_timer = ui.timer(2.0, _analysis_poll, active=False)
+
         def _doc_toggle_sort(col: str):
             if state["sort_col"] == col:
                 state["sort_asc"] = not state["sort_asc"]
@@ -2269,18 +2277,13 @@ def page_documents(request: Request):
                                 ui.notify("All receipts already reviewed", type="info")
                                 return
                             ui.notify(f"Starting LLM review of {cnt} receipt(s)...", type="info")
-                            # Refresh the table periodically while analysis runs
-                            _analysis_timer = ui.timer(
-                                2.0,
-                                lambda: _render_documents(),
-                                active=True,
-                            )
-                            state["_analysis_timer"] = _analysis_timer
+                            # Activate page-level refresh timer
+                            state["_analysis_running"] = True
+                            _analysis_refresh_timer.activate()
 
                             def _on_analysis_done(_result):
-                                t = state.pop("_analysis_timer", None)
-                                if t:
-                                    t.deactivate()
+                                state["_analysis_running"] = False
+                                _analysis_refresh_timer.deactivate()
                                 _render_documents()
 
                             _run_background(
