@@ -3311,7 +3311,7 @@ _VIEWER_JS = """
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
         if (!nw || !nh || !cw || !ch) {
-            if (retries < 60) requestAnimationFrame(function() { fit(retries + 1); });
+            if (retries < 200) setTimeout(function() { fit(retries + 1); }, 16);
             return;
         }
         img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
@@ -3324,6 +3324,18 @@ _VIEWER_JS = """
 
     if (img.complete && img.naturalWidth) fit();
     else img.onload = function() { fit(); };
+
+    /* Refit when container resizes (e.g. dialog open animation) */
+    if (typeof ResizeObserver !== "undefined") {
+        let prevW = 0, prevH = 0;
+        new ResizeObserver(function() {
+            const w = ctr.clientWidth, h = ctr.clientHeight;
+            if (w && h && (w !== prevW || h !== prevH)) {
+                prevW = w; prevH = h;
+                fit();
+            }
+        }).observe(ctr);
+    }
 
     ctr._vzoom = function(f) {
         const cw=ctr.clientWidth/2, ch=ctr.clientHeight/2;
@@ -3363,6 +3375,7 @@ _CARD_PREVIEW_JS = """
     let scale = 1, tx = 0, ty = 0;
     let dragging = false, wasDrag = false, sx = 0, sy = 0, stx = 0, sty = 0;
     const rot = __ROT__;
+    let fitted = false;
 
     function apply() {
         img.style.transform =
@@ -3374,7 +3387,7 @@ _CARD_PREVIEW_JS = """
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
         if (!nw || !nh || !cw || !ch) {
-            if (retries < 60) requestAnimationFrame(function() { fit(retries + 1); });
+            if (retries < 200) setTimeout(function() { fit(retries + 1); }, 16);
             return;
         }
         img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
@@ -3383,10 +3396,23 @@ _CARD_PREVIEW_JS = """
         tx = (cw - nw*scale)/2;
         ty = (ch - nh*scale)/2;
         apply();
+        fitted = true;
     }
 
     if (img.complete && img.naturalWidth) fit();
     else img.onload = function() { fit(); };
+
+    /* Refit when container resizes (e.g. drawer open animation) */
+    if (typeof ResizeObserver !== "undefined") {
+        let prevW = 0, prevH = 0;
+        new ResizeObserver(function() {
+            const w = ctr.clientWidth, h = ctr.clientHeight;
+            if (w && h && (w !== prevW || h !== prevH)) {
+                prevW = w; prevH = h;
+                fit();
+            }
+        }).observe(ctr);
+    }
 
     ctr.addEventListener("wheel", function(e) {
         e.preventDefault();
