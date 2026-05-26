@@ -4351,7 +4351,7 @@ def page_matching(request: Request):
             _render_all()
 
 
-        _MATCH_GRID_COLS = "32px 2fr 100px 100px 110px 1fr 1.5fr 36px"
+        _MATCH_GRID_COLS = "28px 32px 2fr 100px 100px 110px 1fr 1.5fr 36px"
 
         def _render_table():
             items = _filtered_queue()
@@ -4372,6 +4372,26 @@ def page_matching(request: Request):
                         if _q else str(total)
                     ) + f" match{'es' if total != 1 else ''}"
                     ui.label(count_text).classes("text-sm font-semibold text-slate-600")
+
+                    # Bulk action bar — visible when items are selected
+                    sel_count = len(state.get("selected_lids", set()))
+                    if sel_count:
+                        ui.element("div").style("flex:1")
+                        ui.label(f"{sel_count} selected").classes("text-xs font-semibold text-blue-600")
+                        ui.button(
+                            "Rescan", icon="refresh", on_click=_do_rescan_selected,
+                        ).props("no-caps outline size=xs dense").style("font-size:0.7rem")
+                        ui.button(
+                            "Mark Missing", icon="do_not_disturb", on_click=_do_bulk_mark_missing,
+                        ).props("no-caps outline size=xs dense color=amber").style("font-size:0.7rem")
+                        ui.button(
+                            "Clear", icon="close",
+                            on_click=lambda: (
+                                state.update({"selected_lids": set(), "selected_lid": None}),
+                                _render_all(),
+                            ),
+                        ).props("no-caps flat size=xs dense").style("font-size:0.7rem;color:#94a3b8")
+
                 sc, sa = state["sort_col"], state["sort_asc"]
                 with ui.element("div").style(
                     f"display:grid;grid-template-columns:{_MATCH_GRID_COLS};"
@@ -4380,7 +4400,27 @@ def page_matching(request: Request):
                     "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
                     "position:sticky;top:0;z-index:10;min-width:860px;"
                 ):
-                    ui.element("div")
+                    # Select-all checkbox
+                    _all_lids = [it.transaction.line_id for it in items]
+                    _all_selected = bool(_all_lids) and all(lid in state.get("selected_lids", set()) for lid in _all_lids)
+                    _some_selected = bool(state.get("selected_lids", set()) & set(_all_lids)) and not _all_selected
+
+                    def _toggle_select_all(e, all_lids=_all_lids):
+                        if e.value:
+                            state["selected_lids"] = set(all_lids)
+                            state["selected_lid"] = all_lids[0] if all_lids else None
+                        else:
+                            state["selected_lids"] = set()
+                            state["selected_lid"] = None
+                        _render_all()
+
+                    _sa_cb = ui.checkbox("", value=_all_selected, on_change=_toggle_select_all).props(
+                        "dense size=xs"
+                    ).style("margin:0;padding:0;min-height:0")
+                    if _some_selected:
+                        _sa_cb.props("indeterminate-value=true model-value=true")
+
+                    ui.element("div")  # status dot column
                     for col_key, col_label in [
                         ("merchant", "Merchant"), ("date", "Date"), ("amount", "Amount"),
                         ("match", "Match"), ("type", "Type"), ("receipt", "Receipt"),
@@ -4424,6 +4464,20 @@ def page_matching(request: Request):
                         ["shiftKey", "ctrlKey", "metaKey"],
                     )
                     with row_el:
+                        def _toggle_row_cb(e, lid=t.line_id):
+                            if e.value:
+                                state["selected_lids"].add(lid)
+                                state["selected_lid"] = lid
+                            else:
+                                state["selected_lids"].discard(lid)
+                                if state["selected_lid"] == lid:
+                                    state["selected_lid"] = next(iter(state["selected_lids"]), None)
+                            _render_all()
+
+                        _row_cb = ui.checkbox("", value=is_active, on_change=_toggle_row_cb).props(
+                            "dense size=xs"
+                        ).style("margin:0;padding:0;min-height:0")
+                        _row_cb.on("click.stop", lambda: None)
                         ui.html(
                             f'<span class="status-dot status-dot-{t.match_status}"></span>'
                         )

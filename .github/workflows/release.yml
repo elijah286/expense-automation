@@ -26,6 +26,7 @@ jobs:
         with:
           files: dist/Expense.Automator.*.dmg
           make_latest: true
+          body: ${{ github.event.head_commit.message }}
 
   build-windows:
     runs-on: windows-latest
@@ -47,3 +48,4 @@ jobs:
         with:
           files: dist/ExpenseAutomator_Setup_*.exe
           make_latest: true
+          body: ${{ github.event.head_commit.message }}

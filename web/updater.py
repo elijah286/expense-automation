@@ -126,7 +126,7 @@ def _build_changelog(
 
     Each entry has keys: version, description, date.
     Falls back to commit messages via the compare API when release bodies
-    are empty.
+    are empty, then to per-tag commit message lookups.
     """
     current_ver = _parse_version(current_version)
     entries: list[tuple[tuple[int, ...], dict[str, str]]] = []
@@ -140,9 +140,11 @@ def _build_changelog(
             continue
         version_str = tag.lstrip("v")
         body = (rel.get("body") or "").strip()
+        # Strip body that is just the version tag (e.g. "v1.1.9")
+        body_desc = _strip_version_prefix(body) if body else ""
         pub = (rel.get("published_at") or "")[:10]  # YYYY-MM-DD
-        if body:
-            entries.append((ver, {"version": version_str, "description": body, "date": pub}))
+        if body_desc:
+            entries.append((ver, {"version": version_str, "description": body_desc, "date": pub}))
         else:
             # Release body is empty — try the release name (often the commit
             # subject, e.g. "v1.1.2: fix Chromium CDP...").
@@ -160,6 +162,13 @@ def _build_changelog(
         if compare_entries:
             return compare_entries
 
+    # If still all empty, try fetching each tag's commit message individually.
+    if entries and all(not e[1]["description"] for e in entries):
+        for ver_tuple, entry in entries:
+            desc = _commit_message_for_tag(f"v{entry['version']}")
+            if desc:
+                entry["description"] = desc
+
     # Sort newest-first
     entries.sort(key=lambda t: t[0], reverse=True)
     return [e for _, e in entries]
@@ -173,6 +182,32 @@ def _strip_version_prefix(name: str) -> str:
         return ""
     m = _re.match(r"^v?\d+\.\d+(?:\.\d+)?[:\s]+(.+)", name)
     return m.group(1).strip() if m else name.strip()
+
+
+def _commit_message_for_tag(tag: str) -> str:
+    """Fetch the commit message for a specific tag via GitHub API."""
+    url = f"https://api.github.com/repos/{_GITHUB_REPO}/git/ref/tags/{tag}"
+    try:
+        ctx = _ssl_context()
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            ref = json.loads(resp.read())
+        # Lightweight tag → commit SHA directly; annotated tag → dereference
+        obj = ref.get("object", {})
+        sha_url = obj.get("url", "")
+        if obj.get("type") == "tag":
+            # Annotated tag — follow to the commit
+            req2 = urllib.request.Request(sha_url, headers={"Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req2, timeout=10, context=ctx) as resp2:
+                tag_obj = json.loads(resp2.read())
+            sha_url = tag_obj.get("object", {}).get("url", sha_url)
+        req3 = urllib.request.Request(sha_url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req3, timeout=10, context=ctx) as resp3:
+            commit = json.loads(resp3.read())
+        msg = (commit.get("message", "") or "").split("\n")[0]
+        return _strip_version_prefix(msg)
+    except Exception:
+        return ""
 
 
 def _changelog_from_compare(
