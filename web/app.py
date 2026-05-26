@@ -3310,8 +3310,14 @@ _VIEWER_JS = """
         retries = retries || 0;
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
-        if (!nw || !nh || !cw || !ch) {
-            if (retries < 200) setTimeout(function() { fit(retries + 1); }, 16);
+        if (!nw || !nh || cw < 50 || ch < 50) {
+            if (retries < 300) {
+                setTimeout(function() { fit(retries + 1); }, 20);
+            } else {
+                img.style.width = "100%"; img.style.height = "100%";
+                img.style.objectFit = "contain";
+                img.style.transform = rot ? "rotate("+rot+"deg)" : "";
+            }
             return;
         }
         img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
@@ -3330,7 +3336,7 @@ _VIEWER_JS = """
         let prevW = 0, prevH = 0;
         new ResizeObserver(function() {
             const w = ctr.clientWidth, h = ctr.clientHeight;
-            if (w && h && (w !== prevW || h !== prevH)) {
+            if (w >= 50 && h >= 50 && (w !== prevW || h !== prevH)) {
                 prevW = w; prevH = h;
                 fit();
             }
@@ -3382,12 +3388,22 @@ _CARD_PREVIEW_JS = """
             "translate("+tx+"px,"+ty+"px) scale("+scale+") rotate("+rot+"deg)";
     }
 
+    function restoreCss() {
+        img.style.width = "100%"; img.style.height = "100%";
+        img.style.objectFit = "contain";
+        img.style.transform = rot ? "rotate("+rot+"deg)" : "";
+    }
+
     function fit(retries) {
         retries = retries || 0;
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
-        if (!nw || !nh || !cw || !ch) {
-            if (retries < 200) setTimeout(function() { fit(retries + 1); }, 16);
+        if (!nw || !nh || cw < 50 || ch < 50) {
+            if (retries < 300) {
+                setTimeout(function() { fit(retries + 1); }, 20);
+            } else {
+                restoreCss();
+            }
             return;
         }
         img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
@@ -3407,7 +3423,7 @@ _CARD_PREVIEW_JS = """
         let prevW = 0, prevH = 0;
         new ResizeObserver(function() {
             const w = ctr.clientWidth, h = ctr.clientHeight;
-            if (w && h && (w !== prevW || h !== prevH)) {
+            if (w >= 50 && h >= 50 && (w !== prevW || h !== prevH)) {
                 prevW = w; prevH = h;
                 fit();
             }
@@ -4916,7 +4932,7 @@ def page_matching(request: Request):
                                     f'</div>'
                                 ).style("position:absolute;top:0;left:0;right:0;bottom:0")
                             _pjs = _CARD_PREVIEW_JS.replace("__CID__", preview_cid).replace("__ROT__", str(rotation))
-                            ui.timer(0.2, lambda _js=_pjs: ui.run_javascript(_js), once=True)
+                            ui.timer(0.5, lambda _js=_pjs: ui.run_javascript(_js), once=True)
                         elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
