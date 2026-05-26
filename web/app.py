@@ -1677,7 +1677,7 @@ def report_header_bar(active_page: str, report_id: str = ""):
                     ui.label(label)
 
 
-_REPORT_PAGES = {"Documents", "Transactions", "Matching", "Submit"}
+_REPORT_PAGES = {"Transactions", "Matching", "Submit"}
 
 
 def _setup_required_overlay():
