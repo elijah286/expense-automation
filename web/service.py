@@ -967,9 +967,22 @@ class ExpenseService:
         for lid in lid_set:
             matches.pop(lid, None)
 
+        # Exclude receipts already matched to lines NOT in this rescan set
+        # to prevent a rescanned line from "stealing" another line's receipt.
+        already_taken: set[str] = set()
+        for other_lid, block in matches.items():
+            if other_lid not in lid_set:
+                taken = str((block or {}).get("best_receipt") or "").strip()
+                if taken:
+                    already_taken.add(taken)
+        available_analyses = [
+            a for a in analyses
+            if str(a.get("source_file", "")).strip() not in already_taken
+        ]
+
         activity_log.emit("step", f"Rescanning {len(target_lines)} line(s)")
 
-        det_results = match_transactions_to_receipts(target_lines, analyses)
+        det_results = match_transactions_to_receipts(target_lines, available_analyses)
         det_updated = 0
         for row in det_results:
             tid = str(row.get("transaction_id", "")).strip()
@@ -1006,7 +1019,7 @@ class ExpenseService:
                 activity_log.emit("llm", f"Rescanning {i+1}/{len(still_unmatched)}: {merchant}")
                 try:
                     result = match_one_expense_line_to_receipts(
-                        api_key=api_key, model=model, line=line, analyses=analyses,
+                        api_key=api_key, model=model, line=line, analyses=available_analyses,
                         on_status=lambda msg: activity_log.emit("llm", msg),
                     )
                     consecutive_connection_errors = 0

@@ -77,14 +77,21 @@ def match_transactions_to_receipts(
     - Amount first
     - Date within +/- N days
     - Merchant similarity tie-break
+
+    Uses greedy assignment: each receipt is assigned to at most one
+    transaction (the one with the highest score).
     """
-    output: list[dict[str, Any]] = []
-    for txn in transactions:
+    # Phase 1: build scored candidates for every (txn, receipt) pair.
+    # Each entry: (score, txn_index, receipt_key, receipt_obj)
+    candidates: list[tuple[float, int, str, dict[str, Any]]] = []
+    txn_ids: list[str] = []
+
+    for ti, txn in enumerate(transactions):
         txn_id = str(txn.get("line_id") or txn.get("transaction_id") or "").strip()
+        txn_ids.append(txn_id)
         t_amt = _to_amount(txn.get("amount"))
         t_date = _to_date(txn.get("transaction_date") or txn.get("date"))
         t_merchant = str(txn.get("merchant_name") or txn.get("merchant") or "").strip()
-        best: tuple[float, dict[str, Any]] | None = None
         for receipt in receipts:
             r_amt = _to_amount(receipt.get("matched_amount") or receipt.get("total_amount"))
             if t_amt is None or r_amt is None:
@@ -119,10 +126,28 @@ def match_transactions_to_receipts(
                 date_score = max(0.0, 1.0 - (abs((t_date - r_date).days) / max(1.0, float(date_window_days))))
             merchant_score = _merchant_similarity(t_merchant, receipt.get("vendor"))
             score = 0.55 * amount_score + 0.30 * date_score + 0.15 * merchant_score
-            if best is None or score > best[0]:
-                best = (score, receipt)
+            r_key = str(receipt.get("source_file") or receipt.get("receipt_id") or "").strip()
+            if r_key:
+                candidates.append((score, ti, r_key, receipt))
 
-        if best is None:
+    # Phase 2: greedy assignment — highest score first, each receipt used once.
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    assigned_txns: set[int] = set()
+    assigned_receipts: set[str] = set()
+    txn_result: dict[int, tuple[float, str, dict[str, Any]]] = {}
+
+    for score, ti, r_key, receipt in candidates:
+        if ti in assigned_txns or r_key in assigned_receipts:
+            continue
+        txn_result[ti] = (score, r_key, receipt)
+        assigned_txns.add(ti)
+        assigned_receipts.add(r_key)
+
+    # Phase 3: build output for every transaction.
+    output: list[dict[str, Any]] = []
+    for ti in range(len(transactions)):
+        txn_id = txn_ids[ti]
+        if ti not in txn_result:
             output.append(
                 {
                     "transaction_id": txn_id,
@@ -134,12 +159,12 @@ def match_transactions_to_receipts(
             )
             continue
 
-        conf = round(float(best[0]), 4)
-        receipt = best[1]
+        conf_raw, r_key, receipt = txn_result[ti]
+        conf = round(float(conf_raw), 4)
         output.append(
             {
                 "transaction_id": txn_id,
-                "receipt_id": str(receipt.get("source_file") or receipt.get("receipt_id") or "").strip() or None,
+                "receipt_id": r_key or None,
                 "confidence": conf,
                 "confidence_level": _confidence_level(conf),
                 "reasoning": "Matched by amount tolerance first, date proximity second, merchant similarity third.",
