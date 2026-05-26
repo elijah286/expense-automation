@@ -600,6 +600,7 @@ def analyze_receipts_with_llm(
     api_key: str | None,
     on_status: Callable[[str], None] | None = None,
     http_verify_preferred: str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[dict]:
     if not receipt_paths:
         print("[warn] No receipt files available for LLM inspection.")
@@ -613,6 +614,10 @@ def analyze_receipts_with_llm(
     client = build_openai_client(api_key, http_verify_preferred=http_verify_preferred)
     analyses: list[dict] = []
     for path_str in receipt_paths:
+        if cancel_check and cancel_check():
+            if on_status:
+                on_status("Cancelled by user")
+            break
         path_obj = Path(path_str)
         if on_status:
             on_status(f"LLM: waiting for model to read receipt {path_obj.name}…")

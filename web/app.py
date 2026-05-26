@@ -119,6 +119,7 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
             )
 
     status_lines: list[str] = []
+    activity_log.clear_cancel()
     activity_log.set_active_task(task_name)
     activity_log.emit("step", f"Starting {task_name}\u2026")
 
@@ -139,8 +140,12 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
             }
         try:
             result = fn(on_status=_on_status)
-            status_lines.append(f"Done: {result}")
-            activity_log.emit("success", f"{task_name} complete")
+            if activity_log.is_cancel_requested():
+                status_lines.append("Stopped by user")
+                activity_log.emit("info", f"{task_name} stopped by user")
+            else:
+                status_lines.append(f"Done: {result}")
+                activity_log.emit("success", f"{task_name} complete")
             if on_done:
                 # Schedule UI callback on the main event loop, not from this thread
                 try:
@@ -153,6 +158,7 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
         finally:
             with _task_lock:
                 _running_tasks[task_name] = {"running": False, "status": status_lines}
+            activity_log.clear_cancel()
             activity_log.clear_active_task()
 
     ui.notify(f"Started {task_name}...", type="info")
@@ -195,6 +201,8 @@ def _start_auto_match():
 
                 def _do_scan(on_status):
                     svc.analyze_receipts(on_status=on_status)
+                    if activity_log.is_cancel_requested():
+                        return {"cancelled": True}
                     return svc.run_full_matching_pipeline(on_status=on_status)
 
                 _run_background(
@@ -369,6 +377,11 @@ _TERMINAL_HTML = """\
     <span class="terminal-badge" id="terminal-badge">
       <span class="terminal-badge-dot"></span>
       <span id="terminal-badge-text"></span>
+      <span class="material-icons terminal-stop-btn" id="terminal-stop-btn"
+            title="Stop operation"
+            onclick="event.stopPropagation();fetch('/api/cancel-task',{method:'POST'});this.style.display='none'"
+            style="display:none;font-size:16px;cursor:pointer;color:#ef4444;margin-left:6px;vertical-align:middle"
+            >stop_circle</span>
     </span>
     <span class="terminal-status" id="terminal-status"></span>
     <div class="terminal-actions">
@@ -462,11 +475,15 @@ def _build_terminal():
                 'if(b)b.classList.add("terminal-badge-active");'
                 f'var bt=document.getElementById("terminal-badge-text");'
                 f'if(bt)bt.textContent={json.dumps(badge_text)};'
+                'var sb=document.getElementById("terminal-stop-btn");'
+                'if(sb)sb.style.display="inline";'
             )
         else:
             js.append(
                 'var b=document.getElementById("terminal-badge");'
                 'if(b)b.classList.remove("terminal-badge-active");'
+                'var sb=document.getElementById("terminal-stop-btn");'
+                'if(sb)sb.style.display="none";'
             )
 
         processing = list(state.get("processing_items", set()))
@@ -573,6 +590,14 @@ async def api_upload(request: Request, files: list[UploadFile]) -> JSONResponse:
     if report_id and imported:
         svc.assign_receipts_to_report(imported, report_id)
     return JSONResponse({"imported": imported, "count": len(imported)})
+
+
+@app.post("/api/cancel-task")
+async def api_cancel_task() -> JSONResponse:
+    """Request cancellation of the current background task."""
+    activity_log.request_cancel()
+    activity_log.emit("info", "Stop requested — finishing current item…")
+    return JSONResponse({"ok": True})
 
 
 # ---------------------------------------------------------------------------

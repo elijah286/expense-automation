@@ -872,6 +872,9 @@ class ExpenseService:
         consecutive_connection_errors = 0
         _CONNECTION_ERROR_LIMIT = 3
         for i, line in enumerate(unmatched):
+            if activity_log.is_cancel_requested():
+                activity_log.emit("info", "Cancelled by user")
+                break
             lid = str(line.get("line_id", "")).strip()
             merchant = str(line.get("merchant_name", "")).strip() or "unknown"
             amount = str(line.get("amount", "")).strip()
@@ -1013,6 +1016,9 @@ class ExpenseService:
             ]
             consecutive_connection_errors = 0
             for i, line in enumerate(still_unmatched):
+                if activity_log.is_cancel_requested():
+                    activity_log.emit("info", "Cancelled by user")
+                    break
                 lid = str(line.get("line_id", "")).strip()
                 merchant = str(line.get("merchant_name", "")).strip() or "unknown"
                 activity_log.mark_item_processing(lid)
@@ -1054,6 +1060,7 @@ class ExpenseService:
     def run_llm_matching(self, on_status=None) -> dict[str, Any]:
         """Run LLM matching for unmatched items. Requires OPENAI_API_KEY."""
         from receipt_matching import match_one_expense_line_to_receipts
+        from web.activity_log import activity_log
 
         log = on_status or (lambda s: None)
         api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -1080,6 +1087,9 @@ class ExpenseService:
         updated = 0
         consecutive_connection_errors = 0
         for i, line in enumerate(unmatched):
+            if activity_log.is_cancel_requested():
+                activity_log.emit("info", "Cancelled by user")
+                break
             lid = str(line.get("line_id", "")).strip()
             log(f"Matching {i+1}/{len(unmatched)}: {line.get('merchant_name', 'unknown')}")
             try:
@@ -1147,7 +1157,8 @@ class ExpenseService:
         activity_log.emit("step", f"Analyzing {len(new_paths)} receipts with {model}")
         try:
             new_analyses = analyze_receipts_with_llm(
-                new_paths, model, api_key, on_status=log
+                new_paths, model, api_key, on_status=log,
+                cancel_check=activity_log.is_cancel_requested,
             )
             all_analyses = existing + new_analyses
             save_analyses_snapshot(self.app_dir, all_analyses)

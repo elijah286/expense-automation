@@ -26,6 +26,7 @@ class ActivityLog:
         self._progress: float = 0.0
         self._progress_label: str = ""
         self._processing_items: set[str] = set()
+        self._cancel_requested: bool = False
 
     def emit(self, category: str, message: str, task_name: str = "") -> None:
         with self._lock:
@@ -79,6 +80,20 @@ class ActivityLog:
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+
+    # -- Cancellation support --
+
+    def request_cancel(self) -> None:
+        with self._lock:
+            self._cancel_requested = True
+
+    def is_cancel_requested(self) -> bool:
+        with self._lock:
+            return self._cancel_requested
+
+    def clear_cancel(self) -> None:
+        with self._lock:
+            self._cancel_requested = False
 
 
 activity_log = ActivityLog()
