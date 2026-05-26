@@ -2531,18 +2531,64 @@ def page_documents(request: Request):
                     if fn:
                         receipts = sorted(receipts, key=fn, reverse=not state["sort_asc"])
 
+                _DOC_GRID_COLS = "28px 72px 1fr 120px 110px 100px 90px 110px 40px"
+
                 # Full-width list; detail opens in a right drawer
                 with ui.element("div").style("width:100%;min-width:0;overflow-x:auto"):
+
+                    # Bulk action bar
+                    sel_count = len(state.get("selected", set()))
+                    if sel_count:
+                        with ui.row().classes("items-center gap-3 px-5 py-2").style(
+                            "background:#eff6ff;border-radius:8px 8px 0 0;border-bottom:1px solid #bfdbfe;"
+                        ):
+                            ui.label(f"{sel_count} selected").classes("text-xs font-semibold text-blue-600")
+                            ui.button(
+                                "Delete", icon="delete_outline", on_click=_confirm_remove_selected,
+                            ).props("no-caps outline size=xs dense color=negative").style("font-size:0.7rem")
+                            ui.button(
+                                "Rescan", icon="refresh", on_click=_confirm_rescan_selected,
+                            ).props("no-caps outline size=xs dense").style("font-size:0.7rem")
+                            ui.element("div").style("flex:1")
+                            ui.button(
+                                "Clear", icon="close",
+                                on_click=lambda: (
+                                    state.update({"selected": set(), "selected_doc": None}),
+                                    _render_documents(),
+                                ),
+                            ).props("no-caps flat size=xs dense").style("font-size:0.7rem;color:#94a3b8")
+
                     # Table header
                     sc, sa = state["sort_col"], state["sort_asc"]
+                    _hdr_radius = "border-radius:0;" if sel_count else "border-radius:8px 8px 0 0;"
                     with ui.element("div").style(
-                        "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px 40px;"
+                        f"display:grid;grid-template-columns:{_DOC_GRID_COLS};"
                         "gap:0;padding:8px 20px;font-size:0.7rem;font-weight:700;text-transform:uppercase;"
                         "letter-spacing:0.06em;color:var(--text-muted);align-items:center;"
-                        "background:var(--bg-surface);border-bottom:2px solid var(--border-default);border-radius:8px 8px 0 0;"
+                        f"background:var(--bg-surface);border-bottom:2px solid var(--border-default);{_hdr_radius}"
                         "position:sticky;top:0;z-index:10;min-width:740px;"
                     ):
-                        ui.element("div")
+                        # Select-all checkbox
+                        _all_paths = [r.source_file for r in receipts]
+                        _all_sel = bool(_all_paths) and all(p in state.get("selected", set()) for p in _all_paths)
+                        _some_sel = bool(state.get("selected", set()) & set(_all_paths)) and not _all_sel
+
+                        def _toggle_select_all_docs(e, all_paths=_all_paths):
+                            if e.value:
+                                state["selected"] = set(all_paths)
+                                state["selected_doc"] = all_paths[0] if all_paths else None
+                            else:
+                                state["selected"] = set()
+                                state["selected_doc"] = None
+                            _render_documents()
+
+                        _sa_cb = ui.checkbox("", value=_all_sel, on_change=_toggle_select_all_docs).props(
+                            "dense size=xs"
+                        ).style("margin:0;padding:0;min-height:0")
+                        if _some_sel:
+                            _sa_cb.props("indeterminate-value=true model-value=true")
+
+                        ui.element("div")  # thumbnail column
                         for col_key, col_label in [
                             ("vendor", "Vendor / File"), ("amount", "Amount"), ("date", "Date"),
                             ("added", "Added"), ("parse", "Parse"), ("status", "Status"),
@@ -2587,6 +2633,18 @@ def page_documents(request: Request):
                                 )
                             return _do
 
+                        def _make_toggle_cb(path):
+                            def _toggle(e):
+                                if e.value:
+                                    state["selected"].add(path)
+                                    state["selected_doc"] = path
+                                else:
+                                    state["selected"].discard(path)
+                                    if state["selected_doc"] == path:
+                                        state["selected_doc"] = next(iter(state["selected"]), None)
+                                _render_documents()
+                            return _toggle
+
                         for r in receipts:
                             is_sel = r.source_file in state["selected"]
                             is_focused = state["selected_doc"] == r.source_file
@@ -2597,6 +2655,7 @@ def page_documents(request: Request):
                                 on_row_click=lambda doc=r: _select_doc(doc.source_file),
                                 on_remove=_make_remove_single(r.source_file),
                                 on_rescan=_make_rescan_single(r.source_file),
+                                on_checkbox=_make_toggle_cb(r.source_file),
                             )
 
             _sync_doc_detail_drawer()
@@ -2940,6 +2999,7 @@ def _receipt_row(
     on_click=None,
     on_remove=None,
     on_rescan=None,
+    on_checkbox=None,
 ):
     """Compact horizontal card for one receipt — thumbnail + key data."""
     if r.used:
@@ -2953,11 +3013,19 @@ def _receipt_row(
     focus_cls = " receipt-selected" if focused else ""
     row_click = on_row_click or on_click
     row_el = ui.element("div").classes(f"receipt-card{focus_cls}").style(
-        "display:grid;grid-template-columns:72px 1fr 120px 110px 100px 90px 110px 40px;"
+        "display:grid;grid-template-columns:28px 72px 1fr 120px 110px 100px 90px 110px 40px;"
         f"align-items:center;gap:0;padding:0;margin-bottom:8px;cursor:pointer;"
         f"user-select:none;min-width:740px;{border_style}{opacity_style}{sel_bg}"
     )
     with row_el:
+        # Checkbox
+        if on_checkbox:
+            _cb = ui.checkbox("", value=selected, on_change=on_checkbox).props(
+                "dense size=xs"
+            ).style("margin:0 0 0 4px;padding:0;min-height:0")
+            _cb.on("click.stop", lambda: None)
+        else:
+            ui.element("div")
         # Right-click context menu
         with ui.menu().props("context-menu") as ctx_menu:
             if on_remove:
