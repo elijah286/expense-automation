@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import uuid as _uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from expense_lines_cache import (
 )
 import keychain_credentials
 from classification.service import classify_transactions
+from persistence.atomic_json import atomic_write_json
 
 APP_DIR = Path.home() / ".expense-automator"
 
@@ -155,6 +157,20 @@ def _float_safe(val: Any, default: float = 0.0) -> float:
 class ExpenseService:
     def __init__(self, app_dir: Path | None = None):
         self.app_dir = app_dir or APP_DIR
+        self._state_lock = threading.Lock()
+
+    def _update_state_json(self, updater: Callable[[dict], None]) -> None:
+        """Thread-safe read-modify-write of state.json using atomic writes."""
+        state_path = self.app_dir / "state.json"
+        with self._state_lock:
+            state: dict[str, Any] = {}
+            if state_path.exists():
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    state = {}
+            updater(state)
+            atomic_write_json(state_path, state, indent=2, ensure_ascii=False)
 
     # ------------------------------------------------------------------
     # Reads
@@ -1156,12 +1172,17 @@ class ExpenseService:
 
         activity_log.emit("step", f"Analyzing {len(new_paths)} receipts with {model}")
         try:
+            # Save incrementally after each receipt so the UI can show progress
+            def _save_incremental(parsed: dict) -> None:
+                nonlocal existing
+                existing = existing + [parsed]
+                save_analyses_snapshot(self.app_dir, existing)
+
             new_analyses = analyze_receipts_with_llm(
                 new_paths, model, api_key, on_status=log,
                 cancel_check=activity_log.is_cancel_requested,
+                on_each=_save_incremental,
             )
-            all_analyses = existing + new_analyses
-            save_analyses_snapshot(self.app_dir, all_analyses)
             activity_log.emit("success", f"Analyzed {len(new_analyses)} receipts")
             return {"analyzed": len(new_analyses)}
         except Exception as exc:
@@ -1173,14 +1194,7 @@ class ExpenseService:
         import_dir = self.app_dir / "receipt-imports"
         import_dir.mkdir(parents=True, exist_ok=True)
         count = 0
-        state_path = self.app_dir / "state.json"
-        state: dict[str, Any] = {}
-        if state_path.exists():
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            except Exception:
-                state = {}
-        receipt_paths: list[str] = state.get("receipt_paths", [])
+        new_paths: list[str] = []
 
         for fp in file_paths:
             src = Path(fp)
@@ -1195,13 +1209,17 @@ class ExpenseService:
                     dest = import_dir / f"{stem}_{i}{suffix}"
                     i += 1
             shutil.copy2(str(src), str(dest))
-            dest_str = str(dest)
-            if dest_str not in receipt_paths:
-                receipt_paths.append(dest_str)
+            new_paths.append(str(dest))
             count += 1
 
-        state["receipt_paths"] = receipt_paths
-        state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        if new_paths:
+            def _add_paths(state: dict) -> None:
+                rp: list[str] = state.get("receipt_paths", [])
+                for p in new_paths:
+                    if p not in rp:
+                        rp.append(p)
+                state["receipt_paths"] = rp
+            self._update_state_json(_add_paths)
         return count
 
     def import_uploaded_content(self, filename: str, content: bytes) -> str | None:
@@ -1224,18 +1242,12 @@ class ExpenseService:
         dest.write_bytes(content)
         dest_str = str(dest)
 
-        state_path = self.app_dir / "state.json"
-        state: dict[str, Any] = {}
-        if state_path.exists():
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            except Exception:
-                state = {}
-        receipt_paths: list[str] = state.get("receipt_paths", [])
-        if dest_str not in receipt_paths:
-            receipt_paths.append(dest_str)
-        state["receipt_paths"] = receipt_paths
-        state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        def _add_path(state: dict) -> None:
+            rp: list[str] = state.get("receipt_paths", [])
+            if dest_str not in rp:
+                rp.append(dest_str)
+            state["receipt_paths"] = rp
+        self._update_state_json(_add_path)
         return dest_str
 
     def remove_used_receipts(self) -> int:
@@ -1257,17 +1269,11 @@ class ExpenseService:
         if removed:
             save_analyses_snapshot(self.app_dir, kept)
 
-        state_path = self.app_dir / "state.json"
-        state: dict[str, Any] = {}
-        if state_path.exists():
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            except Exception:
-                state = {}
-        rp = state.get("receipt_paths", [])
-        if isinstance(rp, list):
-            state["receipt_paths"] = [p for p in rp if p not in used_paths]
-            state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        def _remove_paths(state: dict) -> None:
+            rp = state.get("receipt_paths", [])
+            if isinstance(rp, list):
+                state["receipt_paths"] = [p for p in rp if p not in used_paths]
+        self._update_state_json(_remove_paths)
 
         return removed
 
@@ -1328,23 +1334,16 @@ class ExpenseService:
         if len(kept) < len(analyses):
             save_analyses_snapshot(self.app_dir, kept)
 
-        state_path = self.app_dir / "state.json"
-        state: dict[str, Any] = {}
-        if state_path.exists():
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            except Exception:
-                state = {}
-        rp = state.get("receipt_paths", [])
-        if isinstance(rp, list):
-            state["receipt_paths"] = [p for p in rp if p not in paths_to_remove]
-        # Also clean up receipt-report assignments
-        assignments = state.get("receipt_report_assignments", {})
-        if isinstance(assignments, dict):
-            state["receipt_report_assignments"] = {
-                k: v for k, v in assignments.items() if k not in paths_to_remove
-            }
-        state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        def _remove(state: dict) -> None:
+            rp = state.get("receipt_paths", [])
+            if isinstance(rp, list):
+                state["receipt_paths"] = [p for p in rp if p not in paths_to_remove]
+            assignments = state.get("receipt_report_assignments", {})
+            if isinstance(assignments, dict):
+                state["receipt_report_assignments"] = {
+                    k: v for k, v in assignments.items() if k not in paths_to_remove
+                }
+        self._update_state_json(_remove)
 
         return len(paths_to_remove)
 
@@ -1368,20 +1367,14 @@ class ExpenseService:
         """Directly assign receipt files to a report so they appear under that report's filter."""
         if not source_files or not report_id:
             return
-        state_path = self.app_dir / "state.json"
-        state: dict[str, Any] = {}
-        if state_path.exists():
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            except Exception:
-                state = {}
-        assignments: dict[str, str] = state.get("receipt_report_assignments", {})
-        if not isinstance(assignments, dict):
-            assignments = {}
-        for sf in source_files:
-            assignments[sf] = report_id
-        state["receipt_report_assignments"] = assignments
-        state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        def _assign(state: dict) -> None:
+            assignments: dict[str, str] = state.get("receipt_report_assignments", {})
+            if not isinstance(assignments, dict):
+                assignments = {}
+            for sf in source_files:
+                assignments[sf] = report_id
+            state["receipt_report_assignments"] = assignments
+        self._update_state_json(_assign)
 
     # ------------------------------------------------------------------
     # Transaction scraping (Playwright / Oracle)

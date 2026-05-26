@@ -601,6 +601,7 @@ def analyze_receipts_with_llm(
     on_status: Callable[[str], None] | None = None,
     http_verify_preferred: str | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    on_each: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     if not receipt_paths:
         print("[warn] No receipt files available for LLM inspection.")
@@ -729,6 +730,8 @@ def analyze_receipts_with_llm(
         parsed["source_file"] = str(path_obj)
         analyses.append(parsed)
         print(f"[ok] LLM reviewed: {path_obj.name}")
+        if on_each:
+            on_each(parsed)
         if on_status:
             vendor = str(parsed.get("vendor", "")).strip() or "(unknown vendor)"
             on_status(f"LLM: finished {path_obj.name} — vendor {vendor}")
