@@ -3109,9 +3109,10 @@ _VIEWER_JS = """
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
         if (!nw || !nh || !cw || !ch) {
-            if (retries < 20) requestAnimationFrame(function() { fit(retries + 1); });
+            if (retries < 60) requestAnimationFrame(function() { fit(retries + 1); });
             return;
         }
+        img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
         const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
         scale = Math.min((cw-32)/ew, (ch-32)/eh);
         tx = (cw - nw*scale)/2;
@@ -3171,9 +3172,10 @@ _CARD_PREVIEW_JS = """
         const nw = img.naturalWidth, nh = img.naturalHeight;
         const cw = ctr.clientWidth, ch = ctr.clientHeight;
         if (!nw || !nh || !cw || !ch) {
-            if (retries < 20) requestAnimationFrame(function() { fit(retries + 1); });
+            if (retries < 60) requestAnimationFrame(function() { fit(retries + 1); });
             return;
         }
+        img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
         const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
         scale = Math.min(cw/ew, ch/eh);
         tx = (cw - nw*scale)/2;
@@ -3299,7 +3301,8 @@ def _open_receipt_viewer(doc: ReceiptDoc):
                     f'<div id="{container_id}" style="position:absolute;top:0;left:0;right:0;bottom:0;overflow:hidden;'
                     f'cursor:grab;background:var(--bg-surface);">'
                     f'<img src="{img_src}" style="transform-origin:0 0;position:absolute;'
-                    f'top:0;left:0;user-select:none;pointer-events:none;" />'
+                    f'top:0;left:0;width:100%;height:100%;object-fit:contain;'
+                    f'user-select:none;pointer-events:none;" />'
                     f'</div>'
                 ).style("position:absolute;top:0;left:0;right:0;bottom:0")
 
@@ -3335,7 +3338,8 @@ def _open_receipt_viewer(doc: ReceiptDoc):
                     f'<div id="{container_id}" style="position:absolute;top:0;left:0;right:0;bottom:0;overflow:hidden;'
                     f'cursor:grab;background:var(--bg-surface);">'
                     f'<img src="{img_src}" style="transform-origin:0 0;position:absolute;'
-                    f'top:0;left:0;user-select:none;pointer-events:none;" />'
+                    f'top:0;left:0;width:100%;height:100%;object-fit:contain;'
+                    f'user-select:none;pointer-events:none;" />'
                     f'</div>'
                 ).style("position:absolute;top:0;left:0;right:0;bottom:0")
 
@@ -4607,7 +4611,8 @@ def page_matching(request: Request):
                                     f'<div id="{preview_cid}" style="position:absolute;top:0;left:0;right:0;bottom:0;'
                                     f'overflow:hidden;cursor:grab;touch-action:none;background:var(--bg-surface);">'
                                     f'<img src="{_img_url(r.source_file)}" style="transform-origin:0 0;'
-                                    f'position:absolute;top:0;left:0;user-select:none;pointer-events:none;" />'
+                                    f'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;'
+                                    f'user-select:none;pointer-events:none;" />'
                                     f'</div>'
                                     f'<div style="position:absolute;bottom:8px;right:8px;z-index:10;'
                                     f'background:rgba(255,255,255,0.9);border-radius:50%;width:28px;height:28px;'
