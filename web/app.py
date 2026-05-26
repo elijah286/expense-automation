@@ -104,6 +104,13 @@ _running_tasks: dict[str, dict[str, Any]] = {}
 _STALE_TASK_TIMEOUT_S = 90
 
 
+def _is_task_running(task_name: str) -> bool:
+    """Check if a named background task is currently running."""
+    with _task_lock:
+        t = _running_tasks.get(task_name)
+        return bool(t and t.get("running"))
+
+
 def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | None = None):
     """Run fn in a background thread, tracking status."""
     with _task_lock:
@@ -3706,7 +3713,7 @@ def page_transactions(request: Request):
                             "Turn VPN on before scraping."
                         ).classes("text-xs text-slate-400")
 
-        if not all_txns:
+        if not all_txns and not _is_task_running("Scrape Transactions"):
             _empty_state(
                 "receipt_long",
                 "No transactions loaded",
@@ -3721,6 +3728,18 @@ def page_transactions(request: Request):
         search_container = ui.element("div")
         table_container = ui.element("div")
         action_bar_container = ui.element("div")
+
+        # Poll timer for live refresh during transaction scraping
+        def _scrape_poll():
+            nonlocal all_txns, groups
+            if _is_task_running("Scrape Transactions"):
+                fresh = svc.get_transactions()
+                if len(fresh) != len(all_txns):
+                    all_txns = fresh
+                    groups = svc.get_expense_report_groups()
+                    _render_table()
+
+        _scrape_timer = ui.timer(2.0, _scrape_poll)
 
         def _refresh_all():
             nonlocal all_txns, groups

@@ -1842,6 +1842,9 @@ class TransactionScraper:
             for raw in scraped:
                 self._ingest_scraped_credit_row(raw, page_idx)
 
+            # Persist after each page so the UI can show incremental progress
+            self._persist_scraped_lines()
+
             self.set_status("Saving selected transactions for current page...")
             if not self.click_text_in_any_frame("Save"):
                 raise RuntimeError("Could not click Save while processing transactions.")
