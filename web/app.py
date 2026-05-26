@@ -1538,7 +1538,109 @@ def report_header_bar(active_page: str, report_id: str = ""):
         ui.button("+ New", on_click=_new_report).props(
             "flat dense no-caps size=sm"
         ).style("font-weight:600;color:#3b82f6")
-        ui.button("Manage", on_click=lambda: ui.navigate.to("/transactions")).props(
+
+        def _manage_reports():
+            with ui.dialog() as dlg, ui.card().style(
+                "min-width:460px;max-width:560px;border-radius:16px;padding:28px"
+            ):
+                ui.label("Manage Reports").classes("text-lg font-bold text-slate-800 mb-4")
+                current_groups = svc.get_expense_report_groups()
+                if not current_groups:
+                    ui.label("No reports yet. Use \"+ New\" to create one.").classes(
+                        "text-sm text-slate-500"
+                    )
+                else:
+                    for grp in sorted(current_groups, key=lambda g: g.name):
+                        n = len(grp.line_ids)
+                        with ui.row().classes("items-center w-full gap-2").style(
+                            "padding:8px 4px;border-bottom:1px solid #e2e8f0"
+                        ):
+                            ui.label(grp.name).classes("text-sm font-medium").style("flex:1")
+                            ui.label(f"{n} item{'s' if n != 1 else ''}").classes(
+                                "text-xs text-slate-400"
+                            )
+
+                            def _make_rename(g=grp):
+                                def _rename():
+                                    dlg.close()
+                                    with ui.dialog() as rdlg, ui.card().style(
+                                        "min-width:380px;border-radius:16px;padding:28px"
+                                    ):
+                                        ui.label("Rename Report").classes(
+                                            "text-lg font-bold text-slate-800 mb-4"
+                                        )
+                                        name_input = ui.input(
+                                            label="Report name", value=g.name
+                                        ).props("outlined dense").classes("w-full mb-4")
+                                        with ui.row().classes("justify-end gap-3"):
+                                            ui.button("Cancel", on_click=rdlg.close).props(
+                                                "flat no-caps"
+                                            )
+
+                                            def _do_rename():
+                                                name = (name_input.value or "").strip()
+                                                if not name:
+                                                    ui.notify("Enter a name", type="warning")
+                                                    return
+                                                svc.rename_expense_report_group(g.id, name)
+                                                rdlg.close()
+                                                ui.notify(f"Renamed to: {name}", type="positive")
+                                                ui.navigate.to(f"/{active_page}?report={report_id}" if report_id else f"/{active_page}")
+
+                                            ui.button("Rename", on_click=_do_rename).props(
+                                                "color=primary no-caps unelevated"
+                                            )
+                                    rdlg.open()
+                                return _rename
+
+                            def _make_delete(g=grp):
+                                def _delete():
+                                    dlg.close()
+                                    with ui.dialog() as ddlg, ui.card().style(
+                                        "min-width:380px;border-radius:16px;padding:28px"
+                                    ):
+                                        ui.label("Delete Report").classes(
+                                            "text-lg font-bold text-slate-800 mb-2"
+                                        )
+                                        cnt = len(g.line_ids)
+                                        ui.label(
+                                            f'Delete "{g.name}"? '
+                                            f"{'Its ' if cnt else 'No '}"
+                                            f"{cnt} transaction{'s' if cnt != 1 else ''} "
+                                            f"will become unassigned."
+                                        ).classes("text-sm text-slate-600 mb-6")
+                                        with ui.row().classes("justify-end gap-3"):
+                                            ui.button("Cancel", on_click=ddlg.close).props(
+                                                "flat no-caps"
+                                            )
+
+                                            def _do_delete():
+                                                svc.delete_expense_report_group(g.id)
+                                                ddlg.close()
+                                                ui.notify(f"Deleted: {g.name}", type="positive")
+                                                nav = f"/{active_page}"
+                                                if report_id and report_id != g.id:
+                                                    nav += f"?report={report_id}"
+                                                ui.navigate.to(nav)
+
+                                            ui.button("Delete", icon="delete", on_click=_do_delete).props(
+                                                "color=negative no-caps unelevated"
+                                            )
+                                    ddlg.open()
+                                return _delete
+
+                            ui.button(icon="edit", on_click=_make_rename()).props(
+                                "flat dense round size=sm"
+                            ).tooltip("Rename")
+                            ui.button(icon="delete_outline", on_click=_make_delete()).props(
+                                "flat dense round size=sm color=negative"
+                            ).tooltip("Delete")
+
+                with ui.row().classes("justify-end mt-4"):
+                    ui.button("Close", on_click=dlg.close).props("flat no-caps")
+            dlg.open()
+
+        ui.button("Manage", on_click=_manage_reports).props(
             "flat dense no-caps size=sm"
         ).style("font-weight:500;color:var(--text-muted)")
 
