@@ -2921,7 +2921,7 @@ def page_documents(request: Request):
                     if doc.is_image and Path(doc.source_file).is_file():
                         rotation = doc.rotation * 90
                         with ui.element("div").style(
-                            "width:100%;max-height:260px;overflow:hidden;"
+                            "width:100%;height:260px;overflow:hidden;"
                             "border-radius:8px;border:1px solid var(--border-default);cursor:pointer;"
                         ).on("click", lambda _, d=doc: _open_receipt_viewer(d)):
                             img_style = "width:100%;height:100%;object-fit:contain;"
@@ -2930,7 +2930,7 @@ def page_documents(request: Request):
                             ui.image(_img_url(doc.source_file)).style(img_style)
                     elif Path(doc.source_file).is_file() and Path(doc.source_file).suffix.lower() == ".pdf":
                         with ui.element("div").style(
-                            "width:100%;max-height:260px;overflow:hidden;"
+                            "width:100%;height:260px;overflow:hidden;"
                             "border-radius:8px;border:1px solid var(--border-default);cursor:pointer;"
                         ).on("click", lambda _, d=doc: _open_receipt_viewer(d)):
                             ui.image(_pdf_thumb_url(doc.source_file)).style(
@@ -3320,9 +3320,22 @@ _VIEWER_JS = """
             }
             return;
         }
-        img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
         const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
-        scale = Math.min((cw-32)/ew, (ch-32)/eh);
+        const s = Math.min((cw-32)/ew, (ch-32)/eh);
+        /* If the computed scale would make the image too small, the container
+           is still animating/settling — retry instead of locking in a bad scale. */
+        if (nw * s < 60 || nh * s < 60) {
+            if (retries < 300) {
+                setTimeout(function() { fit(retries + 1); }, 20);
+            } else {
+                img.style.width = "100%"; img.style.height = "100%";
+                img.style.objectFit = "contain";
+                img.style.transform = rot ? "rotate("+rot+"deg)" : "";
+            }
+            return;
+        }
+        img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
+        scale = s;
         tx = (cw - nw*scale)/2;
         ty = (ch - nh*scale)/2;
         apply();
@@ -3406,9 +3419,20 @@ _CARD_PREVIEW_JS = """
             }
             return;
         }
-        img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
         const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
-        scale = Math.min(cw/ew, ch/eh);
+        const s = Math.min(cw/ew, ch/eh);
+        /* If the computed scale would make the image too small, the container
+           is still animating/settling — retry instead of locking in a bad scale. */
+        if (nw * s < 60 || nh * s < 60) {
+            if (retries < 300) {
+                setTimeout(function() { fit(retries + 1); }, 20);
+            } else {
+                restoreCss();
+            }
+            return;
+        }
+        img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
+        scale = s;
         tx = (cw - nw*scale)/2;
         ty = (ch - nh*scale)/2;
         apply();
