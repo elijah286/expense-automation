@@ -4935,28 +4935,27 @@ def page_matching(request: Request):
 
                         if r.is_image and Path(r.source_file).is_file():
                             rotation = r.rotation * 90
-                            preview_cid = f"pv{id(r)}"
+                            rot_style = (
+                                f"transform:rotate({rotation}deg);transform-origin:center;"
+                                if rotation else ""
+                            )
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
                                 "border-radius:8px;border:1px solid var(--border-default);overflow:hidden;"
-                                "background:var(--bg-surface);"
+                                "background:var(--bg-surface);cursor:pointer;"
+                                "display:flex;align-items:center;justify-content:center;"
                             ).on("click", lambda _, d=r: _open_receipt_viewer(d)):
                                 ui.html(
-                                    f'<div id="{preview_cid}" style="position:absolute;top:0;left:0;right:0;bottom:0;'
-                                    f'overflow:hidden;cursor:grab;touch-action:none;background:var(--bg-surface);">'
-                                    f'<img src="{_img_url(r.source_file)}" style="transform-origin:0 0;'
-                                    f'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;'
-                                    f'user-select:none;pointer-events:none;" />'
-                                    f'</div>'
+                                    f'<img src="{_img_url(r.source_file)}" '
+                                    f'style="max-width:100%;max-height:380px;width:auto;height:auto;'
+                                    f'object-fit:contain;display:block;{rot_style}" />'
                                     f'<div style="position:absolute;bottom:8px;right:8px;z-index:10;'
                                     f'background:rgba(255,255,255,0.9);border-radius:50%;width:28px;height:28px;'
                                     f'display:flex;align-items:center;justify-content:center;'
                                     f'box-shadow:0 1px 3px rgba(0,0,0,0.15);pointer-events:none;">'
                                     f'<span class="material-icons" style="font-size:16px;color:#475569;">open_in_full</span>'
                                     f'</div>'
-                                ).style("position:absolute;top:0;left:0;right:0;bottom:0")
-                            _pjs = _CARD_PREVIEW_JS.replace("__CID__", preview_cid).replace("__ROT__", str(rotation))
-                            ui.timer(0.5, lambda _js=_pjs: ui.run_javascript(_js), once=True)
+                                )
                         elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
