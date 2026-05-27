@@ -1395,6 +1395,7 @@ def shared_nav(active: str, report_id: str = ""):
             ("/", "space_dashboard", "Dashboard"),
             ("/documents", "description", "Documents"),
             ("/transactions", "receipt_long", "Transactions"),
+            ("/classification", "category", "Classification"),
             ("/matching", "compare_arrows", "Matching"),
             ("/submit", "send", "Submit"),
         ]
@@ -1419,7 +1420,6 @@ def shared_nav(active: str, report_id: str = ""):
             'SETTINGS</div>'
         )
         settings_items = [
-            ("/classification", "category", "Classification"),
             ("/settings", "settings", "Settings"),
         ]
         for href, icon, label in settings_items:
@@ -5328,34 +5328,16 @@ def _open_manual_pick_dialog(line_id: str, receipts: list[ReceiptDoc], on_done):
 
 @ui.page("/classification")
 def page_classification():
-    page_frame("Vendor Classification")
+    page_frame("Classification")
 
     with ui.element("div").classes("page-container"):
-        ui.html('<div class="section-title">Vendor Classification</div>')
-        ui.html(
-            '<div class="section-subtitle">'
-            "Define the Expense Type to use whenever a merchant name matches exactly. "
-            "New merchants are added automatically and classified by the LLM."
-            "</div>"
-        )
-
         vendors = svc.get_vendor_classifications()
-        if not vendors:
-            _empty_state("category", "No vendors", "Load transactions first to populate vendor list.")
-            return
 
         sort_state = {"col": "merchant_key", "asc": True}
         search_state = {"term": ""}
+        scan_state = {"running": False}
 
-        def _on_search(e):
-            search_state["term"] = e.value or ""
-            _build_table()
-
-        ui.input(
-            placeholder="Search merchants or expense types...",
-            on_change=_on_search,
-        ).props("dense outlined clearable").classes("classify-search").style("width:100%;max-width:480px")
-
+        header_area = ui.element("div")
         table_container = ui.element("div")
 
         def _filtered_sorted() -> list[dict[str, str]]:
@@ -5366,14 +5348,83 @@ def page_classification():
                     v for v in fresh
                     if term in v["merchant_key"].lower()
                     or term in v["expense_type"].lower()
+                    or (not v["expense_type"] and "not scanned" in term)
                 ]
             col = sort_state["col"]
             fresh.sort(key=lambda v: v[col].lower(), reverse=not sort_state["asc"])
             return fresh
 
+        def _build_header():
+            header_area.clear()
+            with header_area:
+                with ui.element("div").classes("page-hero-row"):
+                    with ui.element("div").classes("page-hero-title"):
+                        with ui.column().classes("gap-0"):
+                            ui.html('<div class="section-title">Classification</div>')
+                            ui.html(
+                                '<div class="section-subtitle" style="margin-bottom:0">'
+                                "Vendor → expense type mappings. "
+                                "Scan unclassified vendors with the LLM.</div>"
+                            )
+                    with ui.element("div").classes("page-hero-actions"):
+                        all_v = svc.get_vendor_classifications()
+                        unscanned_n = sum(1 for v in all_v if not v["expense_type"].strip())
+                        btn_label = (
+                            f"Scan Unclassified ({unscanned_n})" if unscanned_n
+                            else "Scan Unclassified"
+                        )
+
+                        def _start_scan():
+                            cnt = sum(
+                                1 for v in svc.get_vendor_classifications()
+                                if not v["expense_type"].strip()
+                            )
+                            if not cnt:
+                                ui.notify("All vendors already classified", type="info")
+                                return
+                            scan_state["running"] = True
+                            ui.notify(f"Classifying {cnt} vendor(s) with LLM…", type="info")
+                            _scan_poll_timer.activate()
+
+                            def _on_done(_result):
+                                scan_state["running"] = False
+                                _scan_poll_timer.deactivate()
+                                _build_header()
+                                _build_table()
+
+                            _run_background(
+                                "Vendor Classification",
+                                lambda on_status: svc.classify_vendors_with_llm(on_status=on_status),
+                                "Finished classifying vendors",
+                                on_done=_on_done,
+                            )
+
+                        ui.button(
+                            btn_label,
+                            icon="auto_fix_high",
+                            on_click=_start_scan,
+                        ).props("no-caps unelevated").classes("action-btn").style(
+                            "background:#7c3aed !important;color:white !important"
+                        )
+
+                ui.input(
+                    placeholder="Search merchants or expense types...",
+                    on_change=lambda e: (_on_search(e)),
+                ).props("dense outlined clearable").classes("classify-search").style(
+                    "width:100%;max-width:480px;margin-top:12px"
+                )
+
+        def _on_search(e):
+            search_state["term"] = e.value or ""
+            _build_table()
+
         def _build_table():
             table_container.clear()
             rows = _filtered_sorted()
+            if not rows:
+                with table_container:
+                    _empty_state("category", "No vendors", "Load transactions first to populate vendor list.")
+                return
             col = sort_state["col"]
             asc = sort_state["asc"]
             m_arrow = " \u25b2" if (col == "merchant_key" and asc) else (" \u25bc" if col == "merchant_key" else "")
@@ -5393,16 +5444,30 @@ def page_classification():
                         mk = v["merchant_key"]
                         current_type = v["expense_type"]
                         opts = get_expense_type_options()
+                        is_unscanned = not current_type.strip()
                         with ui.element("div").classes("classify-row"):
                             ui.label(mk).classes("classify-merchant")
-                            ui.select(
-                                options=opts,
-                                value=current_type if current_type in opts else None,
-                                on_change=lambda e, key=mk: (
-                                    svc.set_vendor_classification(key, e.value),
-                                    ui.notify(f"Set {key} \u2192 {e.value}", type="positive"),
-                                ),
-                            ).props("dense outlined hide-bottom-space").style("width:100%")
+                            with ui.element("div").style("display:flex;align-items:center;gap:8px"):
+                                if is_unscanned:
+                                    ui.html(
+                                        '<span style="display:inline-flex;align-items:center;gap:4px;'
+                                        'padding:2px 8px;border-radius:12px;background:#fef3c7;'
+                                        'color:#92400e;font-size:0.7rem;font-weight:600;white-space:nowrap">'
+                                        '<span class="material-icons" style="font-size:0.85rem">hourglass_empty</span>'
+                                        'Not Scanned</span>'
+                                    )
+                                ui.select(
+                                    options=opts,
+                                    value=current_type if current_type in opts else None,
+                                    on_change=lambda e, key=mk: (
+                                        svc.set_vendor_classification(key, e.value),
+                                        ui.notify(f"Set {key} \u2192 {e.value}", type="positive"),
+                                        _build_header(),
+                                        _build_table(),
+                                    ),
+                                ).props("dense outlined hide-bottom-space").style(
+                                    "flex:1;min-width:0"
+                                )
 
         def _toggle_sort(col: str):
             if sort_state["col"] == col:
@@ -5412,7 +5477,29 @@ def page_classification():
                 sort_state["asc"] = True
             _build_table()
 
-        _build_table()
+        _last_classified: set[str] = set()
+
+        def _scan_poll():
+            if not scan_state.get("running"):
+                return
+            current_classified = {
+                v["merchant_key"] for v in svc.get_vendor_classifications()
+                if v["expense_type"].strip()
+            }
+            newly_done = current_classified - _last_classified
+            if newly_done:
+                _last_classified.clear()
+                _last_classified.update(current_classified)
+                _build_table()
+
+        _scan_poll_timer = ui.timer(1.5, _scan_poll, active=False)
+
+        if not vendors:
+            with table_container:
+                _empty_state("category", "No vendors", "Load transactions first to populate vendor list.")
+        else:
+            _build_header()
+            _build_table()
 
 
 # ---------------------------------------------------------------------------

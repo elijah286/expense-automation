@@ -506,6 +506,87 @@ class ExpenseService:
             rows.append({"merchant_key": mk, "expense_type": seen[mk]})
         return rows
 
+    def classify_vendors_with_llm(self, on_status=None) -> dict[str, Any]:
+        """LLM-classify all vendors that have no expense type assigned yet."""
+        from browser_automation import build_openai_client
+        from llm_query_cache import expense_type_prompt
+        from portal_expense_types import get_expense_type_options
+        from web.activity_log import activity_log
+
+        log = on_status or (lambda s: None)
+        api_key = self._get_openai_key() or os.environ.get("OPENAI_API_KEY", "")
+        raw = self._load_settings_raw()
+        model = raw.get("openai_model") or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+        if not api_key:
+            return {"error": "OPENAI_API_KEY not set"}
+
+        vendors = self.get_vendor_classifications()
+        unscanned = [v for v in vendors if not v["expense_type"].strip()]
+        if not unscanned:
+            return {"classified": 0, "message": "All vendors already classified"}
+
+        opts = get_expense_type_options()
+        client = build_openai_client(api_key)
+        n = len(unscanned)
+        activity_log.emit("step", f"Classifying {n} vendor(s) with {model}")
+        classified = 0
+
+        try:
+            for idx, v in enumerate(unscanned, start=1):
+                if activity_log.is_cancel_requested():
+                    break
+                mk = v["merchant_key"]
+                log(f"Classifying vendor {idx}/{n}: {mk}…")
+                prompt = expense_type_prompt(mk, opts)
+                exc_text = ""
+                try:
+                    response = client.responses.create(
+                        model=model,
+                        input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                    )
+                except Exception as exc:
+                    exc_text = f"{exc!r}"
+                    if any(kw in exc_text.upper() for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS")):
+                        raise RuntimeError(
+                            f"OpenAI API unreachable — connection or TLS error. "
+                            f"Underlying error: {exc_text}"
+                        ) from exc
+                    raise
+
+                raw_text = (response.output_text or "").strip()
+                # Clean markdown fences if present
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.strip("`").replace("json\n", "", 1).strip()
+                try:
+                    import json as _json
+                    parsed = _json.loads(raw_text)
+                    candidate = str(parsed.get("expense_type", "")).strip()
+                except Exception:
+                    candidate = raw_text
+
+                # Exact match first, then fuzzy
+                exact = {o.lower(): o for o in opts}
+                chosen = exact.get(candidate.lower(), "")
+                if not chosen:
+                    for o in opts:
+                        if o.lower() in candidate.lower() or candidate.lower() in o.lower():
+                            chosen = o
+                            break
+                if chosen:
+                    self.set_vendor_classification(mk, chosen)
+                    log(f"  → {mk}: {chosen}")
+                    classified += 1
+                else:
+                    log(f"  → {mk}: no match found (skipped)")
+
+            activity_log.emit("success", f"Classified {classified} vendor(s)")
+            return {"classified": classified}
+        except Exception as exc:
+            tb = traceback.format_exc()
+            print(f"[ERROR] Vendor classification failed:\n{tb}", flush=True)
+            activity_log.emit("error", f"Vendor classification failed: {exc}")
+            return {"error": str(exc)}
+
     # ------------------------------------------------------------------
     # Expense report groups
     # ------------------------------------------------------------------
