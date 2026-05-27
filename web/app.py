@@ -2334,17 +2334,42 @@ def page_documents(request: Request):
         results_container = ui.element("div")
 
         # Page-level timer for live refresh during receipt analysis.
-        # Only triggers a full re-render when new receipts have been analyzed
-        # since the last poll — avoids flashing all rows every 2 seconds.
+        # Only triggers surgical row updates when new receipts have been analyzed
+        # since the last poll — avoids clearing/rebuilding already-analyzed rows
+        # (which forces thumbnail images to reload and show Quasar's loading spinner).
         _last_analyzed_set: set[str] = set()
+        # Maps source_file → wrapper ui.element so _analysis_poll can update just
+        # the rows that changed, leaving all other rows untouched.
+        _row_wrappers: dict = {}
 
         def _analysis_poll():
             if not state.get("_analysis_running"):
                 return
             current = {r.source_file for r in svc.get_receipts() if r.analyzed}
-            if current != _last_analyzed_set:
-                _last_analyzed_set.clear()
-                _last_analyzed_set.update(current)
+            newly_analyzed = current - _last_analyzed_set
+            if not newly_analyzed:
+                return
+            _last_analyzed_set.clear()
+            _last_analyzed_set.update(current)
+            # Surgical update: only re-render the rows that just got analyzed.
+            if _row_wrappers:
+                receipts_by_path = {r.source_file: r for r in svc.get_receipts()}
+                for sf in newly_analyzed:
+                    r = receipts_by_path.get(sf)
+                    wrapper = _row_wrappers.get(sf)
+                    if r is not None and wrapper is not None:
+                        wrapper.clear()
+                        with wrapper:
+                            _receipt_row(
+                                r,
+                                selected=(sf in state["selected"]),
+                                focused=(state["selected_doc"] == sf),
+                                on_row_click=lambda doc=r: _select_doc(doc.source_file),
+                                on_remove=_make_remove_single(sf),
+                                on_rescan=_make_rescan_single(sf),
+                                on_checkbox=_make_toggle_cb(sf),
+                            )
+            else:
                 _render_documents()
 
         _analysis_refresh_timer = ui.timer(2.0, _analysis_poll, active=False)
@@ -2461,6 +2486,41 @@ def page_documents(request: Request):
         def _on_search(e):
             state["search"] = e.args or ""
             _render_documents()
+
+        # Row-level action factories — defined at page scope so both
+        # _render_documents and the surgical _analysis_poll can use them.
+        def _make_remove_single(path):
+            def _do():
+                svc.remove_receipts([path])
+                state["selected"].discard(path)
+                if state["selected_doc"] == path:
+                    state["selected_doc"] = None
+                ui.notify("Removed receipt", type="positive")
+                _render_documents()
+            return _do
+
+        def _make_rescan_single(path):
+            def _do():
+                ui.notify("Rescanning receipt...", type="info")
+                _run_background(
+                    "Receipt Rescan",
+                    lambda on_status: svc.rescan_receipts([path], on_status=on_status),
+                    "Finished rescanning receipt",
+                    on_done=lambda _: _render_documents(),
+                )
+            return _do
+
+        def _make_toggle_cb(path):
+            def _toggle(e):
+                if e.value:
+                    state["selected"].add(path)
+                    state["selected_doc"] = path
+                else:
+                    state["selected"].discard(path)
+                    if state["selected_doc"] == path:
+                        state["selected_doc"] = next(iter(state["selected"]), None)
+                _render_documents()
+            return _toggle
 
         def _render_documents():
             receipts = svc.get_receipts()
@@ -2754,51 +2814,21 @@ def page_documents(request: Request):
                                 "text-sm text-slate-400"
                             )
                     else:
-                        def _make_remove_single(path):
-                            def _do():
-                                svc.remove_receipts([path])
-                                state["selected"].discard(path)
-                                if state["selected_doc"] == path:
-                                    state["selected_doc"] = None
-                                ui.notify("Removed receipt", type="positive")
-                                _render_documents()
-                            return _do
-
-                        def _make_rescan_single(path):
-                            def _do():
-                                ui.notify("Rescanning receipt...", type="info")
-                                _run_background(
-                                    "Receipt Rescan",
-                                    lambda on_status: svc.rescan_receipts([path], on_status=on_status),
-                                    "Finished rescanning receipt",
-                                    on_done=lambda _: _render_documents(),
-                                )
-                            return _do
-
-                        def _make_toggle_cb(path):
-                            def _toggle(e):
-                                if e.value:
-                                    state["selected"].add(path)
-                                    state["selected_doc"] = path
-                                else:
-                                    state["selected"].discard(path)
-                                    if state["selected_doc"] == path:
-                                        state["selected_doc"] = next(iter(state["selected"]), None)
-                                _render_documents()
-                            return _toggle
-
+                        _row_wrappers.clear()
                         for r in receipts:
                             is_sel = r.source_file in state["selected"]
                             is_focused = state["selected_doc"] == r.source_file
-                            _receipt_row(
-                                r,
-                                selected=is_sel,
-                                focused=is_focused,
-                                on_row_click=lambda doc=r: _select_doc(doc.source_file),
-                                on_remove=_make_remove_single(r.source_file),
-                                on_rescan=_make_rescan_single(r.source_file),
-                                on_checkbox=_make_toggle_cb(r.source_file),
-                            )
+                            with ui.element("div") as _wrapper:
+                                _row_wrappers[r.source_file] = _wrapper
+                                _receipt_row(
+                                    r,
+                                    selected=is_sel,
+                                    focused=is_focused,
+                                    on_row_click=lambda doc=r: _select_doc(doc.source_file),
+                                    on_remove=_make_remove_single(r.source_file),
+                                    on_rescan=_make_rescan_single(r.source_file),
+                                    on_checkbox=_make_toggle_cb(r.source_file),
+                                )
 
             _sync_doc_detail_drawer()
 
