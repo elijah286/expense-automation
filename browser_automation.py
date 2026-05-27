@@ -671,23 +671,23 @@ def analyze_receipts_with_llm(
             "Use 0 if already upright."
         )
         uploaded_file_id = None
-        if mime_type == "application/pdf":
-            # Upload PDFs via Files API for reliable processing.
-            uploaded = client.files.create(
-                file=(path_obj.name, path_obj.read_bytes(), mime_type),
-                purpose="user_data",
-            )
-            uploaded_file_id = uploaded.id
-            file_content = {
-                "type": "input_file",
-                "file_id": uploaded.id,
-            }
-        else:
-            file_content = {
-                "type": "input_image",
-                "image_url": f"data:{mime_type};base64,{encoded}",
-            }
         try:
+            if mime_type == "application/pdf":
+                # Upload PDFs via Files API for reliable processing.
+                uploaded = client.files.create(
+                    file=(path_obj.name, path_obj.read_bytes(), mime_type),
+                    purpose="user_data",
+                )
+                uploaded_file_id = uploaded.id
+                file_content = {
+                    "type": "input_file",
+                    "file_id": uploaded.id,
+                }
+            else:
+                file_content = {
+                    "type": "input_image",
+                    "image_url": f"data:{mime_type};base64,{encoded}",
+                }
             response = client.responses.create(
                 model=model,
                 input=[
