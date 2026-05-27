@@ -2333,10 +2333,18 @@ def page_documents(request: Request):
         search_container = ui.element("div")
         results_container = ui.element("div")
 
-        # Page-level timer for live refresh during receipt analysis
-        # (must be outside header_container so it survives re-renders)
+        # Page-level timer for live refresh during receipt analysis.
+        # Only triggers a full re-render when new receipts have been analyzed
+        # since the last poll — avoids flashing all rows every 2 seconds.
+        _last_analyzed_set: set[str] = set()
+
         def _analysis_poll():
-            if state.get("_analysis_running"):
+            if not state.get("_analysis_running"):
+                return
+            current = {r.source_file for r in svc.get_receipts() if r.analyzed}
+            if current != _last_analyzed_set:
+                _last_analyzed_set.clear()
+                _last_analyzed_set.update(current)
                 _render_documents()
 
         _analysis_refresh_timer = ui.timer(2.0, _analysis_poll, active=False)
