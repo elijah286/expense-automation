@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import threading
+import traceback
 import uuid as _uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1186,6 +1187,8 @@ class ExpenseService:
             activity_log.emit("success", f"Analyzed {len(new_analyses)} receipts")
             return {"analyzed": len(new_analyses)}
         except Exception as exc:
+            tb = traceback.format_exc()
+            print(f"[ERROR] Receipt analysis failed:\n{tb}", flush=True)
             activity_log.emit("error", f"Receipt analysis failed: {exc}")
             return {"error": str(exc)}
 

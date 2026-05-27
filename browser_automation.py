@@ -704,9 +704,10 @@ def analyze_receipts_with_llm(
             exc_text = f"{exc!r}"
             if any(kw in exc_text.upper() for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS")):
                 raise RuntimeError(
-                    "OpenAI API unreachable — connection or TLS error. "
-                    "Some corporate VPNs block OpenAI API calls. "
-                    "Disconnect from VPN and try again, or verify your API key in Settings."
+                    f"OpenAI API unreachable — connection or TLS error. "
+                    f"Some corporate VPNs block OpenAI API calls. "
+                    f"Disconnect from VPN and try again, or verify your API key in Settings. "
+                    f"Underlying error: {exc_text}"
                 ) from exc
             raise
         finally:
