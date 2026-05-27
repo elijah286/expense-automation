@@ -3540,6 +3540,84 @@ _CARD_PREVIEW_JS = """
 })();
 """
 
+# Card-preview pan/zoom JS.  Crucially this never reads container dimensions
+# or strips CSS — the image is already correctly displayed by object-fit:contain.
+# We just bolt event handlers on top and apply translate+scale transforms.
+_CARD_ZOOM_JS = """
+(function() {
+    const ctr = document.getElementById("__CID__");
+    if (!ctr) return;
+    const img = ctr.querySelector("img.pz-img");
+    if (!img) return;
+
+    const rot = __ROT__;
+    let tx = 0, ty = 0, scale = 1;
+    let dragging = false, wasDrag = false, sx = 0, sy = 0, stx = 0, sty = 0;
+
+    function apply() {
+        img.style.transform =
+            "translate("+tx+"px,"+ty+"px) scale("+scale+")"
+            + (rot ? " rotate("+rot+"deg)" : "");
+    }
+
+    function reset() { tx = 0; ty = 0; scale = 1; apply(); }
+
+    /* Take over rotation from static CSS (same visual result, now composable) */
+    img.style.transformOrigin = "center center";
+    if (rot) apply();
+
+    /* Wheel: pinch (ctrlKey on macOS trackpad) = zoom; scroll = pan */
+    ctr.addEventListener("wheel", function(e) {
+        e.preventDefault();
+        const r = ctr.getBoundingClientRect();
+        const mx = e.clientX - r.left - r.width / 2;
+        const my = e.clientY - r.top  - r.height / 2;
+        if (e.ctrlKey) {
+            const f = Math.exp(-e.deltaY * 0.01);
+            const ns = Math.max(0.25, Math.min(20, scale * f));
+            const sf = ns / scale;
+            tx = mx - sf * (mx - tx);
+            ty = my - sf * (my - ty);
+            scale = ns;
+        } else {
+            tx -= e.deltaX * 0.8;
+            ty -= e.deltaY * 0.8;
+        }
+        apply();
+    }, {passive: false});
+
+    /* Mouse drag pan */
+    ctr.addEventListener("mousedown", function(e) {
+        if (e.button !== 0) return;
+        dragging = true; wasDrag = false;
+        sx = e.clientX; sy = e.clientY; stx = tx; sty = ty;
+        ctr.style.cursor = "grabbing";
+        e.preventDefault();
+    });
+    window.addEventListener("mousemove", function(e) {
+        if (!dragging) return;
+        const dx = e.clientX - sx, dy = e.clientY - sy;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDrag = true;
+        tx = stx + dx; ty = sty + dy; apply();
+    });
+    window.addEventListener("mouseup", function() {
+        if (!dragging) return;
+        dragging = false; ctr.style.cursor = "grab";
+    });
+
+    /* Suppress click-to-open-viewer when the user just panned */
+    ctr.addEventListener("click", function(e) {
+        if (wasDrag) { e.stopPropagation(); wasDrag = false; }
+    }, true);
+
+    /* Double-click resets to fit */
+    ctr.addEventListener("dblclick", function(e) { e.stopPropagation(); reset(); });
+
+    ctr.style.cursor = "grab";
+    ctr._zreset = reset;
+})();
+"""
+
 
 def _open_receipt_viewer(doc: ReceiptDoc):
     rotation = doc.rotation * 90 if doc.is_image else 0
@@ -4935,20 +5013,23 @@ def page_matching(request: Request):
 
                         if r.is_image and Path(r.source_file).is_file():
                             rotation = r.rotation * 90
-                            rot_style = (
+                            preview_cid = f"pv{id(r)}"
+                            rot_css = (
                                 f"transform:rotate({rotation}deg);transform-origin:center;"
                                 if rotation else ""
                             )
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
                                 "border-radius:8px;border:1px solid var(--border-default);overflow:hidden;"
-                                "background:var(--bg-surface);cursor:pointer;"
+                                "background:var(--bg-surface);"
                                 "display:flex;align-items:center;justify-content:center;"
                             ).on("click", lambda _, d=r: _open_receipt_viewer(d)):
                                 ui.html(
-                                    f'<img src="{_img_url(r.source_file)}" '
-                                    f'style="max-width:100%;max-height:380px;width:auto;height:auto;'
-                                    f'object-fit:contain;display:block;{rot_style}" />'
+                                    f'<div id="{preview_cid}" style="position:absolute;top:0;left:0;right:0;bottom:0;'
+                                    f'overflow:hidden;">'
+                                    f'<img class="pz-img" src="{_img_url(r.source_file)}" '
+                                    f'style="width:100%;height:100%;object-fit:contain;display:block;{rot_css}" />'
+                                    f'</div>'
                                     f'<div style="position:absolute;bottom:8px;right:8px;z-index:10;'
                                     f'background:rgba(255,255,255,0.9);border-radius:50%;width:28px;height:28px;'
                                     f'display:flex;align-items:center;justify-content:center;'
@@ -4956,6 +5037,8 @@ def page_matching(request: Request):
                                     f'<span class="material-icons" style="font-size:16px;color:#475569;">open_in_full</span>'
                                     f'</div>'
                                 )
+                            _pjs = _CARD_ZOOM_JS.replace("__CID__", preview_cid).replace("__ROT__", str(rotation))
+                            ui.timer(0.15, lambda _js=_pjs: ui.run_javascript(_js), once=True)
                         elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
