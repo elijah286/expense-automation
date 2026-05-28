@@ -830,6 +830,11 @@ class ExpenseService:
         save_approved_matches(self.app_dir, approved)
         return {"approved": count, "total": len(lid_set)}
 
+    @staticmethod
+    def _is_receipt_missing(match_entry: dict) -> bool:
+        """Return True if a match entry was explicitly marked 'receipt missing' by the user."""
+        return "receipt missing" in str(match_entry.get("reason", "")).lower()
+
     def run_matching_pipeline(self, on_status=None) -> dict[str, Any]:
         """Run deterministic + LLM matching. Returns summary dict."""
         from matching.pipeline import match_transactions_to_receipts
@@ -843,7 +848,12 @@ class ExpenseService:
             return {"error": "No receipts analyzed"}
 
         existing_matches = load_receipt_line_matches(self.app_dir)
-        deterministic = match_transactions_to_receipts(lines, analyses)
+        # Skip transactions explicitly marked as receipt missing
+        scannable = [
+            l for l in lines
+            if not self._is_receipt_missing(existing_matches.get(str(l.get("line_id", "")).strip(), {}))
+        ]
+        deterministic = match_transactions_to_receipts(scannable, analyses)
 
         updated = 0
         for row in deterministic:
@@ -891,7 +901,12 @@ class ExpenseService:
             "match", "Phase 1 \u2014 Deterministic matching (amount \u00b7 date \u00b7 merchant)"
         )
         existing_matches = load_receipt_line_matches(self.app_dir)
-        deterministic = match_transactions_to_receipts(lines, analyses)
+        # Skip transactions explicitly marked as receipt missing
+        scannable = [
+            l for l in lines
+            if not self._is_receipt_missing(existing_matches.get(str(l.get("line_id", "")).strip(), {}))
+        ]
+        deterministic = match_transactions_to_receipts(scannable, analyses)
 
         det_updated = 0
         for row in deterministic:
@@ -947,6 +962,9 @@ class ExpenseService:
             if not lid:
                 continue
             m = matches.get(lid, {})
+            # Skip lines the user has explicitly marked as receipt missing
+            if self._is_receipt_missing(m):
+                continue
             best = str(m.get("best_receipt") or "").strip()
             conf = _float_safe(m.get("confidence"))
             if not best or conf < 0.60:
@@ -1065,6 +1083,19 @@ class ExpenseService:
             return {"error": "None of the specified lines found"}
 
         matches = load_receipt_line_matches(self.app_dir)
+
+        # Remove receipt-missing lines from the scan set — honour the user's flag
+        receipt_missing_ids = {
+            lid for lid in lid_set
+            if self._is_receipt_missing(matches.get(lid, {}))
+        }
+        if receipt_missing_ids:
+            lid_set -= receipt_missing_ids
+            target_lines = [l for l in target_lines if str(l.get("line_id", "")).strip() not in receipt_missing_ids]
+            activity_log.emit("info", f"Skipping {len(receipt_missing_ids)} line(s) marked as receipt missing")
+        if not target_lines:
+            return {"skipped": len(receipt_missing_ids), "reason": "All selected lines are marked receipt missing"}
+
         for lid in lid_set:
             matches.pop(lid, None)
 
