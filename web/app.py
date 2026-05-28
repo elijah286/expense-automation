@@ -4979,6 +4979,17 @@ def page_matching(request: Request):
             _refresh_queue()
             _render_all()
 
+        def _do_bulk_approve():
+            sel = list(state["selected_lids"])
+            approved_count = svc.bulk_approve_matches(sel)
+            skipped = len(sel) - approved_count
+            msg = f"Approved {approved_count} match(es)"
+            if skipped:
+                msg += f" ({skipped} skipped — no matched receipt)"
+            ui.notify(msg, type="positive")
+            _refresh_queue()
+            _render_all()
+
         def _render_detail():
             multi_sel = state.get("selected_lids", set())
             if len(multi_sel) > 1:
@@ -5001,6 +5012,12 @@ def page_matching(request: Request):
                             "text-xs font-semibold text-slate-400 tracking-wider mb-3"
                         )
                         with ui.column().classes("gap-2 w-full"):
+                            ui.button(
+                                "Approve selected",
+                                icon="check_circle",
+                                on_click=_do_bulk_approve,
+                            ).props("no-caps outline size=sm color=positive").classes("action-btn w-full")
+
                             ui.button(
                                 "Rescan selected",
                                 icon="refresh",

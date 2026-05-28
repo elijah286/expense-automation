@@ -835,6 +835,25 @@ class ExpenseService:
         """Return True if a match entry was explicitly marked 'receipt missing' by the user."""
         return "receipt missing" in str(match_entry.get("reason", "")).lower()
 
+    def _is_approved(self, line_id: str) -> bool:
+        """Return True if a transaction has an approved match."""
+        approved = load_approved_matches(self.app_dir)
+        return bool(approved.get(line_id, {}).get("approved"))
+
+    def bulk_approve_matches(self, line_ids: list[str]) -> int:
+        """Approve matches for the given line IDs. Returns count of items approved."""
+        matches = load_receipt_line_matches(self.app_dir)
+        approved = load_approved_matches(self.app_dir)
+        count = 0
+        for lid in line_ids:
+            m = matches.get(lid, {})
+            best = str(m.get("best_receipt") or "").strip()
+            if best:
+                approved[lid] = {"source_file": best, "approved": True}
+                count += 1
+        save_approved_matches(self.app_dir, approved)
+        return count
+
     def run_matching_pipeline(self, on_status=None) -> dict[str, Any]:
         """Run deterministic + LLM matching. Returns summary dict."""
         from matching.pipeline import match_transactions_to_receipts
@@ -848,10 +867,12 @@ class ExpenseService:
             return {"error": "No receipts analyzed"}
 
         existing_matches = load_receipt_line_matches(self.app_dir)
-        # Skip transactions explicitly marked as receipt missing
+        approved_map = load_approved_matches(self.app_dir)
+        # Skip transactions explicitly marked as receipt missing OR already approved
         scannable = [
             l for l in lines
             if not self._is_receipt_missing(existing_matches.get(str(l.get("line_id", "")).strip(), {}))
+            and not approved_map.get(str(l.get("line_id", "")).strip(), {}).get("approved")
         ]
         deterministic = match_transactions_to_receipts(scannable, analyses)
 
@@ -901,10 +922,12 @@ class ExpenseService:
             "match", "Phase 1 \u2014 Deterministic matching (amount \u00b7 date \u00b7 merchant)"
         )
         existing_matches = load_receipt_line_matches(self.app_dir)
-        # Skip transactions explicitly marked as receipt missing
+        approved_map = load_approved_matches(self.app_dir)
+        # Skip transactions explicitly marked as receipt missing OR already approved
         scannable = [
             l for l in lines
             if not self._is_receipt_missing(existing_matches.get(str(l.get("line_id", "")).strip(), {}))
+            and not approved_map.get(str(l.get("line_id", "")).strip(), {}).get("approved")
         ]
         deterministic = match_transactions_to_receipts(scannable, analyses)
 
@@ -956,14 +979,15 @@ class ExpenseService:
             }
 
         matches = load_receipt_line_matches(self.app_dir)
+        approved_map = load_approved_matches(self.app_dir)
         unmatched: list[dict] = []
         for line in lines:
             lid = str(line.get("line_id", "")).strip()
             if not lid:
                 continue
             m = matches.get(lid, {})
-            # Skip lines the user has explicitly marked as receipt missing
-            if self._is_receipt_missing(m):
+            # Skip lines the user has explicitly marked as receipt missing or already approved
+            if self._is_receipt_missing(m) or approved_map.get(lid, {}).get("approved"):
                 continue
             best = str(m.get("best_receipt") or "").strip()
             conf = _float_safe(m.get("confidence"))
@@ -1098,6 +1122,16 @@ class ExpenseService:
 
         for lid in lid_set:
             matches.pop(lid, None)
+
+        # Clear any prior approval so the explicit rescan can update the match freely
+        approved_map = load_approved_matches(self.app_dir)
+        approval_cleared = 0
+        for lid in lid_set:
+            if approved_map.pop(lid, None):
+                approval_cleared += 1
+        if approval_cleared:
+            save_approved_matches(self.app_dir, approved_map)
+            activity_log.emit("info", f"Cleared approval for {approval_cleared} line(s) to allow rescan")
 
         # Exclude receipts already matched to lines NOT in this rescan set
         # to prevent a rescanned line from "stealing" another line's receipt.
