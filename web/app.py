@@ -5552,12 +5552,20 @@ def page_submit(request: Request):
                     with ui.row().classes("items-center gap-2 mb-1"):
                         ui.icon("warning").classes("text-amber-500").style("font-size:18px")
                         ui.label("Not Ready").classes("text-sm font-semibold text-amber-800")
-                    ui.label(
-                        f"{r.needs_fix} transaction{'s' if r.needs_fix != 1 else ''} "
-                        f"{'have' if r.needs_fix != 1 else 'has'} no receipt and "
-                        f"{'are' if r.needs_fix != 1 else 'is'} not marked as 'receipt missing'. "
-                        "Fix matches or mark items as receipt missing before submitting."
-                    ).classes("text-xs text-amber-700")
+                    if r.needs_fix:
+                        ui.label(
+                            f"{r.needs_fix} transaction{'s' if r.needs_fix != 1 else ''} "
+                            f"{'have' if r.needs_fix != 1 else 'has'} no receipt and "
+                            f"{'are' if r.needs_fix != 1 else 'is'} not marked as 'receipt missing'. "
+                            "Fix matches or mark items as receipt missing before submitting."
+                        ).classes("text-xs text-amber-700")
+                    if r.missing_justification:
+                        ui.label(
+                            f"{r.missing_justification} transaction{'s' if r.missing_justification != 1 else ''} "
+                            f"{'are' if r.missing_justification != 1 else 'is'} missing an expense type. "
+                            "Oracle requires a justification (expense type) for every line — "
+                            "set the expense type for each item before submitting."
+                        ).classes("text-xs text-red-700 mt-1")
 
                 if r.attention_items:
                     ui.label("Items Needing Attention").classes(
