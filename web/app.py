@@ -696,10 +696,23 @@ body.body--dark .q-drawer { background: #0f172a !important; border-right: 1px so
 .q-drawer.detail-side-drawer .detail-panel {
     position: static;
     max-height: none;
-    overflow-x: hidden;
-    overflow-y: visible;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     box-shadow: none;
     border-radius: 0;
+}
+.q-drawer.detail-side-drawer .detail-panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+.q-drawer.detail-side-drawer .detail-panel-actions {
+    flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
 }
 
 .nicegui-content {
@@ -4487,7 +4500,7 @@ def page_matching(request: Request):
                     "flat dense round"
                 )
             match_detail_slot = ui.column().classes("w-full").style(
-                "flex:1;min-height:0;overflow-y:auto;padding:0 10px 24px"
+                "flex:1;min-height:0;overflow-y:auto;padding:0"
             )
 
     with ui.element("div").classes("page-container"):
@@ -4969,7 +4982,7 @@ def page_matching(request: Request):
         def _render_detail():
             multi_sel = state.get("selected_lids", set())
             if len(multi_sel) > 1:
-                with ui.element("div").classes("detail-panel"):
+                with ui.element("div").classes("detail-panel").style("height:100%"):
                     with ui.element("div").classes("detail-panel-header"):
                         ui.label(f"{len(multi_sel)} transactions selected").classes(
                             "text-lg font-bold text-slate-800"
@@ -5042,8 +5055,8 @@ def page_matching(request: Request):
                 "high": "#16a34a", "medium": "#d97706", "low": "#dc2626", "unmatched": "#6b7280"
             }.get(t.match_status, "#6b7280")
 
-            with ui.element("div").classes("detail-panel"):
-                ui.element("div").style(f"height:4px;background:{status_color};width:100%")
+            with ui.element("div").classes("detail-panel").style("height:100%"):
+                ui.element("div").style(f"height:4px;background:{status_color};width:100%;flex-shrink:0")
 
                 # Transaction header
                 with ui.element("div").classes("detail-panel-header"):
