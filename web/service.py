@@ -136,6 +136,8 @@ class ReportReadiness:
     receipt_missing_marked: int = 0
     needs_fix: int = 0
     needs_fix_line_ids: list[str] = field(default_factory=list)
+    missing_justification: int = 0
+    missing_justification_line_ids: list[str] = field(default_factory=list)
     attention_items: list[AttentionItem] = field(default_factory=list)
     submission_status: str = "Not submitted"
 
@@ -731,6 +733,7 @@ class ExpenseService:
         approved_count = 0
         classified_count = 0
         needs_fix: list[str] = []
+        missing_justification: list[str] = []
         attention: list[AttentionItem] = []
 
         for lid in sorted(active_lids):
@@ -777,8 +780,19 @@ class ExpenseService:
                     issue=issue,
                 ))
 
+            if not etype:
+                missing_justification.append(lid)
+                attention.append(AttentionItem(
+                    line_id=lid,
+                    merchant=merchant,
+                    date=str(line.get("transaction_date", "")).strip(),
+                    amount=str(line.get("amount", "")).strip(),
+                    currency=str(line.get("currency", "USD")).strip(),
+                    issue="Missing expense type (justification required)",
+                ))
+
         return ReportReadiness(
-            ready=len(needs_fix) == 0 and len(active_lids) > 0,
+            ready=len(needs_fix) == 0 and len(missing_justification) == 0 and len(active_lids) > 0,
             total_lines=len(active_lids),
             matched=matched_count,
             approved=approved_count,
@@ -787,6 +801,8 @@ class ExpenseService:
             receipt_missing_marked=receipt_missing_marked,
             needs_fix=len(needs_fix),
             needs_fix_line_ids=needs_fix,
+            missing_justification=len(missing_justification),
+            missing_justification_line_ids=missing_justification,
             attention_items=attention,
             submission_status=get_report_submission_status(self.app_dir, report_id),
         )
@@ -871,6 +887,55 @@ class ExpenseService:
         save_approved_matches(self.app_dir, approved)
         return count
 
+    def _auto_classify_unclassified(self, lines: list[dict]) -> int:
+        """Run classify_transactions for lines missing a vendor type and persist results.
+
+        Only saves non-'Uncategorized' results so that unrecognised merchants
+        are not silently given a wrong classification.
+        Returns the number of newly classified lines.
+        """
+        vendor_path = self.app_dir / "vendor_expense_types.json"
+        vendor_types = load_vendor_expense_types_flat(self.app_dir)
+        unclassified = [
+            l for l in lines
+            if not vendor_types.get(re.sub(r"\s+", " ", str(l.get("merchant_name", "")).strip()).lower())
+        ]
+        if not unclassified:
+            return 0
+
+        suggestions = classify_transactions(unclassified)
+        new_count = 0
+        data: dict[str, Any] = {}
+        if vendor_path.exists():
+            try:
+                data = json.loads(vendor_path.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        vendors = data.get("vendors", data)
+        if not isinstance(vendors, dict):
+            vendors = {}
+
+        for s in suggestions:
+            etype = str(s.get("type", "") or "").strip()
+            if not etype or etype.lower() == "uncategorized":
+                continue
+            txn_id = str(s.get("transaction_id", "") or "").strip()
+            merchant_key = ""
+            for l in unclassified:
+                lid = str(l.get("line_id") or l.get("transaction_id", "")).strip()
+                if lid == txn_id:
+                    merchant_key = re.sub(r"\s+", " ", str(l.get("merchant_name", "")).strip()).lower()
+                    break
+            if merchant_key:
+                vendors[merchant_key] = etype
+                new_count += 1
+
+        vendor_path.write_text(
+            json.dumps({"vendors": vendors}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return new_count
+
     def run_matching_pipeline(self, on_status=None) -> dict[str, Any]:
         """Run deterministic + LLM matching. Returns summary dict."""
         from matching.pipeline import match_transactions_to_receipts
@@ -912,6 +977,7 @@ class ExpenseService:
             updated += 1
 
         save_receipt_line_matches(self.app_dir, existing_matches)
+        self._auto_classify_unclassified(lines)
         log(f"Updated {updated} matches")
         return {"updated": updated, "total": len(lines)}
 
@@ -1093,6 +1159,9 @@ class ExpenseService:
                 activity_log.mark_item_done(lid)
 
         save_receipt_line_matches(self.app_dir, matches)
+        classified = self._auto_classify_unclassified(lines)
+        if classified:
+            activity_log.emit("cache", f"Auto-classified {classified} merchant(s) from built-in rules")
         activity_log.set_progress(1.0, "Complete")
         activity_log.emit(
             "success",
@@ -1234,6 +1303,9 @@ class ExpenseService:
                     activity_log.mark_item_done(lid)
 
         save_receipt_line_matches(self.app_dir, matches)
+        classified = self._auto_classify_unclassified(target_lines)
+        if classified:
+            activity_log.emit("cache", f"Auto-classified {classified} merchant(s) from built-in rules")
         activity_log.emit("success", f"Rescan complete \u2014 det: {det_updated}, LLM: {llm_updated}")
         return {"deterministic_updated": det_updated, "llm_updated": llm_updated}
 
@@ -1678,6 +1750,26 @@ class ExpenseService:
         matches = load_receipt_line_matches(self.app_dir)
         approved = load_approved_matches(self.app_dir)
         vendor_types = load_vendor_expense_types_flat(self.app_dir)
+
+        # Block submission if any line is missing an expense type (Oracle requires
+        # justification for every line, which is derived from the expense type).
+        missing_etype_lines: list[str] = []
+        for lid in sorted(line_ids):
+            line = lines_by_id.get(lid, {})
+            merchant = str(line.get("merchant_name", "")).strip()
+            if not merchant:
+                continue
+            merchant_key = re.sub(r"\s+", " ", merchant).lower()
+            if not vendor_types.get(merchant_key, ""):
+                missing_etype_lines.append(merchant or lid)
+        if missing_etype_lines:
+            items_str = ", ".join(missing_etype_lines[:5])
+            suffix = f" (and {len(missing_etype_lines) - 5} more)" if len(missing_etype_lines) > 5 else ""
+            raise RuntimeError(
+                f"Cannot submit: {len(missing_etype_lines)} item(s) are missing an expense type / "
+                f"justification: {items_str}{suffix}. "
+                "Set an expense type for each item before submitting."
+            )
 
         submission_lines: list[SubmissionLine] = []
         for lid in sorted(line_ids):
