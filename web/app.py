@@ -3799,6 +3799,7 @@ def page_transactions(request: Request):
 
         state: dict[str, Any] = {
             "selected": set(),
+            "_select_anchor": None,
             "status_filter": "all",
             "report_filter": "__unassigned__" if report_filter_id == "__uncategorized__" else (report_filter_id if report_filter_id else "__all__"),
             "sort_col": None,
@@ -3966,11 +3967,25 @@ def page_transactions(request: Request):
                     visible.sort(key=fn, reverse=not state["sort_asc"])
             return visible
 
-        def _toggle_select(line_id: str, checked: bool):
-            if checked:
-                state["selected"].add(line_id)
+        def _toggle_select(line_id: str, checked: bool, shift: bool = False):
+            visible = _filtered_txns()
+            visible_ids = [t.line_id for t in visible]
+            anchor = state.get("_select_anchor")
+            if shift and anchor and anchor in visible_ids and line_id in visible_ids:
+                i_a = visible_ids.index(anchor)
+                i_b = visible_ids.index(line_id)
+                lo, hi = min(i_a, i_b), max(i_a, i_b)
+                for lid in visible_ids[lo : hi + 1]:
+                    state["selected"].add(lid)
             else:
-                state["selected"].discard(line_id)
+                if checked:
+                    state["selected"].add(line_id)
+                    state["_select_anchor"] = line_id
+                else:
+                    state["selected"].discard(line_id)
+                    if state.get("_select_anchor") == line_id:
+                        state["_select_anchor"] = None
+            _render_table()
             _render_action_bar()
 
         def _toggle_select_all(txns: list[TransactionRow], checked: bool):
@@ -3978,6 +3993,7 @@ def page_transactions(request: Request):
                 state["selected"] = {t.line_id for t in txns}
             else:
                 state["selected"] = set()
+            state["_select_anchor"] = None
             _render_table()
             _render_action_bar()
 
@@ -4130,10 +4146,26 @@ def page_transactions(request: Request):
                             f"align-items:center;font-size:0.875rem;color:var(--text-secondary);"
                             f"transition:background 0.1s;{bg}"
                         ):
-                            ui.checkbox(
-                                value=is_sel,
-                                on_change=lambda e, lid=t.line_id: _toggle_select(lid, e.value),
-                            ).props("dense").style("margin:0;padding:0")
+                            # Wrap checkbox in a div so we can capture the native click shiftKey
+                            with ui.element("div").style("display:flex;align-items:center").on(
+                                "click",
+                                js_handler=f"""(e) => {{
+                                    e.stopPropagation();
+                                    const checked = !{str(is_sel).lower()};
+                                    emitEvent('txn_cb_{t.line_id}', {{checked, shift: e.shiftKey}});
+                                }}""",
+                            ):
+                                ui.checkbox(value=is_sel).props("dense").style(
+                                    "margin:0;padding:0;pointer-events:none"
+                                )
+                            ui.on(
+                                f"txn_cb_{t.line_id}",
+                                lambda e, lid=t.line_id: _toggle_select(
+                                    lid,
+                                    e.args.get("checked", True) if isinstance(e.args, dict) else True,
+                                    shift=e.args.get("shift", False) if isinstance(e.args, dict) else False,
+                                ),
+                            )
                             with ui.element("div"):
                                 ui.label(t.merchant).classes("font-semibold text-slate-800 text-sm").style(
                                     "white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
@@ -4167,12 +4199,14 @@ def page_transactions(request: Request):
         def _apply_status_filter(f: str):
             state["status_filter"] = f
             state["selected"] = set()
+            state["_select_anchor"] = None
             _render_table()
             _render_action_bar()
 
         def _apply_report_filter(f: str):
             state["report_filter"] = f
             state["selected"] = set()
+            state["_select_anchor"] = None
             _render_table()
             _render_action_bar()
 
