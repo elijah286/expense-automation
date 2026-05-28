@@ -5775,6 +5775,16 @@ def page_submit(request: Request):
                         icon="replay",
                         on_click=lambda _, gid=g.id, gname=g.name: _do_submit(gid, gname),
                     ).props("color=warning no-caps unelevated size=sm").classes("action-btn")
+
+                    def _do_discard_submission(report_id=g.id):
+                        svc.discard_pending_submission(report_id)
+                        ui.navigate.to(f"/submit?report={report_id}")
+
+                    ui.button(
+                        "Discard & Start Fresh",
+                        icon="delete_outline",
+                        on_click=lambda _: _do_discard_submission(),
+                    ).props("color=negative flat no-caps size=sm").classes("text-xs")
                 elif r.ready and r.total_lines > 0:
                     ui.button(
                         "Submit Report",

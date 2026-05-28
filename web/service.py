@@ -747,7 +747,11 @@ class ExpenseService:
 
             if best:
                 matched_count += 1
-            if lid in approved:
+                if lid in approved:
+                    approved_count += 1
+            elif is_receipt_missing:
+                # Receipt-missing items are explicitly resolved — count as matched and approved
+                matched_count += 1
                 approved_count += 1
             if etype:
                 classified_count += 1
@@ -1601,6 +1605,18 @@ class ExpenseService:
     def _clear_submission_state(self) -> None:
         p = self._submission_state_path()
         p.unlink(missing_ok=True)
+
+    def discard_pending_submission(self, report_id: str) -> bool:
+        """Clear a failed/incomplete submission state for *report_id*. Returns True if discarded."""
+        state = self._load_submission_state()
+        if (
+            state
+            and state.get("report_id") == report_id
+            and not state.get("completed")
+        ):
+            self._clear_submission_state()
+            return True
+        return False
 
     def get_pending_submission(self, report_id: str) -> dict[str, Any] | None:
         """Return the incomplete submission state for *report_id*, or None."""
