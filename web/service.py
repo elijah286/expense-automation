@@ -712,6 +712,19 @@ class ExpenseService:
         approved = load_approved_matches(self.app_dir)
         vendor_types = load_vendor_expense_types_flat(self.app_dir)
 
+        # Orphaned IDs are in the report group but not in the lines cache.
+        # This happens when the transaction cache is refreshed and some items
+        # move to a different page/position or were removed. They are stale
+        # and cannot be acted on — exclude them from readiness checks and
+        # from total_lines so they don't block submission.
+        # Also prune them from the persisted report group so counts stay accurate.
+        orphaned = {lid for lid in lid_set if lid not in lines_by_id}
+        if orphaned:
+            group["line_ids"] = [lid for lid in group.get("line_ids", []) if str(lid).strip() not in orphaned]
+            groups[report_id] = group
+            save_expense_report_groups(self.app_dir, groups)
+        active_lids = lid_set - orphaned
+
         with_receipt = 0
         receipt_missing_marked = 0
         matched_count = 0
@@ -720,7 +733,7 @@ class ExpenseService:
         needs_fix: list[str] = []
         attention: list[AttentionItem] = []
 
-        for lid in sorted(lid_set):
+        for lid in sorted(active_lids):
             m = matches.get(lid, {})
             best = str(m.get("best_receipt") or "").strip()
             reason = str(m.get("reason") or "").strip().lower()
@@ -761,8 +774,8 @@ class ExpenseService:
                 ))
 
         return ReportReadiness(
-            ready=len(needs_fix) == 0 and len(lid_set) > 0,
-            total_lines=len(lid_set),
+            ready=len(needs_fix) == 0 and len(active_lids) > 0,
+            total_lines=len(active_lids),
             matched=matched_count,
             approved=approved_count,
             classified=classified_count,
