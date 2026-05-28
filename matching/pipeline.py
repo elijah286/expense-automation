@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from itertools import combinations
 import re
 from typing import Any
 
@@ -65,6 +66,35 @@ def _confidence_level(c: float) -> str:
     return "low"
 
 
+def _find_line_item_subset(
+    t_amt: float,
+    line_items: list[dict[str, Any]],
+    tolerance: float,
+) -> tuple[tuple[int, ...], float] | None:
+    """
+    Return (indices, delta) for the subset of line_items whose amounts sum
+    closest to t_amt (within tolerance).  Among equally-close subsets, the
+    smallest (fewest items) is preferred to avoid spurious over-matching.
+    Returns None if no subset qualifies.
+    """
+    n = len(line_items)
+    if n == 0 or n > 14:  # safety cap on 2^n enumeration
+        return None
+    li_amounts = [_to_amount(item.get("amount")) for item in line_items]
+    best: tuple[tuple[int, ...], float] | None = None
+    for size in range(1, n + 1):
+        for indices in combinations(range(n), size):
+            if any(li_amounts[i] is None for i in indices):
+                continue
+            s = sum(li_amounts[i] for i in indices)  # type: ignore[operator]
+            delta = abs(t_amt - s)
+            if delta <= tolerance:
+                # Prefer smaller delta; break ties by smaller subset size
+                if best is None or delta < best[1] or (delta == best[1] and len(indices) < len(best[0])):
+                    best = (indices, delta)
+    return best
+
+
 def match_transactions_to_receipts(
     transactions: list[dict[str, Any]],
     receipts: list[dict[str, Any]],
@@ -74,16 +104,23 @@ def match_transactions_to_receipts(
 ) -> list[dict[str, Any]]:
     """
     Deterministic first-pass matcher:
-    - Amount first
+    - Amount first (total, card_charged_amount, or line_item subset sum)
     - Date within +/- N days
     - Merchant similarity tie-break
 
-    Uses greedy assignment: each receipt is assigned to at most one
-    transaction (the one with the highest score).
+    Split-payment support: one receipt can match multiple transactions when
+    each transaction amount corresponds to a non-overlapping subset of the
+    receipt's line_items (e.g. an Uber receipt charged as two separate card
+    transactions — fare+fees and tip+wait-time).
+
+    Greedy assignment: total-matched receipts are blocked after one use;
+    line-item-matched receipts may be reused as long as the required
+    line_item indices haven't already been consumed by another transaction.
     """
-    # Phase 1: build scored candidates for every (txn, receipt) pair.
-    # Each entry: (score, txn_index, receipt_key, receipt_obj)
-    candidates: list[tuple[float, int, str, dict[str, Any]]] = []
+    # Each candidate: (score, txn_index, receipt_key, receipt_obj, matched_line_indices)
+    # matched_line_indices = () means matched against the receipt total (blocks whole receipt)
+    # matched_line_indices = (i, j, ...) means matched via subset sum (allows reuse)
+    candidates: list[tuple[float, int, str, dict[str, Any], tuple[int, ...]]] = []
     txn_ids: list[str] = []
 
     for ti, txn in enumerate(transactions):
@@ -92,27 +129,47 @@ def match_transactions_to_receipts(
         t_amt = _to_amount(txn.get("amount"))
         t_date = _to_date(txn.get("transaction_date") or txn.get("date"))
         t_merchant = str(txn.get("merchant_name") or txn.get("merchant") or "").strip()
+        t_cur = str(txn.get("currency") or "").strip().upper()
+        if not t_cur:
+            cur_m = re.search(r"[A-Z]{3}", str(txn.get("amount") or ""))
+            t_cur = cur_m.group(0) if cur_m else "USD"
+
         for receipt in receipts:
+            r_key = str(receipt.get("source_file") or receipt.get("receipt_id") or "").strip()
+            if not r_key:
+                continue
             r_amt = _to_amount(receipt.get("matched_amount") or receipt.get("total_amount"))
             if t_amt is None or r_amt is None:
                 continue
-            delta = abs(t_amt - r_amt)
+
+            delta: float | None = abs(t_amt - r_amt)
+            matched_indices: tuple[int, ...] = ()  # () = total match
+
             if delta > amount_tolerance:
+                delta = None  # tentatively no match; try fallbacks below
+
+                # Fallback 1: card_charged_amount (DCC / foreign currency charge)
                 cc_amt = _to_amount(receipt.get("card_charged_amount"))
                 cc_cur = str(receipt.get("card_charged_currency") or "").strip().upper()
-                t_cur = str(txn.get("currency") or "").strip().upper()
-                amt_field = str(txn.get("amount") or "")
-                if not t_cur:
-                    cur_match = re.search(r"[A-Z]{3}", amt_field)
-                    t_cur = cur_match.group(0) if cur_match else "USD"
-                if cc_amt is not None and cc_cur and (cc_cur == t_cur or not t_cur):
-                    delta = abs(t_amt - cc_amt)
-                    if delta > amount_tolerance:
-                        continue
-                elif cc_amt is not None and abs(t_amt - cc_amt) <= amount_tolerance:
-                    delta = abs(t_amt - cc_amt)
-                else:
-                    continue
+                if cc_amt is not None:
+                    if cc_cur and (cc_cur == t_cur or not t_cur):
+                        d2 = abs(t_amt - cc_amt)
+                        if d2 <= amount_tolerance:
+                            delta = d2
+                    elif abs(t_amt - cc_amt) <= amount_tolerance:
+                        delta = abs(t_amt - cc_amt)
+
+                # Fallback 2: line_item subset sum (split-payment receipts)
+                if delta is None:
+                    line_items = receipt.get("line_items") or []
+                    result = _find_line_item_subset(t_amt, line_items, amount_tolerance)
+                    if result is not None:
+                        matched_indices, delta = result
+
+                if delta is None:
+                    continue  # no amount match found
+
+            # Date check
             r_date = _to_date(receipt.get("receipt_date") or receipt.get("transaction_date"))
             if t_date and r_date:
                 corrected = _correct_ddmmyy_misparse(r_date, t_date)
@@ -120,28 +177,43 @@ def match_transactions_to_receipts(
                     r_date = corrected
             if t_date and r_date and abs((t_date - r_date).days) > date_window_days:
                 continue
+
             amount_score = max(0.0, 1.0 - (delta / max(amount_tolerance, 0.01)))
             date_score = 1.0
             if t_date and r_date:
                 date_score = max(0.0, 1.0 - (abs((t_date - r_date).days) / max(1.0, float(date_window_days))))
             merchant_score = _merchant_similarity(t_merchant, receipt.get("vendor"))
             score = 0.55 * amount_score + 0.30 * date_score + 0.15 * merchant_score
-            r_key = str(receipt.get("source_file") or receipt.get("receipt_id") or "").strip()
-            if r_key:
-                candidates.append((score, ti, r_key, receipt))
+            candidates.append((score, ti, r_key, receipt, matched_indices))
 
-    # Phase 2: greedy assignment — highest score first, each receipt used once.
+    # Phase 2: greedy assignment — highest score first.
+    # Receipts matched by total are blocked entirely after one use.
+    # Receipts matched via line_items may be reused for non-overlapping subsets.
     candidates.sort(key=lambda c: c[0], reverse=True)
     assigned_txns: set[int] = set()
-    assigned_receipts: set[str] = set()
-    txn_result: dict[int, tuple[float, str, dict[str, Any]]] = {}
+    whole_receipt_used: set[str] = set()          # receipts consumed by a total match
+    used_line_indices: dict[str, set[int]] = {}   # receipt_key → used line_item indices
+    txn_result: dict[int, tuple[float, str, dict[str, Any], tuple[int, ...]]] = {}
 
-    for score, ti, r_key, receipt in candidates:
-        if ti in assigned_txns or r_key in assigned_receipts:
+    for score, ti, r_key, receipt, matched_indices in candidates:
+        if ti in assigned_txns:
             continue
-        txn_result[ti] = (score, r_key, receipt)
-        assigned_txns.add(ti)
-        assigned_receipts.add(r_key)
+        if r_key in whole_receipt_used:
+            continue
+
+        if matched_indices:
+            # Line-item subset match: only block the specific indices used
+            already_used = used_line_indices.get(r_key, set())
+            if already_used & set(matched_indices):
+                continue  # overlap — these line_items already claimed
+            txn_result[ti] = (score, r_key, receipt, matched_indices)
+            assigned_txns.add(ti)
+            used_line_indices.setdefault(r_key, set()).update(matched_indices)
+        else:
+            # Total match: block the whole receipt
+            txn_result[ti] = (score, r_key, receipt, matched_indices)
+            assigned_txns.add(ti)
+            whole_receipt_used.add(r_key)
 
     # Phase 3: build output for every transaction.
     output: list[dict[str, Any]] = []
@@ -159,15 +231,24 @@ def match_transactions_to_receipts(
             )
             continue
 
-        conf_raw, r_key, receipt = txn_result[ti]
+        conf_raw, r_key, receipt, matched_indices = txn_result[ti]
         conf = round(float(conf_raw), 4)
+        if matched_indices:
+            line_items = receipt.get("line_items") or []
+            descs = [str(line_items[i].get("description", f"item {i}")) for i in matched_indices]
+            reasoning = (
+                f"Matched via split-payment line_items ({', '.join(descs)}); "
+                "amount, date, and merchant scored."
+            )
+        else:
+            reasoning = "Matched by amount tolerance first, date proximity second, merchant similarity third."
         output.append(
             {
                 "transaction_id": txn_id,
                 "receipt_id": r_key or None,
                 "confidence": conf,
                 "confidence_level": _confidence_level(conf),
-                "reasoning": "Matched by amount tolerance first, date proximity second, merchant similarity third.",
+                "reasoning": reasoning,
             }
         )
     return output
