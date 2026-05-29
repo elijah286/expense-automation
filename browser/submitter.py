@@ -178,6 +178,12 @@ class ReportSubmitter(TransactionScraper):
 (targets) => {
   const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
   const norm = (v) => clean(v).toLowerCase();
+        const amountNum = (v) => {
+            const s = String(v || '').replace(/[^0-9.+-]/g, '');
+            if (!s) return null;
+            const n = Number(s);
+            return Number.isFinite(n) ? n : null;
+        };
   const isVisible = (el) => {
     const st = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
@@ -211,8 +217,9 @@ class ReportSubmitter(TransactionScraper):
       const rowMerchant = norm(cells[mi].innerText || cells[mi].textContent || '');
       if (!rowMerchant.includes(target.merchant) && !target.merchant.includes(rowMerchant)) continue;
       if (target.amount && ai >= 0 && ai < cells.length) {
-        const rowAmt = (cells[ai].innerText || cells[ai].textContent || '').replace(/[,$\\s]/g, '').trim();
-        if (rowAmt !== target.amount) continue;
+                const rowAmt = amountNum(cells[ai].innerText || cells[ai].textContent || '');
+                const wantAmt = amountNum(target.amount);
+                if (wantAmt !== null && rowAmt !== null && Math.abs(rowAmt - wantAmt) > 0.01) continue;
       }
       const cb = bodyRows[i].querySelector('input[type="checkbox"]');
       if (cb && isVisible(cb) && !cb.checked) cb.click();
@@ -303,6 +310,12 @@ class ReportSubmitter(TransactionScraper):
 (targets) => {
   const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
   const norm = (v) => clean(v).toLowerCase();
+        const amountNum = (v) => {
+            const s = String(v || '').replace(/[^0-9.+-]/g, '');
+            if (!s) return null;
+            const n = Number(s);
+            return Number.isFinite(n) ? n : null;
+        };
   const isVisible = (el) => {
     const st = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
@@ -333,13 +346,16 @@ class ReportSubmitter(TransactionScraper):
     const cb = bodyRows[i].querySelector('input[type="checkbox"]');
     if (!cb || !isVisible(cb) || !cb.checked) continue;
     const rowMerchant = norm(cells[mi].innerText || cells[mi].textContent || '');
-    const rowAmt = (ai >= 0 && ai < cells.length)
-      ? (cells[ai].innerText || cells[ai].textContent || '').replace(/[,$\\s]/g, '').trim()
-      : '';
+        const rowAmt = (ai >= 0 && ai < cells.length)
+            ? amountNum(cells[ai].innerText || cells[ai].textContent || '')
+            : null;
     let isTarget = false;
     for (const target of targets) {
       if (!rowMerchant.includes(target.merchant) && !target.merchant.includes(rowMerchant)) continue;
-      if (target.amount && ai >= 0 && rowAmt !== target.amount) continue;
+            if (target.amount && ai >= 0) {
+                const wantAmt = amountNum(target.amount);
+                if (wantAmt !== null && rowAmt !== null && Math.abs(rowAmt - wantAmt) > 0.01) continue;
+            }
       isTarget = true;
       break;
     }
@@ -2042,6 +2058,11 @@ class ReportSubmitter(TransactionScraper):
                 payload.lines
             )
             summary["transactions_selected"] = n_selected
+            if n_selected == 0 and payload.lines:
+                raise RuntimeError(
+                    "Step 2: selected 0 transactions. Oracle row matching failed; "
+                    "verify the report lines exist on this card account page."
+                )
             self.set_status(
                 f"Step 2: selected {n_selected}/{len(payload.lines)} transaction(s) across all pages."
             )
