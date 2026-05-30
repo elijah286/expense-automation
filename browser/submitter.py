@@ -474,6 +474,9 @@ class ReportSubmitter(TransactionScraper):
             "target_sample=" + (" ; ".join(target_sample_lines) if target_sample_lines else "(none)"),
             "page_attempts=" + (" ; ".join(attempt_lines) if attempt_lines else "(none)"),
         ]
+        pagination_issue = getattr(self, "_last_step2_pagination_issue", "")
+        if pagination_issue:
+            lines_out.append("pagination_issue=" + pagination_issue)
 
         if snapshot:
             lines_out.append(
@@ -556,6 +559,12 @@ class ReportSubmitter(TransactionScraper):
         total_selected = 0
         max_pages = 80
         page_attempts: list[dict[str, Any]] = []
+        target_pages = [
+            int(t["page_index"]) for t in targets
+            if isinstance(t.get("page_index"), int)
+        ]
+        max_target_page = max(target_pages) if target_pages else 0
+        self._last_step2_pagination_issue = ""
 
         for page_idx in range(max_pages):
             page_range = self.get_step2_credit_table_page_range_in_any_frame()
@@ -585,6 +594,20 @@ class ReportSubmitter(TransactionScraper):
                 preferred_frame=self._step2_credit_card_frame,
             )
             if not clicked:
+                if page_idx < max_target_page:
+                    # Oracle sometimes requires Save before table pagination responds.
+                    self.set_status(
+                        "Step 2: could not open next transaction page; saving and retrying…"
+                    )
+                    if self.click_text_in_any_frame("Save"):
+                        self._wait_for_oracle_page_stable(settle_ms=700)
+                    clicked = self.click_expense_table_pagination_next_in_any_frame(
+                        preferred_frame=self._step2_credit_card_frame,
+                    )
+                if not clicked and page_idx < max_target_page:
+                    self._last_step2_pagination_issue = (
+                        f"stopped at page index {page_idx} before required max target page {max_target_page}"
+                    )
                 break
             self._wait_for_oracle_page_stable(settle_ms=600)
 
@@ -2373,15 +2396,15 @@ class ReportSubmitter(TransactionScraper):
                 payload.lines
             )
             summary["transactions_selected"] = n_selected
-            if n_selected == 0 and payload.lines:
+            if payload.lines and n_selected < len(payload.lines):
                 targets = getattr(self, "_last_step2_selection_targets", [])
                 page_attempts = getattr(self, "_last_step2_page_attempts", [])
                 diagnostic = self._collect_step2_failure_diagnostics(
                     targets, page_attempts,
                 )
                 raise RuntimeError(
-                    "Step 2: selected 0 transactions. Oracle row matching failed; "
-                    "verify the report lines exist on this card account page.\n"
+                    f"Step 2: selected {n_selected}/{len(payload.lines)} transactions; "
+                    "expected all report lines to be selected before proceeding.\n"
                     f"{diagnostic}"
                 )
             self.set_status(
