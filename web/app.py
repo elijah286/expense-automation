@@ -5549,11 +5549,18 @@ def page_submit(request: Request):
             if "error" in result:
                 ui.notify(result["error"], type="negative")
                 return
-            n = result.get("approved", 0)
+            approved_n = int(result.get("approved", 0) or 0)
+            missing_n = int(result.get("receipt_missing_marked", 0) or 0)
+            ready_n = int(result.get("ready_total", approved_n + missing_n) or 0)
+            total_n = int(result.get("total", ready_n) or 0)
 
             def _continue_submit() -> None:
+                detail_bits = [f"{approved_n} receipt(s) approved"]
+                if missing_n:
+                    detail_bits.append(f"{missing_n} marked receipt missing")
                 ui.notify(
-                    f"Report '{report_name}' prepared — {n} receipt(s) approved. "
+                    f"Report '{report_name}' prepared — {ready_n}/{total_n} ready "
+                    f"({', '.join(detail_bits)}). "
                     "Launching browser automation\u2026",
                     type="positive",
                     timeout=6000,
