@@ -317,6 +317,181 @@ class ReportSubmitter(TransactionScraper):
 }
 """
 
+    _STEP2_TABLE_DIAGNOSTIC_JS = """
+(payload) => {
+    const sampleLimit = Number.isFinite(Number(payload?.sampleLimit)) ? Number(payload.sampleLimit) : 8;
+    const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
+    const norm = (v) => clean(v).toLowerCase();
+    const isVisible = (el) => {
+        if (!el) return false;
+        const st = window.getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0;
+    };
+    let best = null;
+    let bestScore = -1;
+    for (const table of document.querySelectorAll('table')) {
+        const hr = table.querySelector('thead tr') || table.querySelector('tr');
+        if (!hr) continue;
+        const headers = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+        const mi = headers.findIndex(t => t.includes('merchant') || t.includes('vendor'));
+        const di = headers.findIndex(t => /\bdate\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
+        const ai = headers.findIndex(t => /\bamount\b/.test(t) || t.includes('amt'));
+        const hasCheckbox = !!table.querySelector('input[type="checkbox"]');
+        let score = 0;
+        if (mi >= 0) score += 4;
+        if (di >= 0) score += 2;
+        if (ai >= 0) score += 3;
+        if (hasCheckbox) score += 1;
+        if (score > bestScore) {
+            bestScore = score;
+            best = { table, headers, mi, di, ai, hasCheckbox };
+        }
+    }
+    if (!best) {
+        return {
+            table_found: false,
+            table_count: document.querySelectorAll('table').length,
+            score: -1,
+            header_texts: [],
+            body_row_count: 0,
+            visible_checkboxes: 0,
+            sample_rows: [],
+        };
+    }
+    const bodyRows = best.table.tBodies && best.table.tBodies.length
+        ? Array.from(best.table.tBodies[0].querySelectorAll('tr'))
+        : Array.from(best.table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
+    let visibleCheckboxes = 0;
+    for (const tr of bodyRows) {
+        const cb = tr.querySelector('input[type="checkbox"]');
+        if (cb && isVisible(cb)) visibleCheckboxes += 1;
+    }
+    const sampleRows = [];
+    for (let i = 0; i < bodyRows.length && sampleRows.length < sampleLimit; i++) {
+        const tr = bodyRows[i];
+        const cells = Array.from(tr.querySelectorAll('td'));
+        const cb = tr.querySelector('input[type="checkbox"]');
+        const merchant = (best.mi >= 0 && best.mi < cells.length)
+            ? clean(cells[best.mi].innerText || cells[best.mi].textContent || '')
+            : '';
+        const date = (best.di >= 0 && best.di < cells.length)
+            ? clean(cells[best.di].innerText || cells[best.di].textContent || '')
+            : '';
+        const amount = (best.ai >= 0 && best.ai < cells.length)
+            ? clean(cells[best.ai].innerText || cells[best.ai].textContent || '')
+            : '';
+        sampleRows.push({
+            row_index: i,
+            merchant,
+            date,
+            amount,
+            checkbox_present: !!cb,
+            checkbox_visible: isVisible(cb),
+            checked: !!(cb && cb.checked),
+        });
+    }
+    return {
+        table_found: true,
+        table_count: document.querySelectorAll('table').length,
+        score: bestScore,
+        header_texts: best.headers,
+        merchant_col: best.mi,
+        date_col: best.di,
+        amount_col: best.ai,
+        has_checkbox_column: best.hasCheckbox,
+        body_row_count: bodyRows.length,
+        visible_checkboxes: visibleCheckboxes,
+        sample_rows: sampleRows,
+    };
+}
+"""
+
+    def _collect_step2_failure_diagnostics(
+        self,
+        targets: list[dict[str, Any]],
+        page_attempts: list[dict[str, Any]],
+    ) -> str:
+        """Build a compact, terminal-friendly diagnostic message for Step 2 failures."""
+        targets_with_locator = [
+            t for t in targets
+            if isinstance(t.get("page_index"), int) and isinstance(t.get("row_index"), int)
+        ]
+        page_hist: dict[int, int] = {}
+        for t in targets_with_locator:
+            page_idx = int(t["page_index"])
+            page_hist[page_idx] = page_hist.get(page_idx, 0) + 1
+
+        target_sample_lines: list[str] = []
+        for t in targets[:8]:
+            target_sample_lines.append(
+                f"p{t.get('page_index')} r{t.get('row_index')} | "
+                f"{t.get('merchant', '')} | {t.get('date', '')} | {t.get('amount', '')}"
+            )
+
+        attempt_lines: list[str] = []
+        for a in page_attempts[:12]:
+            attempt_lines.append(
+                f"page={a.get('page_index')} range={a.get('page_range', '?')} selected={a.get('selected', 0)}"
+            )
+
+        frame = self._step2_credit_card_frame
+        snapshot: dict[str, Any] = {}
+        if frame is None:
+            picked = self._step2_pick_best_credit_snapshot()
+            if picked:
+                frame, _ = picked
+        if frame is not None:
+            try:
+                snapshot = frame.evaluate(
+                    self._STEP2_TABLE_DIAGNOSTIC_JS,
+                    {"sampleLimit": 8},
+                ) or {}
+            except Exception as exc:
+                snapshot = {"diagnostic_error": str(exc)}
+
+        sample_rows = snapshot.get("sample_rows") or []
+        sample_row_lines: list[str] = []
+        for row in sample_rows[:8]:
+            sample_row_lines.append(
+                f"r{row.get('row_index')} | {row.get('merchant', '')} | "
+                f"{row.get('date', '')} | {row.get('amount', '')} | "
+                f"cb_present={row.get('checkbox_present')} cb_visible={row.get('checkbox_visible')} checked={row.get('checked')}"
+            )
+
+        header_texts = snapshot.get("header_texts") or []
+        headers_joined = " | ".join(str(h) for h in header_texts[:12])
+
+        lines_out = [
+            "Step 2 diagnostics:",
+            (
+                f"targets_total={len(targets)} "
+                f"targets_with_locator={len(targets_with_locator)} "
+                f"targets_by_page={page_hist}"
+            ),
+            "target_sample=" + (" ; ".join(target_sample_lines) if target_sample_lines else "(none)"),
+            "page_attempts=" + (" ; ".join(attempt_lines) if attempt_lines else "(none)"),
+        ]
+
+        if snapshot:
+            lines_out.append(
+                "table_snapshot="
+                f"found={snapshot.get('table_found')} "
+                f"tables={snapshot.get('table_count')} "
+                f"score={snapshot.get('score')} "
+                f"rows={snapshot.get('body_row_count')} "
+                f"visible_checkboxes={snapshot.get('visible_checkboxes')} "
+                f"merchant_col={snapshot.get('merchant_col')} "
+                f"date_col={snapshot.get('date_col')} "
+                f"amount_col={snapshot.get('amount_col')}"
+            )
+            lines_out.append("table_headers=" + (headers_joined if headers_joined else "(none)"))
+            lines_out.append(
+                "row_sample=" + (" ; ".join(sample_row_lines) if sample_row_lines else "(none)")
+            )
+
+        return "\n".join(lines_out)
+
     def _select_on_current_page(self, targets: list[dict], current_page: int) -> int:
         """Run the selection JS against the currently visible page."""
         assert self.browser_page is not None
@@ -376,6 +551,7 @@ class ReportSubmitter(TransactionScraper):
 
         total_selected = 0
         max_pages = 80
+        page_attempts: list[dict[str, Any]] = []
 
         for page_idx in range(max_pages):
             page_range = self.get_step2_credit_table_page_range_in_any_frame()
@@ -392,6 +568,14 @@ class ReportSubmitter(TransactionScraper):
 
             n = self._select_on_current_page(targets, page_idx)
             total_selected += n
+            page_attempts.append({
+                "page_index": page_idx,
+                "page_range": (
+                    f"{page_range[0]}-{page_range[1]}/{page_range[2]}"
+                    if page_range else "unknown"
+                ),
+                "selected": n,
+            })
 
             can_advance = self._credit_card_table_pagination_can_advance(
                 preferred_frame=self._step2_credit_card_frame,
@@ -405,6 +589,9 @@ class ReportSubmitter(TransactionScraper):
             if not clicked:
                 break
             self._wait_for_oracle_page_stable(settle_ms=600)
+
+        self._last_step2_selection_targets = targets
+        self._last_step2_page_attempts = page_attempts
 
         return total_selected
 
@@ -2195,9 +2382,15 @@ class ReportSubmitter(TransactionScraper):
             )
             summary["transactions_selected"] = n_selected
             if n_selected == 0 and payload.lines:
+                targets = getattr(self, "_last_step2_selection_targets", [])
+                page_attempts = getattr(self, "_last_step2_page_attempts", [])
+                diagnostic = self._collect_step2_failure_diagnostics(
+                    targets, page_attempts,
+                )
                 raise RuntimeError(
                     "Step 2: selected 0 transactions. Oracle row matching failed; "
-                    "verify the report lines exist on this card account page."
+                    "verify the report lines exist on this card account page.\n"
+                    f"{diagnostic}"
                 )
             self.set_status(
                 f"Step 2: selected {n_selected}/{len(payload.lines)} transaction(s) across all pages."
