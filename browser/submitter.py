@@ -302,8 +302,10 @@ class ReportSubmitter(TransactionScraper):
     let selected = 0;
     for (const target of targets) {
         if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
-        const rowIndex = Number(target?.row_index);
-        if (!Number.isFinite(rowIndex)) continue;
+        const parsedRow = Number(target?.row_index);
+        if (!Number.isFinite(parsedRow)) continue;
+        // Scraper row ids are 1-based (r1, r2, ...); table arrays are 0-based.
+        const rowIndex = parsedRow > 0 ? (parsedRow - 1) : parsedRow;
         if (rowIndex < 0 || rowIndex >= best.rows.length) continue;
         if (used.has(rowIndex)) continue;
         const tr = best.rows[rowIndex];
@@ -500,15 +502,17 @@ class ReportSubmitter(TransactionScraper):
             return 0
         frame, _ = picked
         self._step2_credit_card_frame = frame
+        primary_selected = 0
         try:
             result = frame.evaluate(
                 self._SELECT_TRANSACTIONS_ON_PAGE_JS,
                 {"targets": targets, "currentPage": current_page},
             )
             if isinstance(result, (int, float)) and result > 0:
-                return int(result)
+                primary_selected = int(result)
         except Exception:
             pass
+        fallback_selected = 0
         try:
             # Fallback for Oracle table variants where merchant/amount/date columns
             # are merged or irregular: use the scraped row index on the current page.
@@ -517,10 +521,10 @@ class ReportSubmitter(TransactionScraper):
                 {"targets": targets, "currentPage": current_page},
             )
             if isinstance(result, (int, float)) and result > 0:
-                return int(result)
+                fallback_selected = int(result)
         except Exception:
-            return 0
-        return 0
+            pass
+        return max(primary_selected, fallback_selected)
 
     def _select_specific_transactions_step2(
         self, lines: list[SubmissionLine],
@@ -576,12 +580,6 @@ class ReportSubmitter(TransactionScraper):
                 ),
                 "selected": n,
             })
-
-            can_advance = self._credit_card_table_pagination_can_advance(
-                preferred_frame=self._step2_credit_card_frame,
-            )
-            if not can_advance:
-                break
 
             clicked = self.click_expense_table_pagination_next_in_any_frame(
                 preferred_frame=self._step2_credit_card_frame,
@@ -739,12 +737,6 @@ class ReportSubmitter(TransactionScraper):
         for page_idx in range(max_pages):
             n = self._deselect_on_current_page(targets, page_idx)
             total_deselected += n
-
-            can_advance = self._credit_card_table_pagination_can_advance(
-                preferred_frame=self._step2_credit_card_frame,
-            )
-            if not can_advance:
-                break
 
             clicked = self.click_expense_table_pagination_next_in_any_frame(
                 preferred_frame=self._step2_credit_card_frame,
