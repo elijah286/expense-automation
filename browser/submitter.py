@@ -242,9 +242,14 @@ class ReportSubmitter(TransactionScraper):
   const used = new Set();
   let selected = 0;
   for (const target of targets) {
+        const targetPage = Number.isFinite(Number(target?.page_index)) ? Number(target.page_index) : null;
+        if (currentPage !== null && targetPage !== null && targetPage !== currentPage) continue;
+        const targetMerchant = norm(target?.merchant || '');
+        if (!targetMerchant) continue;
         const targetDate = dateKey(target?.date || '');
         const targetAmt = amountNum(target?.amount || '');
-        const targetRow = Number.isFinite(Number(target?.row_index)) ? Number(target.row_index) : null;
+        const targetRowRaw = Number.isFinite(Number(target?.row_index)) ? Number(target.row_index) : null;
+        const targetRows = targetRowRaw === null ? [] : [targetRowRaw, targetRowRaw - 1];
         let preferred = [];
         let fallback = [];
     for (let i = 0; i < bodyRows.length; i++) {
@@ -252,7 +257,7 @@ class ReportSubmitter(TransactionScraper):
       const cells = Array.from(bodyRows[i].querySelectorAll('td'));
       if (mi >= cells.length) continue;
       const rowMerchant = norm(cells[mi].innerText || cells[mi].textContent || '');
-      if (!rowMerchant.includes(target.merchant) && !target.merchant.includes(rowMerchant)) continue;
+      if (rowMerchant !== targetMerchant) continue;
             if (targetDate && di >= 0 && di < cells.length) {
                 const rowDate = dateKey(cells[di].innerText || cells[di].textContent || '');
                 if (rowDate && rowDate !== targetDate) continue;
@@ -262,7 +267,7 @@ class ReportSubmitter(TransactionScraper):
                 if (rowAmt !== null && Math.abs(rowAmt - targetAmt) > 0.01) continue;
             }
             const match = { idx: i, cb: bodyRows[i].querySelector('input[type="checkbox"]') };
-            if (targetRow !== null && i === targetRow) preferred.push(match);
+            if (targetRows.includes(i)) preferred.push(match);
             else fallback.push(match);
     }
         const picked = preferred.length ? preferred[0] : (fallback.length ? fallback[0] : null);
@@ -287,6 +292,11 @@ class ReportSubmitter(TransactionScraper):
     let best = null;
     let bestRows = -1;
     for (const table of document.querySelectorAll('table')) {
+        const hr = table.querySelector('thead tr') || table.querySelector('tr');
+        if (!hr) continue;
+        const headers = Array.from(hr.querySelectorAll('th, td')).map(c => String(c.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase());
+        const mi = headers.findIndex(t => t.includes('merchant') || t.includes('vendor') || t.includes('payee') || t.includes('supplier'));
+        if (mi < 0) continue;
         const rows = table.tBodies && table.tBodies.length
             ? Array.from(table.tBodies[0].querySelectorAll('tr'))
             : Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
@@ -294,7 +304,7 @@ class ReportSubmitter(TransactionScraper):
         if (!hasCheckbox) continue;
         if (rows.length > bestRows) {
             bestRows = rows.length;
-            best = { table, rows };
+            best = { table, rows, mi };
         }
     }
     if (!best) return 0;
@@ -302,13 +312,20 @@ class ReportSubmitter(TransactionScraper):
     let selected = 0;
     for (const target of targets) {
         if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
+        const targetMerchant = String(target?.merchant || '').trim().toLowerCase();
+        if (!targetMerchant) continue;
         const parsedRow = Number(target?.row_index);
         if (!Number.isFinite(parsedRow)) continue;
-        // Scraper row ids are 1-based (r1, r2, ...); table arrays are 0-based.
-        const rowIndex = parsedRow > 0 ? (parsedRow - 1) : parsedRow;
-        if (rowIndex < 0 || rowIndex >= best.rows.length) continue;
+        const rowCandidates = [parsedRow, parsedRow - 1];
+        const rowIndex = rowCandidates.find((ri) => Number.isFinite(ri) && ri >= 0 && ri < best.rows.length);
+        if (rowIndex === undefined) continue;
         if (used.has(rowIndex)) continue;
         const tr = best.rows[rowIndex];
+        const cells = Array.from(tr.querySelectorAll('td'));
+        const rowMerchant = (best.mi >= 0 && best.mi < cells.length)
+            ? String(cells[best.mi]?.innerText || cells[best.mi]?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase()
+            : '';
+        if (rowMerchant !== targetMerchant) continue;
         const cb = tr.querySelector('input[type="checkbox"]');
         if (!cb || !isVisible(cb)) continue;
         if (!cb.checked) cb.click();
