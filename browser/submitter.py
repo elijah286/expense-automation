@@ -174,8 +174,17 @@ class ReportSubmitter(TransactionScraper):
     # Step 2 — select / deselect credit-card transactions
     # ------------------------------------------------------------------
 
+        @staticmethod
+        def _parse_step2_line_locator(line_id: str) -> tuple[int | None, int | None]:
+                m = re.match(r"^p(\d+):r(\d+)$", str(line_id or "").strip())
+                if not m:
+                        return (None, None)
+                return (int(m.group(1)), int(m.group(2)))
+
     _SELECT_TRANSACTIONS_ON_PAGE_JS = """
-(targets) => {
+(payload) => {
+    const targets = Array.isArray(payload?.targets) ? payload.targets : [];
+    const currentPage = Number.isFinite(Number(payload?.currentPage)) ? Number(payload.currentPage) : null;
   const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
   const norm = (v) => clean(v).toLowerCase();
         const amountNum = (v) => {
@@ -184,6 +193,27 @@ class ReportSubmitter(TransactionScraper):
             const n = Number(s);
             return Number.isFinite(n) ? n : null;
         };
+    const monthMap = {
+        jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+        may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9,
+        september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+    };
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const dateKey = (v) => {
+        const s = norm(v).replace(/,/g, ' ');
+        if (!s) return '';
+        let m = s.match(/^(\d{1,2})[-/\s]([a-z]{3,9})[-/\s](\d{2,4})$/i);
+        if (m) {
+            const d = Number(m[1]);
+            const mo = monthMap[String(m[2]).toLowerCase()] || 0;
+            let y = Number(m[3]);
+            if (y < 100) y += 2000;
+            if (mo > 0 && d > 0) return `${y}-${pad2(mo)}-${pad2(d)}`;
+        }
+        m = s.match(/^(\d{4})[-/\s](\d{1,2})[-/\s](\d{1,2})$/);
+        if (m) return `${Number(m[1])}-${pad2(Number(m[2]))}-${pad2(Number(m[3]))}`;
+        return s.replace(/\s+/g, ' ');
+    };
   const isVisible = (el) => {
     const st = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
@@ -197,42 +227,56 @@ class ReportSubmitter(TransactionScraper):
     const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
     const hasM = ht.some(t => t.includes('merchant') || t.includes('vendor'));
     let s = hasM ? 4 : 0;
+        const di = ht.findIndex(t => /\bdate\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
     const ai = ht.findIndex(t => /\\bamount\\b/.test(t) || t.includes('amt'));
+        if (di >= 0) s += 2;
     if (ai >= 0) s += 3;
     if (table.querySelector('input[type="checkbox"]')) s += 1;
-    if (s > score) { score = s; best = { table, mi: ht.findIndex(t => t.includes('merchant') || t.includes('vendor')), ai }; }
+        if (s > score) { score = s; best = { table, mi: ht.findIndex(t => t.includes('merchant') || t.includes('vendor')), di, ai }; }
   }
   if (!best || best.mi < 0) return 0;
-  const { table, mi, ai } = best;
+    const { table, mi, di, ai } = best;
   const bodyRows = table.tBodies && table.tBodies.length
     ? Array.from(table.tBodies[0].querySelectorAll('tr'))
     : Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
   const used = new Set();
   let selected = 0;
   for (const target of targets) {
+        if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
+        const targetDate = dateKey(target?.date || '');
+        const targetAmt = amountNum(target?.amount || '');
+        const targetRow = Number.isFinite(Number(target?.row_index)) ? Number(target.row_index) : null;
+        let preferred = [];
+        let fallback = [];
     for (let i = 0; i < bodyRows.length; i++) {
       if (used.has(i)) continue;
       const cells = Array.from(bodyRows[i].querySelectorAll('td'));
       if (mi >= cells.length) continue;
       const rowMerchant = norm(cells[mi].innerText || cells[mi].textContent || '');
       if (!rowMerchant.includes(target.merchant) && !target.merchant.includes(rowMerchant)) continue;
-      if (target.amount && ai >= 0 && ai < cells.length) {
+            if (targetDate && di >= 0 && di < cells.length) {
+                const rowDate = dateKey(cells[di].innerText || cells[di].textContent || '');
+                if (rowDate && rowDate !== targetDate) continue;
+            }
+            if (targetAmt !== null && ai >= 0 && ai < cells.length) {
                 const rowAmt = amountNum(cells[ai].innerText || cells[ai].textContent || '');
-                const wantAmt = amountNum(target.amount);
-                if (wantAmt !== null && rowAmt !== null && Math.abs(rowAmt - wantAmt) > 0.01) continue;
-      }
-      const cb = bodyRows[i].querySelector('input[type="checkbox"]');
-      if (cb && isVisible(cb) && !cb.checked) cb.click();
-      used.add(i);
-      selected++;
-      break;
+                if (rowAmt !== null && Math.abs(rowAmt - targetAmt) > 0.01) continue;
+            }
+            const match = { idx: i, cb: bodyRows[i].querySelector('input[type="checkbox"]') };
+            if (targetRow !== null && i === targetRow) preferred.push(match);
+            else fallback.push(match);
     }
+        const picked = preferred.length ? preferred[0] : (fallback.length ? fallback[0] : null);
+        if (!picked) continue;
+        if (picked.cb && isVisible(picked.cb) && !picked.cb.checked) picked.cb.click();
+        used.add(picked.idx);
+        selected++;
   }
   return selected;
 }
 """
 
-    def _select_on_current_page(self, targets: list[dict]) -> int:
+    def _select_on_current_page(self, targets: list[dict], current_page: int) -> int:
         """Run the selection JS against the currently visible page."""
         assert self.browser_page is not None
         for frame in self.browser_page.frames:
@@ -242,7 +286,10 @@ class ReportSubmitter(TransactionScraper):
                 )
                 if not _blob_shows_wizard_step(blob or "", 2):
                     continue
-                result = frame.evaluate(self._SELECT_TRANSACTIONS_ON_PAGE_JS, targets)
+                result = frame.evaluate(
+                    self._SELECT_TRANSACTIONS_ON_PAGE_JS,
+                    {"targets": targets, "currentPage": current_page},
+                )
                 if isinstance(result, (int, float)) and result > 0:
                     return int(result)
             except Exception:
@@ -263,9 +310,13 @@ class ReportSubmitter(TransactionScraper):
 
         targets = []
         for ln in lines:
+            page_idx, row_idx = self._parse_step2_line_locator(ln.line_id)
             targets.append({
                 "merchant": ln.merchant_name.lower().strip(),
-                "amount": re.sub(r"[,$\s]", "", ln.amount).strip(),
+                "date": ln.transaction_date.strip(),
+                "amount": ln.amount,
+                "page_index": page_idx,
+                "row_index": row_idx,
             })
 
         self.set_status("Step 2: navigating to first page of transactions…")
@@ -288,7 +339,7 @@ class ReportSubmitter(TransactionScraper):
                     f"Step 2: selecting transactions (page {page_idx + 1})…"
                 )
 
-            n = self._select_on_current_page(targets)
+            n = self._select_on_current_page(targets, page_idx)
             total_selected += n
 
             can_advance = self._credit_card_table_pagination_can_advance(
@@ -306,8 +357,10 @@ class ReportSubmitter(TransactionScraper):
 
         return total_selected
 
-    _DESELECT_EXTRA_TRANSACTIONS_STEP2_JS = """
-(targets) => {
+        _DESELECT_EXTRA_TRANSACTIONS_STEP2_JS = """
+(payload) => {
+    const targets = Array.isArray(payload?.targets) ? payload.targets : [];
+    const currentPage = Number.isFinite(Number(payload?.currentPage)) ? Number(payload.currentPage) : null;
   const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
   const norm = (v) => clean(v).toLowerCase();
         const amountNum = (v) => {
@@ -316,6 +369,27 @@ class ReportSubmitter(TransactionScraper):
             const n = Number(s);
             return Number.isFinite(n) ? n : null;
         };
+    const monthMap = {
+        jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+        may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9,
+        september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+    };
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const dateKey = (v) => {
+        const s = norm(v).replace(/,/g, ' ');
+        if (!s) return '';
+        let m = s.match(/^(\d{1,2})[-/\s]([a-z]{3,9})[-/\s](\d{2,4})$/i);
+        if (m) {
+            const d = Number(m[1]);
+            const mo = monthMap[String(m[2]).toLowerCase()] || 0;
+            let y = Number(m[3]);
+            if (y < 100) y += 2000;
+            if (mo > 0 && d > 0) return `${y}-${pad2(mo)}-${pad2(d)}`;
+        }
+        m = s.match(/^(\d{4})[-/\s](\d{1,2})[-/\s](\d{1,2})$/);
+        if (m) return `${Number(m[1])}-${pad2(Number(m[2]))}-${pad2(Number(m[3]))}`;
+        return s.replace(/\s+/g, ' ');
+    };
   const isVisible = (el) => {
     const st = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
@@ -329,13 +403,15 @@ class ReportSubmitter(TransactionScraper):
     const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
     const hasM = ht.some(t => t.includes('merchant') || t.includes('vendor'));
     let s = hasM ? 4 : 0;
+        const di = ht.findIndex(t => /\bdate\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
     const ai = ht.findIndex(t => /\\bamount\\b/.test(t) || t.includes('amt'));
+        if (di >= 0) s += 2;
     if (ai >= 0) s += 3;
     if (table.querySelector('input[type="checkbox"]')) s += 1;
-    if (s > score) { score = s; best = { table, mi: ht.findIndex(t => t.includes('merchant') || t.includes('vendor')), ai }; }
+        if (s > score) { score = s; best = { table, mi: ht.findIndex(t => t.includes('merchant') || t.includes('vendor')), di, ai }; }
   }
   if (!best || best.mi < 0) return 0;
-  const { table, mi, ai } = best;
+    const { table, mi, di, ai } = best;
   const bodyRows = table.tBodies && table.tBodies.length
     ? Array.from(table.tBodies[0].querySelectorAll('tr'))
     : Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
@@ -346,12 +422,18 @@ class ReportSubmitter(TransactionScraper):
     const cb = bodyRows[i].querySelector('input[type="checkbox"]');
     if (!cb || !isVisible(cb) || !cb.checked) continue;
     const rowMerchant = norm(cells[mi].innerText || cells[mi].textContent || '');
+    const rowDate = (di >= 0 && di < cells.length)
+      ? dateKey(cells[di].innerText || cells[di].textContent || '')
+      : '';
         const rowAmt = (ai >= 0 && ai < cells.length)
             ? amountNum(cells[ai].innerText || cells[ai].textContent || '')
             : null;
     let isTarget = false;
     for (const target of targets) {
+      if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
       if (!rowMerchant.includes(target.merchant) && !target.merchant.includes(rowMerchant)) continue;
+            const targetDate = dateKey(target?.date || '');
+            if (targetDate && rowDate && targetDate !== rowDate) continue;
             if (target.amount && ai >= 0) {
                 const wantAmt = amountNum(target.amount);
                 if (wantAmt !== null && rowAmt !== null && Math.abs(rowAmt - wantAmt) > 0.01) continue;
@@ -368,7 +450,7 @@ class ReportSubmitter(TransactionScraper):
 }
 """
 
-    def _deselect_on_current_page(self, targets: list[dict]) -> int:
+    def _deselect_on_current_page(self, targets: list[dict], current_page: int) -> int:
         """Run the deselect JS against the currently visible page."""
         assert self.browser_page is not None
         for frame in self.browser_page.frames:
@@ -379,7 +461,8 @@ class ReportSubmitter(TransactionScraper):
                 if not _blob_shows_wizard_step(blob or "", 2):
                     continue
                 result = frame.evaluate(
-                    self._DESELECT_EXTRA_TRANSACTIONS_STEP2_JS, targets
+                    self._DESELECT_EXTRA_TRANSACTIONS_STEP2_JS,
+                    {"targets": targets, "currentPage": current_page},
                 )
                 if isinstance(result, (int, float)) and result > 0:
                     return int(result)
@@ -401,9 +484,13 @@ class ReportSubmitter(TransactionScraper):
 
         targets = []
         for ln in lines:
+            page_idx, row_idx = self._parse_step2_line_locator(ln.line_id)
             targets.append({
                 "merchant": ln.merchant_name.lower().strip(),
-                "amount": re.sub(r"[,$\s]", "", ln.amount).strip(),
+                "date": ln.transaction_date.strip(),
+                "amount": ln.amount,
+                "page_index": page_idx,
+                "row_index": row_idx,
             })
 
         self.set_status("Step 2: navigating to first page to deselect extras…")
@@ -414,7 +501,7 @@ class ReportSubmitter(TransactionScraper):
         max_pages = 80
 
         for page_idx in range(max_pages):
-            n = self._deselect_on_current_page(targets)
+            n = self._deselect_on_current_page(targets, page_idx)
             total_deselected += n
 
             can_advance = self._credit_card_table_pagination_can_advance(
