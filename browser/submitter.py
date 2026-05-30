@@ -629,6 +629,18 @@ class ReportSubmitter(TransactionScraper):
             if len(matched_ids) >= len(targets):
                 break
 
+            # Save after selecting checkboxes — Oracle requires this
+            # before the table pagination links become active (the scraper
+            # does the same on every page).
+            if n > 0:
+                self.set_status("Step 2: saving selections before paginating…")
+                if self.click_text_in_any_frame("Save"):
+                    self._wait_for_oracle_page_stable(settle_ms=900)
+                # Re-detect credit card frame (Save may reload iframes)
+                refreshed = self._step2_pick_best_credit_snapshot()
+                if refreshed:
+                    self._step2_credit_card_frame = refreshed[0]
+
             clicked = self.click_expense_table_pagination_next_in_any_frame(
                 preferred_frame=self._step2_credit_card_frame,
             )
@@ -636,11 +648,11 @@ class ReportSubmitter(TransactionScraper):
                 remaining_after = [t for t in targets if t["target_id"] not in matched_ids]
                 if remaining_after:
                     self.set_status(
-                        "Step 2: could not open next transaction page; saving and retrying…"
+                        "Step 2: could not open next transaction page; retrying…"
                     )
-                    if self.click_text_in_any_frame("Save"):
+                    # If we didn't Save above (n==0), try saving now
+                    if n == 0 and self.click_text_in_any_frame("Save"):
                         self._wait_for_oracle_page_stable(settle_ms=700)
-                    # Re-detect the credit card frame (Save may reload iframes)
                     refreshed = self._step2_pick_best_credit_snapshot()
                     if refreshed:
                         self._step2_credit_card_frame = refreshed[0]
