@@ -249,9 +249,8 @@ class ReportSubmitter(TransactionScraper):
         const targetDate = dateKey(target?.date || '');
         const targetAmt = amountNum(target?.amount || '');
         const targetRowRaw = Number.isFinite(Number(target?.row_index)) ? Number(target.row_index) : null;
-        const targetRows = targetRowRaw === null ? [] : [targetRowRaw, targetRowRaw - 1];
+        const targetRow = targetRowRaw === null ? null : (targetRowRaw - 1);
         let preferred = [];
-        let fallback = [];
     for (let i = 0; i < bodyRows.length; i++) {
       if (used.has(i)) continue;
       const cells = Array.from(bodyRows[i].querySelectorAll('td'));
@@ -268,10 +267,9 @@ class ReportSubmitter(TransactionScraper):
                 if (rowAmt !== null && Math.abs(rowAmt - targetAmt) > 0.01) continue;
             }
             const match = { idx: i, cb: bodyRows[i].querySelector('input[type="checkbox"]') };
-            if (targetRows.includes(i)) preferred.push(match);
-            else fallback.push(match);
+            if (targetRow !== null && i === targetRow) preferred.push(match);
     }
-        const picked = preferred.length ? preferred[0] : (fallback.length ? fallback[0] : null);
+        const picked = preferred.length ? preferred[0] : null;
         if (!picked) continue;
         if (picked.cb && isVisible(picked.cb) && !picked.cb.checked) picked.cb.click();
         used.add(picked.idx);
@@ -319,9 +317,8 @@ class ReportSubmitter(TransactionScraper):
         if (!targetMerchant) continue;
         const parsedRow = Number(target?.row_index);
         if (!Number.isFinite(parsedRow)) continue;
-        const rowCandidates = [parsedRow, parsedRow - 1];
-        const rowIndex = rowCandidates.find((ri) => Number.isFinite(ri) && ri >= 0 && ri < best.rows.length);
-        if (rowIndex === undefined) continue;
+        const rowIndex = parsedRow - 1;
+        if (!Number.isFinite(rowIndex) || rowIndex < 0 || rowIndex >= best.rows.length) continue;
         if (used.has(rowIndex)) continue;
         const tr = best.rows[rowIndex];
         const cells = Array.from(tr.querySelectorAll('td'));
