@@ -12,7 +12,6 @@ import os
 import re
 import shutil
 import threading
-import traceback
 import uuid as _uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -508,87 +507,6 @@ class ExpenseService:
             rows.append({"merchant_key": mk, "expense_type": seen[mk]})
         return rows
 
-    def classify_vendors_with_llm(self, on_status=None) -> dict[str, Any]:
-        """LLM-classify all vendors that have no expense type assigned yet."""
-        from browser_automation import build_openai_client
-        from llm_query_cache import expense_type_prompt
-        from portal_expense_types import get_expense_type_options
-        from web.activity_log import activity_log
-
-        log = on_status or (lambda s: None)
-        api_key = self._get_openai_key() or os.environ.get("OPENAI_API_KEY", "")
-        raw = self._load_settings_raw()
-        model = raw.get("openai_model") or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-        if not api_key:
-            return {"error": "OPENAI_API_KEY not set"}
-
-        vendors = self.get_vendor_classifications()
-        unscanned = [v for v in vendors if not v["expense_type"].strip()]
-        if not unscanned:
-            return {"classified": 0, "message": "All vendors already classified"}
-
-        opts = get_expense_type_options()
-        client = build_openai_client(api_key)
-        n = len(unscanned)
-        activity_log.emit("step", f"Classifying {n} vendor(s) with {model}")
-        classified = 0
-
-        try:
-            for idx, v in enumerate(unscanned, start=1):
-                if activity_log.is_cancel_requested():
-                    break
-                mk = v["merchant_key"]
-                log(f"Classifying vendor {idx}/{n}: {mk}…")
-                prompt = expense_type_prompt(mk, opts)
-                exc_text = ""
-                try:
-                    response = client.responses.create(
-                        model=model,
-                        input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-                    )
-                except Exception as exc:
-                    exc_text = f"{exc!r}"
-                    if any(kw in exc_text.upper() for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS")):
-                        raise RuntimeError(
-                            f"OpenAI API unreachable — connection or TLS error. "
-                            f"Underlying error: {exc_text}"
-                        ) from exc
-                    raise
-
-                raw_text = (response.output_text or "").strip()
-                # Clean markdown fences if present
-                if raw_text.startswith("```"):
-                    raw_text = raw_text.strip("`").replace("json\n", "", 1).strip()
-                try:
-                    import json as _json
-                    parsed = _json.loads(raw_text)
-                    candidate = str(parsed.get("expense_type", "")).strip()
-                except Exception:
-                    candidate = raw_text
-
-                # Exact match first, then fuzzy
-                exact = {o.lower(): o for o in opts}
-                chosen = exact.get(candidate.lower(), "")
-                if not chosen:
-                    for o in opts:
-                        if o.lower() in candidate.lower() or candidate.lower() in o.lower():
-                            chosen = o
-                            break
-                if chosen:
-                    self.set_vendor_classification(mk, chosen)
-                    log(f"  → {mk}: {chosen}")
-                    classified += 1
-                else:
-                    log(f"  → {mk}: no match found (skipped)")
-
-            activity_log.emit("success", f"Classified {classified} vendor(s)")
-            return {"classified": classified}
-        except Exception as exc:
-            tb = traceback.format_exc()
-            print(f"[ERROR] Vendor classification failed:\n{tb}", flush=True)
-            activity_log.emit("error", f"Vendor classification failed: {exc}")
-            return {"error": str(exc)}
-
     # ------------------------------------------------------------------
     # Expense report groups
     # ------------------------------------------------------------------
@@ -714,19 +632,6 @@ class ExpenseService:
         approved = load_approved_matches(self.app_dir)
         vendor_types = load_vendor_expense_types_flat(self.app_dir)
 
-        # Orphaned IDs are in the report group but not in the lines cache.
-        # This happens when the transaction cache is refreshed and some items
-        # move to a different page/position or were removed. They are stale
-        # and cannot be acted on — exclude them from readiness checks and
-        # from total_lines so they don't block submission.
-        # Also prune them from the persisted report group so counts stay accurate.
-        orphaned = {lid for lid in lid_set if lid not in lines_by_id}
-        if orphaned:
-            group["line_ids"] = [lid for lid in group.get("line_ids", []) if str(lid).strip() not in orphaned]
-            groups[report_id] = group
-            save_expense_report_groups(self.app_dir, groups)
-        active_lids = lid_set - orphaned
-
         with_receipt = 0
         receipt_missing_marked = 0
         matched_count = 0
@@ -736,7 +641,7 @@ class ExpenseService:
         missing_justification: list[str] = []
         attention: list[AttentionItem] = []
 
-        for lid in sorted(active_lids):
+        for lid in sorted(lid_set):
             m = matches.get(lid, {})
             best = str(m.get("best_receipt") or "").strip()
             reason = str(m.get("reason") or "").strip().lower()
@@ -750,11 +655,7 @@ class ExpenseService:
 
             if best:
                 matched_count += 1
-                if lid in approved:
-                    approved_count += 1
-            elif is_receipt_missing:
-                # Receipt-missing items are explicitly resolved — count as matched and approved
-                matched_count += 1
+            if lid in approved:
                 approved_count += 1
             if etype:
                 classified_count += 1
@@ -792,8 +693,8 @@ class ExpenseService:
                 ))
 
         return ReportReadiness(
-            ready=len(needs_fix) == 0 and len(missing_justification) == 0 and len(active_lids) > 0,
-            total_lines=len(active_lids),
+            ready=len(needs_fix) == 0 and len(missing_justification) == 0 and len(lid_set) > 0,
+            total_lines=len(lid_set),
             matched=matched_count,
             approved=approved_count,
             classified=classified_count,
@@ -851,41 +752,27 @@ class ExpenseService:
 
         matches = load_receipt_line_matches(self.app_dir)
         approved = load_approved_matches(self.app_dir)
-        count = 0
+        receipt_approved = 0
+        receipt_missing_marked = 0
 
         for lid in lid_set:
             m = matches.get(lid, {})
+            reason = str(m.get("reason") or "").strip().lower()
+            if "receipt missing" in reason:
+                receipt_missing_marked += 1
             best = str(m.get("best_receipt") or "").strip()
             if best and Path(best).expanduser().is_file():
                 approved[lid] = {"source_file": best, "approved": True}
-                count += 1
+                receipt_approved += 1
 
         save_approved_matches(self.app_dir, approved)
-        return {"approved": count, "total": len(lid_set)}
-
-    @staticmethod
-    def _is_receipt_missing(match_entry: dict) -> bool:
-        """Return True if a match entry was explicitly marked 'receipt missing' by the user."""
-        return "receipt missing" in str(match_entry.get("reason", "")).lower()
-
-    def _is_approved(self, line_id: str) -> bool:
-        """Return True if a transaction has an approved match."""
-        approved = load_approved_matches(self.app_dir)
-        return bool(approved.get(line_id, {}).get("approved"))
-
-    def bulk_approve_matches(self, line_ids: list[str]) -> int:
-        """Approve matches for the given line IDs. Returns count of items approved."""
-        matches = load_receipt_line_matches(self.app_dir)
-        approved = load_approved_matches(self.app_dir)
-        count = 0
-        for lid in line_ids:
-            m = matches.get(lid, {})
-            best = str(m.get("best_receipt") or "").strip()
-            if best:
-                approved[lid] = {"source_file": best, "approved": True}
-                count += 1
-        save_approved_matches(self.app_dir, approved)
-        return count
+        ready_total = receipt_approved + receipt_missing_marked
+        return {
+            "approved": receipt_approved,
+            "receipt_missing_marked": receipt_missing_marked,
+            "ready_total": ready_total,
+            "total": len(lid_set),
+        }
 
     def _auto_classify_unclassified(self, lines: list[dict]) -> int:
         """Run classify_transactions for lines missing a vendor type and persist results.
@@ -949,14 +836,7 @@ class ExpenseService:
             return {"error": "No receipts analyzed"}
 
         existing_matches = load_receipt_line_matches(self.app_dir)
-        approved_map = load_approved_matches(self.app_dir)
-        # Skip transactions explicitly marked as receipt missing OR already approved
-        scannable = [
-            l for l in lines
-            if not self._is_receipt_missing(existing_matches.get(str(l.get("line_id", "")).strip(), {}))
-            and not approved_map.get(str(l.get("line_id", "")).strip(), {}).get("approved")
-        ]
-        deterministic = match_transactions_to_receipts(scannable, analyses)
+        deterministic = match_transactions_to_receipts(lines, analyses)
 
         updated = 0
         for row in deterministic:
@@ -1005,14 +885,7 @@ class ExpenseService:
             "match", "Phase 1 \u2014 Deterministic matching (amount \u00b7 date \u00b7 merchant)"
         )
         existing_matches = load_receipt_line_matches(self.app_dir)
-        approved_map = load_approved_matches(self.app_dir)
-        # Skip transactions explicitly marked as receipt missing OR already approved
-        scannable = [
-            l for l in lines
-            if not self._is_receipt_missing(existing_matches.get(str(l.get("line_id", "")).strip(), {}))
-            and not approved_map.get(str(l.get("line_id", "")).strip(), {}).get("approved")
-        ]
-        deterministic = match_transactions_to_receipts(scannable, analyses)
+        deterministic = match_transactions_to_receipts(lines, analyses)
 
         det_updated = 0
         for row in deterministic:
@@ -1062,16 +935,12 @@ class ExpenseService:
             }
 
         matches = load_receipt_line_matches(self.app_dir)
-        approved_map = load_approved_matches(self.app_dir)
         unmatched: list[dict] = []
         for line in lines:
             lid = str(line.get("line_id", "")).strip()
             if not lid:
                 continue
             m = matches.get(lid, {})
-            # Skip lines the user has explicitly marked as receipt missing or already approved
-            if self._is_receipt_missing(m) or approved_map.get(lid, {}).get("approved"):
-                continue
             best = str(m.get("best_receipt") or "").strip()
             conf = _float_safe(m.get("confidence"))
             if not best or conf < 0.60:
@@ -1193,31 +1062,8 @@ class ExpenseService:
             return {"error": "None of the specified lines found"}
 
         matches = load_receipt_line_matches(self.app_dir)
-
-        # Remove receipt-missing lines from the scan set — honour the user's flag
-        receipt_missing_ids = {
-            lid for lid in lid_set
-            if self._is_receipt_missing(matches.get(lid, {}))
-        }
-        if receipt_missing_ids:
-            lid_set -= receipt_missing_ids
-            target_lines = [l for l in target_lines if str(l.get("line_id", "")).strip() not in receipt_missing_ids]
-            activity_log.emit("info", f"Skipping {len(receipt_missing_ids)} line(s) marked as receipt missing")
-        if not target_lines:
-            return {"skipped": len(receipt_missing_ids), "reason": "All selected lines are marked receipt missing"}
-
         for lid in lid_set:
             matches.pop(lid, None)
-
-        # Clear any prior approval so the explicit rescan can update the match freely
-        approved_map = load_approved_matches(self.app_dir)
-        approval_cleared = 0
-        for lid in lid_set:
-            if approved_map.pop(lid, None):
-                approval_cleared += 1
-        if approval_cleared:
-            save_approved_matches(self.app_dir, approved_map)
-            activity_log.emit("info", f"Cleared approval for {approval_cleared} line(s) to allow rescan")
 
         # Exclude receipts already matched to lines NOT in this rescan set
         # to prevent a rescanned line from "stealing" another line's receipt.
@@ -1422,8 +1268,6 @@ class ExpenseService:
             activity_log.emit("success", f"Analyzed {len(new_analyses)} receipts")
             return {"analyzed": len(new_analyses)}
         except Exception as exc:
-            tb = traceback.format_exc()
-            print(f"[ERROR] Receipt analysis failed:\n{tb}", flush=True)
             activity_log.emit("error", f"Receipt analysis failed: {exc}")
             return {"error": str(exc)}
 
@@ -1677,18 +1521,6 @@ class ExpenseService:
     def _clear_submission_state(self) -> None:
         p = self._submission_state_path()
         p.unlink(missing_ok=True)
-
-    def discard_pending_submission(self, report_id: str) -> bool:
-        """Clear a failed/incomplete submission state for *report_id*. Returns True if discarded."""
-        state = self._load_submission_state()
-        if (
-            state
-            and state.get("report_id") == report_id
-            and not state.get("completed")
-        ):
-            self._clear_submission_state()
-            return True
-        return False
 
     def get_pending_submission(self, report_id: str) -> dict[str, Any] | None:
         """Return the incomplete submission state for *report_id*, or None."""

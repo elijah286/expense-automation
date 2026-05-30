@@ -244,7 +244,7 @@ class ReportSubmitter(TransactionScraper):
   for (const target of targets) {
         const targetPage = Number.isFinite(Number(target?.page_index)) ? Number(target.page_index) : null;
         if (currentPage !== null && targetPage !== null && targetPage !== currentPage) continue;
-        const targetMerchant = norm(target?.merchant || '');
+        const targetMerchant = merchantKey(target?.merchant || '');
         if (!targetMerchant) continue;
         const targetDate = dateKey(target?.date || '');
         const targetAmt = amountNum(target?.amount || '');
@@ -256,8 +256,9 @@ class ReportSubmitter(TransactionScraper):
       if (used.has(i)) continue;
       const cells = Array.from(bodyRows[i].querySelectorAll('td'));
       if (mi >= cells.length) continue;
-      const rowMerchant = norm(cells[mi].innerText || cells[mi].textContent || '');
-      if (rowMerchant !== targetMerchant) continue;
+    const rowMerchant = merchantKey(cells[mi].innerText || cells[mi].textContent || '');
+    if (!rowMerchant) continue;
+    if (!rowMerchant.includes(targetMerchant) && !targetMerchant.includes(rowMerchant)) continue;
             if (targetDate && di >= 0 && di < cells.length) {
                 const rowDate = dateKey(cells[di].innerText || cells[di].textContent || '');
                 if (rowDate && rowDate !== targetDate) continue;
@@ -284,6 +285,8 @@ class ReportSubmitter(TransactionScraper):
 (payload) => {
     const targets = Array.isArray(payload?.targets) ? payload.targets : [];
     const currentPage = Number.isFinite(Number(payload?.currentPage)) ? Number(payload.currentPage) : null;
+    const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+    const merchantKey = (v) => clean(v).toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const isVisible = (el) => {
         const st = window.getComputedStyle(el);
         const r = el.getBoundingClientRect();
@@ -312,7 +315,7 @@ class ReportSubmitter(TransactionScraper):
     let selected = 0;
     for (const target of targets) {
         if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
-        const targetMerchant = String(target?.merchant || '').trim().toLowerCase();
+        const targetMerchant = merchantKey(target?.merchant || '');
         if (!targetMerchant) continue;
         const parsedRow = Number(target?.row_index);
         if (!Number.isFinite(parsedRow)) continue;
@@ -323,9 +326,9 @@ class ReportSubmitter(TransactionScraper):
         const tr = best.rows[rowIndex];
         const cells = Array.from(tr.querySelectorAll('td'));
         const rowMerchant = (best.mi >= 0 && best.mi < cells.length)
-            ? String(cells[best.mi]?.innerText || cells[best.mi]?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase()
+            ? merchantKey(cells[best.mi]?.innerText || cells[best.mi]?.textContent || '')
             : '';
-        if (rowMerchant !== targetMerchant) continue;
+        if (!rowMerchant || (!rowMerchant.includes(targetMerchant) && !targetMerchant.includes(rowMerchant))) continue;
         const cb = tr.querySelector('input[type="checkbox"]');
         if (!cb || !isVisible(cb)) continue;
         if (!cb.checked) cb.click();
@@ -341,6 +344,7 @@ class ReportSubmitter(TransactionScraper):
     const sampleLimit = Number.isFinite(Number(payload?.sampleLimit)) ? Number(payload.sampleLimit) : 8;
     const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
     const norm = (v) => clean(v).toLowerCase();
+    const merchantKey = (v) => norm(v).replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const isVisible = (el) => {
         if (!el) return false;
         const st = window.getComputedStyle(el);
