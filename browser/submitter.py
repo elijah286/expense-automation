@@ -184,15 +184,15 @@ class ReportSubmitter(TransactionScraper):
     _SELECT_TRANSACTIONS_ON_PAGE_JS = """
 (payload) => {
     const targets = Array.isArray(payload?.targets) ? payload.targets : [];
-    const currentPage = Number.isFinite(Number(payload?.currentPage)) ? Number(payload.currentPage) : null;
-  const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
-  const norm = (v) => clean(v).toLowerCase();
-        const amountNum = (v) => {
-            const s = String(v || '').replace(/[^0-9.+-]/g, '');
-            if (!s) return null;
-            const n = Number(s);
-            return Number.isFinite(n) ? n : null;
-        };
+    const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
+    const norm = (v) => clean(v).toLowerCase();
+    const merchantKey = (v) => norm(v).replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    const amountNum = (v) => {
+        const s = String(v || '').replace(/[^0-9.+-]/g, '');
+        if (!s) return null;
+        const n = Number(s);
+        return Number.isFinite(n) ? n : null;
+    };
     const monthMap = {
         jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
         may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9,
@@ -202,7 +202,7 @@ class ReportSubmitter(TransactionScraper):
     const dateKey = (v) => {
         const s = norm(v).replace(/,/g, ' ');
         if (!s) return '';
-        let m = s.match(/^(\d{1,2})[-/\s]([a-z]{3,9})[-/\s](\d{2,4})$/i);
+        let m = s.match(/^(\\d{1,2})[-/\\s]([a-z]{3,9})[-/\\s](\\d{2,4})$/i);
         if (m) {
             const d = Number(m[1]);
             const mo = monthMap[String(m[2]).toLowerCase()] || 0;
@@ -210,81 +210,81 @@ class ReportSubmitter(TransactionScraper):
             if (y < 100) y += 2000;
             if (mo > 0 && d > 0) return `${y}-${pad2(mo)}-${pad2(d)}`;
         }
-        m = s.match(/^(\d{4})[-/\s](\d{1,2})[-/\s](\d{1,2})$/);
+        m = s.match(/^(\\d{4})[-/\\s](\\d{1,2})[-/\\s](\\d{1,2})$/);
         if (m) return `${Number(m[1])}-${pad2(Number(m[2]))}-${pad2(Number(m[3]))}`;
-        return s.replace(/\s+/g, ' ');
+        return s.replace(/\\s+/g, ' ');
     };
-  const isVisible = (el) => {
-    const st = window.getComputedStyle(el);
-    const r = el.getBoundingClientRect();
-    return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0;
-  };
-  let best = null;
-  let score = -1;
-  for (const table of document.querySelectorAll('table')) {
-    const hr = table.querySelector('thead tr') || table.querySelector('tr');
-    if (!hr) continue;
-    const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
-    const hasM = ht.some(t => t.includes('merchant') || t.includes('vendor'));
-    let s = hasM ? 4 : 0;
-        const di = ht.findIndex(t => /\bdate\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
-    const ai = ht.findIndex(t => /\\bamount\\b/.test(t) || t.includes('amt'));
+    const isVisible = (el) => {
+        const st = window.getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0;
+    };
+    let best = null;
+    let score = -1;
+    for (const table of document.querySelectorAll('table')) {
+        const hr = table.querySelector('thead tr') || table.querySelector('tr');
+        if (!hr) continue;
+        const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+        const hasM = ht.some(t => t.includes('merchant') || t.includes('vendor'));
+        let s = hasM ? 4 : 0;
+        const di = ht.findIndex(t => /\\bdate\\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
+        const ai = ht.findIndex(t => /\\bamount\\b/.test(t) || t.includes('amt'));
         if (di >= 0) s += 2;
-    if (ai >= 0) s += 3;
-    if (table.querySelector('input[type="checkbox"]')) s += 1;
+        if (ai >= 0) s += 3;
+        if (table.querySelector('input[type="checkbox"]')) s += 1;
         if (s > score) { score = s; best = { table, mi: ht.findIndex(t => t.includes('merchant') || t.includes('vendor')), di, ai }; }
-  }
-  if (!best || best.mi < 0) return 0;
-    const { table, mi, di, ai } = best;
-  const bodyRows = table.tBodies && table.tBodies.length
-    ? Array.from(table.tBodies[0].querySelectorAll('tr'))
-    : Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
-  const used = new Set();
-  let selected = 0;
-  for (const target of targets) {
-        const targetPage = Number.isFinite(Number(target?.page_index)) ? Number(target.page_index) : null;
-        if (currentPage !== null && targetPage !== null && targetPage !== currentPage) continue;
-        const targetMerchant = merchantKey(target?.merchant || '');
-        if (!targetMerchant) continue;
-        const targetDate = dateKey(target?.date || '');
-        const targetAmt = amountNum(target?.amount || '');
-        const targetRowRaw = Number.isFinite(Number(target?.row_index)) ? Number(target.row_index) : null;
-        const targetRow = targetRowRaw === null ? null : (targetRowRaw - 1);
-        let preferred = [];
-    for (let i = 0; i < bodyRows.length; i++) {
-      if (used.has(i)) continue;
-      const cells = Array.from(bodyRows[i].querySelectorAll('td'));
-      if (mi >= cells.length) continue;
-    const rowMerchant = merchantKey(cells[mi].innerText || cells[mi].textContent || '');
-    if (!rowMerchant) continue;
-    if (!rowMerchant.includes(targetMerchant) && !targetMerchant.includes(rowMerchant)) continue;
-            if (targetDate && di >= 0 && di < cells.length) {
-                const rowDate = dateKey(cells[di].innerText || cells[di].textContent || '');
-                if (rowDate && rowDate !== targetDate) continue;
-            }
-            if (targetAmt !== null && ai >= 0 && ai < cells.length) {
-                const rowAmt = amountNum(cells[ai].innerText || cells[ai].textContent || '');
-                if (rowAmt !== null && Math.abs(rowAmt - targetAmt) > 0.01) continue;
-            }
-            const match = { idx: i, cb: bodyRows[i].querySelector('input[type="checkbox"]') };
-            if (targetRow !== null && i === targetRow) preferred.push(match);
     }
-        const picked = preferred.length ? preferred[0] : null;
-        if (!picked) continue;
-        if (picked.cb && isVisible(picked.cb) && !picked.cb.checked) picked.cb.click();
-        used.add(picked.idx);
+    if (!best || best.mi < 0) return { selected: 0, matched: [] };
+    const { table, mi, di, ai } = best;
+    const bodyRows = table.tBodies && table.tBodies.length
+        ? Array.from(table.tBodies[0].querySelectorAll('tr'))
+        : Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
+    const usedRows = new Set();
+    let selected = 0;
+    const matched = [];
+    for (let ti = 0; ti < targets.length; ti++) {
+        const target = targets[ti];
+        const tgtMerchant = merchantKey(target?.merchant || '');
+        if (!tgtMerchant) continue;
+        const tgtDate = dateKey(target?.date || '');
+        const tgtAmt = amountNum(target?.amount || '');
+        const tgtRow = Number.isFinite(Number(target?.row_index)) ? Number(target.row_index) : null;
+        const candidates = [];
+        for (let i = 0; i < bodyRows.length; i++) {
+            if (usedRows.has(i)) continue;
+            const cells = Array.from(bodyRows[i].querySelectorAll('td'));
+            if (mi >= cells.length) continue;
+            const rowMerchant = merchantKey(cells[mi].innerText || cells[mi].textContent || '');
+            if (!rowMerchant) continue;
+            if (!rowMerchant.includes(tgtMerchant) && !tgtMerchant.includes(rowMerchant)) continue;
+            if (tgtDate && di >= 0 && di < cells.length) {
+                const rowDate = dateKey(cells[di].innerText || cells[di].textContent || '');
+                if (rowDate && rowDate !== tgtDate) continue;
+            }
+            if (tgtAmt !== null && ai >= 0 && ai < cells.length) {
+                const rowAmt = amountNum(cells[ai].innerText || cells[ai].textContent || '');
+                if (rowAmt !== null && Math.abs(rowAmt - tgtAmt) > 0.01) continue;
+            }
+            const cb = bodyRows[i].querySelector('input[type="checkbox"]');
+            if (!cb || !isVisible(cb)) continue;
+            candidates.push({ idx: i, cb, hinted: (tgtRow !== null && i === tgtRow) });
+        }
+        if (candidates.length === 0) continue;
+        const picked = candidates.find(c => c.hinted) || candidates[0];
+        if (!picked.cb.checked) picked.cb.click();
+        usedRows.add(picked.idx);
         selected++;
-  }
-  return selected;
+        matched.push(target?.target_id != null ? target.target_id : ti);
+    }
+    return { selected, matched };
 }
 """
 
     _SELECT_TRANSACTIONS_BY_ROW_JS = """
 (payload) => {
     const targets = Array.isArray(payload?.targets) ? payload.targets : [];
-    const currentPage = Number.isFinite(Number(payload?.currentPage)) ? Number(payload.currentPage) : null;
-    const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
-    const merchantKey = (v) => clean(v).toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const clean = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+    const merchantKey = (v) => clean(v).toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
     const isVisible = (el) => {
         const st = window.getComputedStyle(el);
         const r = el.getBoundingClientRect();
@@ -295,7 +295,7 @@ class ReportSubmitter(TransactionScraper):
     for (const table of document.querySelectorAll('table')) {
         const hr = table.querySelector('thead tr') || table.querySelector('tr');
         if (!hr) continue;
-        const headers = Array.from(hr.querySelectorAll('th, td')).map(c => String(c.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase());
+        const headers = Array.from(hr.querySelectorAll('th, td')).map(c => String(c.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase());
         const mi = headers.findIndex(t => t.includes('merchant') || t.includes('vendor') || t.includes('payee') || t.includes('supplier'));
         if (mi < 0) continue;
         const rows = table.tBodies && table.tBodies.length
@@ -308,17 +308,18 @@ class ReportSubmitter(TransactionScraper):
             best = { table, rows, mi };
         }
     }
-    if (!best) return 0;
+    if (!best) return { selected: 0, matched: [] };
     const used = new Set();
     let selected = 0;
-    for (const target of targets) {
-        if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
+    const matched = [];
+    for (let ti = 0; ti < targets.length; ti++) {
+        const target = targets[ti];
         const targetMerchant = merchantKey(target?.merchant || '');
         if (!targetMerchant) continue;
         const parsedRow = Number(target?.row_index);
         if (!Number.isFinite(parsedRow)) continue;
-        const rowIndex = parsedRow - 1;
-        if (!Number.isFinite(rowIndex) || rowIndex < 0 || rowIndex >= best.rows.length) continue;
+        const rowIndex = parsedRow;
+        if (rowIndex < 0 || rowIndex >= best.rows.length) continue;
         if (used.has(rowIndex)) continue;
         const tr = best.rows[rowIndex];
         const cells = Array.from(tr.querySelectorAll('td'));
@@ -331,8 +332,9 @@ class ReportSubmitter(TransactionScraper):
         if (!cb.checked) cb.click();
         used.add(rowIndex);
         selected++;
+        matched.push(target?.target_id != null ? target.target_id : ti);
     }
-    return selected;
+    return { selected, matched };
 }
 """
 
@@ -355,8 +357,8 @@ class ReportSubmitter(TransactionScraper):
         if (!hr) continue;
         const headers = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
         const mi = headers.findIndex(t => t.includes('merchant') || t.includes('vendor'));
-        const di = headers.findIndex(t => /\bdate\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
-        const ai = headers.findIndex(t => /\bamount\b/.test(t) || t.includes('amt'));
+        const di = headers.findIndex(t => /\\bdate\\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
+        const ai = headers.findIndex(t => /\\bamount\\b/.test(t) || t.includes('amt'));
         const hasCheckbox = !!table.querySelector('input[type="checkbox"]');
         let score = 0;
         if (mi >= 0) score += 4;
@@ -515,37 +517,51 @@ class ReportSubmitter(TransactionScraper):
 
         return "\n".join(lines_out)
 
-    def _select_on_current_page(self, targets: list[dict], current_page: int) -> int:
-        """Run the selection JS against the currently visible page."""
+    def _select_on_current_page(self, targets: list[dict]) -> tuple[int, list]:
+        """Run the selection JS against the currently visible page.
+
+        Returns (selected_count, list_of_matched_target_ids).
+        """
         assert self.browser_page is not None
         picked = self._step2_pick_best_credit_snapshot()
         if not picked:
-            return 0
+            return 0, []
         frame, _ = picked
         self._step2_credit_card_frame = frame
+
         primary_selected = 0
+        primary_matched: list = []
         try:
             result = frame.evaluate(
                 self._SELECT_TRANSACTIONS_ON_PAGE_JS,
-                {"targets": targets, "currentPage": current_page},
+                {"targets": targets},
             )
-            if isinstance(result, (int, float)) and result > 0:
+            if isinstance(result, dict):
+                primary_selected = int(result.get("selected", 0))
+                primary_matched = result.get("matched", [])
+            elif isinstance(result, (int, float)) and result > 0:
                 primary_selected = int(result)
         except Exception:
             pass
+
         fallback_selected = 0
+        fallback_matched: list = []
         try:
-            # Fallback for Oracle table variants where merchant/amount/date columns
-            # are merged or irregular: use the scraped row index on the current page.
             result = frame.evaluate(
                 self._SELECT_TRANSACTIONS_BY_ROW_JS,
-                {"targets": targets, "currentPage": current_page},
+                {"targets": targets},
             )
-            if isinstance(result, (int, float)) and result > 0:
+            if isinstance(result, dict):
+                fallback_selected = int(result.get("selected", 0))
+                fallback_matched = result.get("matched", [])
+            elif isinstance(result, (int, float)) and result > 0:
                 fallback_selected = int(result)
         except Exception:
             pass
-        return max(primary_selected, fallback_selected)
+
+        if primary_selected >= fallback_selected:
+            return primary_selected, primary_matched
+        return fallback_selected, fallback_matched
 
     def _select_specific_transactions_step2(
         self, lines: list[SubmissionLine],
@@ -560,9 +576,10 @@ class ReportSubmitter(TransactionScraper):
             raise RuntimeError("Browser page not available.")
 
         targets = []
-        for ln in lines:
+        for i, ln in enumerate(lines):
             page_idx, row_idx = self._parse_step2_line_locator(ln.line_id)
             targets.append({
+                "target_id": i,
                 "merchant": ln.merchant_name.lower().strip(),
                 "date": ln.transaction_date.strip(),
                 "amount": ln.amount,
@@ -577,14 +594,14 @@ class ReportSubmitter(TransactionScraper):
         total_selected = 0
         max_pages = 80
         page_attempts: list[dict[str, Any]] = []
-        target_pages = [
-            int(t["page_index"]) for t in targets
-            if isinstance(t.get("page_index"), int)
-        ]
-        max_target_page = max(target_pages) if target_pages else 0
+        matched_ids: set = set()
         self._last_step2_pagination_issue = ""
 
         for page_idx in range(max_pages):
+            remaining = [t for t in targets if t["target_id"] not in matched_ids]
+            if not remaining:
+                break
+
             page_range = self.get_step2_credit_table_page_range_in_any_frame()
             if page_range:
                 start, end, total = page_range
@@ -597,8 +614,9 @@ class ReportSubmitter(TransactionScraper):
                     f"Step 2: selecting transactions (page {page_idx + 1})…"
                 )
 
-            n = self._select_on_current_page(targets, page_idx)
+            n, newly_matched = self._select_on_current_page(remaining)
             total_selected += n
+            matched_ids.update(newly_matched)
             page_attempts.append({
                 "page_index": page_idx,
                 "page_range": (
@@ -608,12 +626,15 @@ class ReportSubmitter(TransactionScraper):
                 "selected": n,
             })
 
+            if len(matched_ids) >= len(targets):
+                break
+
             clicked = self.click_expense_table_pagination_next_in_any_frame(
                 preferred_frame=self._step2_credit_card_frame,
             )
             if not clicked:
-                if page_idx < max_target_page:
-                    # Oracle sometimes requires Save before table pagination responds.
+                remaining_after = [t for t in targets if t["target_id"] not in matched_ids]
+                if remaining_after:
                     self.set_status(
                         "Step 2: could not open next transaction page; saving and retrying…"
                     )
@@ -622,11 +643,13 @@ class ReportSubmitter(TransactionScraper):
                     clicked = self.click_expense_table_pagination_next_in_any_frame(
                         preferred_frame=self._step2_credit_card_frame,
                     )
-                if not clicked and page_idx < max_target_page:
-                    self._last_step2_pagination_issue = (
-                        f"stopped at page index {page_idx} before required max target page {max_target_page}"
-                    )
-                break
+                if not clicked:
+                    if len(matched_ids) < len(targets):
+                        self._last_step2_pagination_issue = (
+                            f"stopped at page index {page_idx} with "
+                            f"{len(matched_ids)}/{len(targets)} matched"
+                        )
+                    break
             self._wait_for_oracle_page_stable(settle_ms=600)
 
         self._last_step2_selection_targets = targets
