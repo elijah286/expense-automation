@@ -1575,6 +1575,78 @@ class TransactionScraper:
         except Exception:
             return False
 
+    def _click_credit_table_next_near_table(self, frame: Frame) -> bool:
+        """Find a pagination 'Next' link near the credit card table in *frame*.
+
+        Walks up from the best-scoring table with merchant/date/amount
+        columns, searching each ancestor for a clickable 'Next' element
+        (link, button, span, td, etc.)  that is NOT the wizard step-level
+        'Next' button.  This avoids accidentally advancing the wizard
+        from Step 2 → Step 3.
+        """
+        js = r"""
+() => {
+  const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
+  const norm = (v) => clean(v).toLowerCase();
+  const isVis = (el) => {
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return st.visibility !== 'hidden' && st.display !== 'none'
+      && r.width > 0 && r.height > 0;
+  };
+
+  /* ---------- locate the credit-card table ---------- */
+  let best = null;
+  let bestScore = -1;
+  for (const table of document.querySelectorAll('table')) {
+    const hdr = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!hdr) continue;
+    const ht = Array.from(hdr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+    let sc = 0;
+    if (ht.some(t => t.includes('merchant') || t.includes('vendor') || t.includes('payee'))) sc += 4;
+    if (ht.some(t => /\bdate\b/.test(t))) sc += 2;
+    if (ht.some(t => /\bamount\b/.test(t) || /\bamt\b/.test(t))) sc += 3;
+    if (table.querySelector('input[type="checkbox"]')) sc += 1;
+    if (sc > bestScore) { bestScore = sc; best = table; }
+  }
+  if (!best || bestScore < 4) return false;
+
+  /* ---------- walk up from table, look for 'Next' clickable ---------- */
+  const reNextN = /^Next\s+\d+/i;
+  const rePlain = /^\s*Next\s*$/i;
+  const reStep  = /Step\s+\d+\s+of\s+\d+/i;   /* avoid wizard-level Next */
+  let container = best;
+  for (let depth = 0; depth < 15 && container; depth++) {
+    container = container.parentElement;
+    if (!container) break;
+    const candidates = Array.from(container.querySelectorAll(
+      'a, button, span, td, div, [role="button"], [role="link"]'
+    ));
+    for (const el of candidates) {
+      const t = clean(el.innerText || el.textContent || '');
+      /* Match "Next 10" or plain "Next" */
+      if (!reNextN.test(t) && !rePlain.test(t)) continue;
+      if (!isVis(el)) continue;
+      if (el.disabled) continue;
+      /* Skip if this looks like the wizard step navigation */
+      const parentText = (el.parentElement?.innerText || '').slice(0, 200);
+      if (reStep.test(parentText) && rePlain.test(t) && !reNextN.test(t)) continue;
+      /* Don't click the entire container/page */
+      const r = el.getBoundingClientRect();
+      if (r.width > 600 || r.height > 200) continue;
+      el.click();
+      return true;
+    }
+  }
+  return false;
+}
+"""
+        try:
+            return bool(frame.evaluate(js))
+        except Exception:
+            return False
+
     def _frame_shows_transaction_page_range(self, frame: Frame) -> bool:
         try:
             blob = frame.evaluate(
@@ -1616,6 +1688,15 @@ class TransactionScraper:
         if not self.browser_page:
             return False
         for attempt in range(retry_rounds):
+            # Strategy 0: targeted search near the credit card table —
+            # avoids accidentally clicking the wizard-level "Next".
+            for frame in self._frames_preferred_first(preferred_frame):
+                try:
+                    if self._click_credit_table_next_near_table(frame):
+                        return True
+                except Exception:
+                    continue
+            # Strategy 1: Playwright role-based search for "Next N"
             for frame in self._frames_preferred_first(preferred_frame):
                 try:
                     for role in ("link", "button"):
@@ -1632,8 +1713,10 @@ class TransactionScraper:
                                     continue
                 except Exception:
                     continue
+            # Strategy 2: plain "Next" link (no number)
             if self._click_plain_next_pagination_link(timeout_ms, preferred_frame=preferred_frame):
                 return True
+            # Strategy 3: DOM-based "Next N" search
             for frame in self._frames_preferred_first(preferred_frame):
                 try:
                     if self._click_table_pagination_next_via_dom_in_frame(frame):

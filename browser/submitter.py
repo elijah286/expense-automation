@@ -640,6 +640,10 @@ class ReportSubmitter(TransactionScraper):
                     )
                     if self.click_text_in_any_frame("Save"):
                         self._wait_for_oracle_page_stable(settle_ms=700)
+                    # Re-detect the credit card frame (Save may reload iframes)
+                    refreshed = self._step2_pick_best_credit_snapshot()
+                    if refreshed:
+                        self._step2_credit_card_frame = refreshed[0]
                     clicked = self.click_expense_table_pagination_next_in_any_frame(
                         preferred_frame=self._step2_credit_card_frame,
                     )

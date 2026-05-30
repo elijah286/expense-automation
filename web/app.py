@@ -5331,7 +5331,7 @@ def page_submit(request: Request):
 
     page_frame("Submit", selected_report_id)
 
-    with ui.element("div").classes("page-container"):
+    with ui.element("div").classes("page-container").style("max-width:860px"):
 
         ui.html('<div class="section-title">Submit</div>')
         ui.html('<div class="section-subtitle">Select a report to submit via Oracle automation</div>')
@@ -5507,6 +5507,16 @@ def page_submit(request: Request):
                         icon="replay",
                         on_click=lambda _, gid=g.id, gname=g.name: _do_submit(gid, gname),
                     ).props("color=warning no-caps unelevated size=sm").classes("action-btn")
+
+                    def _do_discard_submission(report_id=g.id):
+                        svc.discard_pending_submission(report_id)
+                        ui.navigate.to(f"/submit?report={report_id}")
+
+                    ui.button(
+                        "Discard & Start Fresh",
+                        icon="delete_outline",
+                        on_click=lambda _: _do_discard_submission(),
+                    ).props("color=negative flat no-caps size=sm").classes("text-xs")
                 elif r.ready and r.total_lines > 0:
                     ui.button(
                         "Submit Report",

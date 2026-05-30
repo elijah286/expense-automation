@@ -1533,6 +1533,12 @@ class ExpenseService:
             return state
         return None
 
+    def discard_pending_submission(self, report_id: str) -> None:
+        """Clear the pending submission state for *report_id*."""
+        pending = self.get_pending_submission(report_id)
+        if pending:
+            self._clear_submission_state()
+
     # ------------------------------------------------------------------
     # Submission automation
     # ------------------------------------------------------------------
