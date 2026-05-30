@@ -275,6 +275,48 @@ class ReportSubmitter(TransactionScraper):
 }
 """
 
+    _SELECT_TRANSACTIONS_BY_ROW_JS = """
+(payload) => {
+    const targets = Array.isArray(payload?.targets) ? payload.targets : [];
+    const currentPage = Number.isFinite(Number(payload?.currentPage)) ? Number(payload.currentPage) : null;
+    const isVisible = (el) => {
+        const st = window.getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0;
+    };
+    let best = null;
+    let bestRows = -1;
+    for (const table of document.querySelectorAll('table')) {
+        const rows = table.tBodies && table.tBodies.length
+            ? Array.from(table.tBodies[0].querySelectorAll('tr'))
+            : Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
+        const hasCheckbox = !!table.querySelector('input[type="checkbox"]');
+        if (!hasCheckbox) continue;
+        if (rows.length > bestRows) {
+            bestRows = rows.length;
+            best = { table, rows };
+        }
+    }
+    if (!best) return 0;
+    const used = new Set();
+    let selected = 0;
+    for (const target of targets) {
+        if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
+        const rowIndex = Number(target?.row_index);
+        if (!Number.isFinite(rowIndex)) continue;
+        if (rowIndex < 0 || rowIndex >= best.rows.length) continue;
+        if (used.has(rowIndex)) continue;
+        const tr = best.rows[rowIndex];
+        const cb = tr.querySelector('input[type="checkbox"]');
+        if (!cb || !isVisible(cb)) continue;
+        if (!cb.checked) cb.click();
+        used.add(rowIndex);
+        selected++;
+    }
+    return selected;
+}
+"""
+
     def _select_on_current_page(self, targets: list[dict], current_page: int) -> int:
         """Run the selection JS against the currently visible page."""
         assert self.browser_page is not None
@@ -286,6 +328,17 @@ class ReportSubmitter(TransactionScraper):
         try:
             result = frame.evaluate(
                 self._SELECT_TRANSACTIONS_ON_PAGE_JS,
+                {"targets": targets, "currentPage": current_page},
+            )
+            if isinstance(result, (int, float)) and result > 0:
+                return int(result)
+        except Exception:
+            pass
+        try:
+            # Fallback for Oracle table variants where merchant/amount/date columns
+            # are merged or irregular: use the scraped row index on the current page.
+            result = frame.evaluate(
+                self._SELECT_TRANSACTIONS_BY_ROW_JS,
                 {"targets": targets, "currentPage": current_page},
             )
             if isinstance(result, (int, float)) and result > 0:
@@ -355,7 +408,7 @@ class ReportSubmitter(TransactionScraper):
 
         return total_selected
 
-        _DESELECT_EXTRA_TRANSACTIONS_STEP2_JS = """
+    _DESELECT_EXTRA_TRANSACTIONS_STEP2_JS = """
 (payload) => {
     const targets = Array.isArray(payload?.targets) ? payload.targets : [];
     const currentPage = Number.isFinite(Number(payload?.currentPage)) ? Number(payload.currentPage) : null;
