@@ -1617,21 +1617,22 @@ class TransactionScraper:
   const rePlain = /^\s*Next\s*$/i;
   const reStep  = /Step\s+\d+\s+of\s+\d+/i;   /* avoid wizard-level Next */
   let container = best;
-  for (let depth = 0; depth < 15 && container; depth++) {
+  for (let depth = 0; depth < 6 && container; depth++) {
     container = container.parentElement;
     if (!container) break;
+    /* If this container includes wizard step text, stop walking up —
+       we've gone past the table's pagination area. */
+    const containerSnippet = (container.innerText || '').slice(0, 600);
+    if (reStep.test(containerSnippet)) break;
     const candidates = Array.from(container.querySelectorAll(
-      'a, button, span, td, div, [role="button"], [role="link"]'
+      'a, button, span, td, [role="button"], [role="link"]'
     ));
     for (const el of candidates) {
       const t = clean(el.innerText || el.textContent || '');
-      /* Match "Next 10" or plain "Next" */
-      if (!reNextN.test(t) && !rePlain.test(t)) continue;
+      /* Only match "Next N" (with a number) to avoid wizard 'Next' */
+      if (!reNextN.test(t)) continue;
       if (!isVis(el)) continue;
       if (el.disabled) continue;
-      /* Skip if this looks like the wizard step navigation */
-      const parentText = (el.parentElement?.innerText || '').slice(0, 200);
-      if (reStep.test(parentText) && rePlain.test(t) && !reNextN.test(t)) continue;
       /* Don't click the entire container/page */
       const r = el.getBoundingClientRect();
       if (r.width > 600 || r.height > 200) continue;

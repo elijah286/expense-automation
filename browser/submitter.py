@@ -225,14 +225,15 @@ class ReportSubmitter(TransactionScraper):
         const hr = table.querySelector('thead tr') || table.querySelector('tr');
         if (!hr) continue;
         const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
-        const hasM = ht.some(t => t.includes('merchant') || t.includes('vendor'));
+        const isMerch = (t) => t.includes('merchant') || t.includes('vendor') || t.includes('payee') || t.includes('supplier');
+        const hasM = ht.some(isMerch);
         let s = hasM ? 4 : 0;
         const di = ht.findIndex(t => /\\bdate\\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
         const ai = ht.findIndex(t => /\\bamount\\b/.test(t) || t.includes('amt'));
         if (di >= 0) s += 2;
         if (ai >= 0) s += 3;
         if (table.querySelector('input[type="checkbox"]')) s += 1;
-        if (s > score) { score = s; best = { table, mi: ht.findIndex(t => t.includes('merchant') || t.includes('vendor')), di, ai }; }
+        if (s > score) { score = s; best = { table, mi: ht.findIndex(isMerch), di, ai }; }
     }
     if (!best || best.mi < 0) return { selected: 0, matched: [] };
     const { table, mi, di, ai } = best;
@@ -356,7 +357,7 @@ class ReportSubmitter(TransactionScraper):
         const hr = table.querySelector('thead tr') || table.querySelector('tr');
         if (!hr) continue;
         const headers = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
-        const mi = headers.findIndex(t => t.includes('merchant') || t.includes('vendor'));
+        const mi = headers.findIndex(t => t.includes('merchant') || t.includes('vendor') || t.includes('payee') || t.includes('supplier'));
         const di = headers.findIndex(t => /\\bdate\\b/.test(t) || t.includes('trans date') || t.includes('transaction date') || t.includes('post date'));
         const ai = headers.findIndex(t => /\\bamount\\b/.test(t) || t.includes('amt'));
         const hasCheckbox = !!table.querySelector('input[type="checkbox"]');
@@ -667,6 +668,15 @@ class ReportSubmitter(TransactionScraper):
                         )
                     break
             self._wait_for_oracle_page_stable(settle_ms=600)
+
+            # Safety: verify we're still on Step 2 after pagination.
+            # If a 'Next' click accidentally advanced the wizard, stop.
+            if not self._wizard_any_frame_on_step(2):
+                self._last_step2_pagination_issue = (
+                    f"left Step 2 after pagination click on page index "
+                    f"{page_idx} with {len(matched_ids)}/{len(targets)} matched"
+                )
+                break
 
         self._last_step2_selection_targets = targets
         self._last_step2_page_attempts = page_attempts
