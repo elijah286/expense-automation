@@ -1591,8 +1591,6 @@ class TransactionScraper:
             return False
         plain_next = re.compile(r"^\s*Next\s*$", re.IGNORECASE)
         for frame in self._frames_preferred_first(preferred_frame):
-            if not self._frame_shows_transaction_page_range(frame):
-                continue
             try:
                 loc = frame.get_by_role("link", name=plain_next)
                 for i in range(loc.count()):
@@ -1653,8 +1651,6 @@ class TransactionScraper:
             return False
         plain_prev = re.compile(r"^\s*Previous\s*$", re.IGNORECASE)
         for frame in self._frames_preferred_first(preferred_frame):
-            if not self._frame_shows_transaction_page_range(frame):
-                continue
             try:
                 loc = frame.get_by_role("link", name=plain_prev)
                 for i in range(loc.count()):
