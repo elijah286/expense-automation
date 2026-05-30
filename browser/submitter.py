@@ -174,12 +174,12 @@ class ReportSubmitter(TransactionScraper):
     # Step 2 — select / deselect credit-card transactions
     # ------------------------------------------------------------------
 
-        @staticmethod
-        def _parse_step2_line_locator(line_id: str) -> tuple[int | None, int | None]:
-                m = re.match(r"^p(\d+):r(\d+)$", str(line_id or "").strip())
-                if not m:
-                        return (None, None)
-                return (int(m.group(1)), int(m.group(2)))
+    @staticmethod
+    def _parse_step2_line_locator(line_id: str) -> tuple[int | None, int | None]:
+        m = re.match(r"^p(\d+):r(\d+)$", str(line_id or "").strip())
+        if not m:
+            return (None, None)
+        return (int(m.group(1)), int(m.group(2)))
 
     _SELECT_TRANSACTIONS_ON_PAGE_JS = """
 (payload) => {
