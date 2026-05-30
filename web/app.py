@@ -1906,6 +1906,10 @@ def _open_update_check_dialog():
         btn_row = ui.row().classes("items-center justify-end gap-2 w-full mt-3")
         with btn_row:
             close_btn = ui.button("Close", on_click=dlg.close).props("flat no-caps")
+            check_again_btn = ui.button(
+                "Check Again", icon="refresh", on_click=lambda: _start_check()
+            ).props("flat no-caps")
+            check_again_btn.visible = False
 
             # Pre-create action buttons (hidden until check result arrives)
             _update_state: dict[str, Any] = {
@@ -2011,6 +2015,7 @@ def _open_update_check_dialog():
 
         def _show_result(info):
             spinner.visible = False
+            check_again_btn.visible = True
             if not info:
                 status_label.text = f"You're on the latest version (v{_VERSION})."
                 status_label.style("color:#16a34a")
@@ -2109,8 +2114,30 @@ def _open_update_check_dialog():
                 poll_timer.deactivate()
                 _show_result(_check_done["info"])
 
-        threading.Thread(target=_check, daemon=True).start()
-        poll_timer = ui.timer(0.3, _poll_check)
+        poll_timer = ui.timer(0.3, _poll_check, active=False)
+
+        def _start_check():
+            status_label.text = "Checking for updates\u2026"
+            status_label.style("font-size:0.9rem;color:#64748b")
+            spinner.visible = True
+            update_btn.visible = False
+            releases_btn.visible = False
+            progress_container.style("display:none")
+            try:
+                result_container.clear()
+            except Exception:
+                pass
+            result_container.style("display:none")
+            _update_state["asset_url"] = ""
+            _update_state["dl_progress"] = -1.0
+            _update_state["dl_done_path"] = None
+            _update_state["dl_error"] = None
+            _check_done["value"] = False
+            _check_done["info"] = None
+            threading.Thread(target=_check, daemon=True).start()
+            poll_timer.activate()
+
+        _start_check()
 
     dlg.open()
 
@@ -2333,18 +2360,10 @@ def page_documents(request: Request):
         search_container = ui.element("div")
         results_container = ui.element("div")
 
-        # Page-level timer for live refresh during receipt analysis.
-        # Only triggers a full re-render when new receipts have been analyzed
-        # since the last poll — avoids flashing all rows every 2 seconds.
-        _last_analyzed_set: set[str] = set()
-
+        # Page-level timer for live refresh during receipt analysis
+        # (must be outside header_container so it survives re-renders)
         def _analysis_poll():
-            if not state.get("_analysis_running"):
-                return
-            current = {r.source_file for r in svc.get_receipts() if r.analyzed}
-            if current != _last_analyzed_set:
-                _last_analyzed_set.clear()
-                _last_analyzed_set.update(current)
+            if state.get("_analysis_running"):
                 _render_documents()
 
         _analysis_refresh_timer = ui.timer(2.0, _analysis_poll, active=False)
@@ -2929,7 +2948,7 @@ def page_documents(request: Request):
                     if doc.is_image and Path(doc.source_file).is_file():
                         rotation = doc.rotation * 90
                         with ui.element("div").style(
-                            "width:100%;height:260px;overflow:hidden;"
+                            "width:100%;max-height:260px;overflow:hidden;"
                             "border-radius:8px;border:1px solid var(--border-default);cursor:pointer;"
                         ).on("click", lambda _, d=doc: _open_receipt_viewer(d)):
                             img_style = "width:100%;height:100%;object-fit:contain;"
@@ -2938,7 +2957,7 @@ def page_documents(request: Request):
                             ui.image(_img_url(doc.source_file)).style(img_style)
                     elif Path(doc.source_file).is_file() and Path(doc.source_file).suffix.lower() == ".pdf":
                         with ui.element("div").style(
-                            "width:100%;height:260px;overflow:hidden;"
+                            "width:100%;max-height:260px;overflow:hidden;"
                             "border-radius:8px;border:1px solid var(--border-default);cursor:pointer;"
                         ).on("click", lambda _, d=doc: _open_receipt_viewer(d)):
                             ui.image(_pdf_thumb_url(doc.source_file)).style(
@@ -3328,22 +3347,9 @@ _VIEWER_JS = """
             }
             return;
         }
-        const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
-        const s = Math.min((cw-32)/ew, (ch-32)/eh);
-        /* If the computed scale would make the image too small, the container
-           is still animating/settling — retry instead of locking in a bad scale. */
-        if (nw * s < 60 || nh * s < 60) {
-            if (retries < 300) {
-                setTimeout(function() { fit(retries + 1); }, 20);
-            } else {
-                img.style.width = "100%"; img.style.height = "100%";
-                img.style.objectFit = "contain";
-                img.style.transform = rot ? "rotate("+rot+"deg)" : "";
-            }
-            return;
-        }
         img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
-        scale = s;
+        const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
+        scale = Math.min((cw-32)/ew, (ch-32)/eh);
         tx = (cw - nw*scale)/2;
         ty = (ch - nh*scale)/2;
         apply();
@@ -3427,20 +3433,9 @@ _CARD_PREVIEW_JS = """
             }
             return;
         }
-        const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
-        const s = Math.min(cw/ew, ch/eh);
-        /* If the computed scale would make the image too small, the container
-           is still animating/settling — retry instead of locking in a bad scale. */
-        if (nw * s < 60 || nh * s < 60) {
-            if (retries < 300) {
-                setTimeout(function() { fit(retries + 1); }, 20);
-            } else {
-                restoreCss();
-            }
-            return;
-        }
         img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
-        scale = s;
+        const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
+        scale = Math.min(cw/ew, ch/eh);
         tx = (cw - nw*scale)/2;
         ty = (ch - nh*scale)/2;
         apply();
@@ -3545,84 +3540,6 @@ _CARD_PREVIEW_JS = """
     ctr.addEventListener("dblclick", function(e) {
         e.stopPropagation(); fit();
     });
-})();
-"""
-
-# Card-preview pan/zoom JS.  Crucially this never reads container dimensions
-# or strips CSS — the image is already correctly displayed by object-fit:contain.
-# We just bolt event handlers on top and apply translate+scale transforms.
-_CARD_ZOOM_JS = """
-(function() {
-    const ctr = document.getElementById("__CID__");
-    if (!ctr) return;
-    const img = ctr.querySelector("img.pz-img");
-    if (!img) return;
-
-    const rot = __ROT__;
-    let tx = 0, ty = 0, scale = 1;
-    let dragging = false, wasDrag = false, sx = 0, sy = 0, stx = 0, sty = 0;
-
-    function apply() {
-        img.style.transform =
-            "translate("+tx+"px,"+ty+"px) scale("+scale+")"
-            + (rot ? " rotate("+rot+"deg)" : "");
-    }
-
-    function reset() { tx = 0; ty = 0; scale = 1; apply(); }
-
-    /* Take over rotation from static CSS (same visual result, now composable) */
-    img.style.transformOrigin = "center center";
-    if (rot) apply();
-
-    /* Wheel: pinch (ctrlKey on macOS trackpad) = zoom; scroll = pan */
-    ctr.addEventListener("wheel", function(e) {
-        e.preventDefault();
-        const r = ctr.getBoundingClientRect();
-        const mx = e.clientX - r.left - r.width / 2;
-        const my = e.clientY - r.top  - r.height / 2;
-        if (e.ctrlKey) {
-            const f = Math.exp(-e.deltaY * 0.01);
-            const ns = Math.max(0.25, Math.min(20, scale * f));
-            const sf = ns / scale;
-            tx = mx - sf * (mx - tx);
-            ty = my - sf * (my - ty);
-            scale = ns;
-        } else {
-            tx -= e.deltaX * 0.8;
-            ty -= e.deltaY * 0.8;
-        }
-        apply();
-    }, {passive: false});
-
-    /* Mouse drag pan */
-    ctr.addEventListener("mousedown", function(e) {
-        if (e.button !== 0) return;
-        dragging = true; wasDrag = false;
-        sx = e.clientX; sy = e.clientY; stx = tx; sty = ty;
-        ctr.style.cursor = "grabbing";
-        e.preventDefault();
-    });
-    window.addEventListener("mousemove", function(e) {
-        if (!dragging) return;
-        const dx = e.clientX - sx, dy = e.clientY - sy;
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDrag = true;
-        tx = stx + dx; ty = sty + dy; apply();
-    });
-    window.addEventListener("mouseup", function() {
-        if (!dragging) return;
-        dragging = false; ctr.style.cursor = "grab";
-    });
-
-    /* Suppress click-to-open-viewer when the user just panned */
-    ctr.addEventListener("click", function(e) {
-        if (wasDrag) { e.stopPropagation(); wasDrag = false; }
-    }, true);
-
-    /* Double-click resets to fit */
-    ctr.addEventListener("dblclick", function(e) { e.stopPropagation(); reset(); });
-
-    ctr.style.cursor = "grab";
-    ctr._zreset = reset;
 })();
 """
 
@@ -5022,21 +4939,17 @@ def page_matching(request: Request):
                         if r.is_image and Path(r.source_file).is_file():
                             rotation = r.rotation * 90
                             preview_cid = f"pv{id(r)}"
-                            rot_css = (
-                                f"transform:rotate({rotation}deg);transform-origin:center;"
-                                if rotation else ""
-                            )
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
                                 "border-radius:8px;border:1px solid var(--border-default);overflow:hidden;"
                                 "background:var(--bg-surface);"
-                                "display:flex;align-items:center;justify-content:center;"
                             ).on("click", lambda _, d=r: _open_receipt_viewer(d)):
                                 ui.html(
                                     f'<div id="{preview_cid}" style="position:absolute;top:0;left:0;right:0;bottom:0;'
-                                    f'overflow:hidden;">'
-                                    f'<img class="pz-img" src="{_img_url(r.source_file)}" '
-                                    f'style="width:100%;height:100%;object-fit:contain;display:block;{rot_css}" />'
+                                    f'overflow:hidden;cursor:grab;touch-action:none;background:var(--bg-surface);">'
+                                    f'<img src="{_img_url(r.source_file)}" style="transform-origin:0 0;'
+                                    f'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;'
+                                    f'user-select:none;pointer-events:none;" />'
                                     f'</div>'
                                     f'<div style="position:absolute;bottom:8px;right:8px;z-index:10;'
                                     f'background:rgba(255,255,255,0.9);border-radius:50%;width:28px;height:28px;'
@@ -5044,9 +4957,9 @@ def page_matching(request: Request):
                                     f'box-shadow:0 1px 3px rgba(0,0,0,0.15);pointer-events:none;">'
                                     f'<span class="material-icons" style="font-size:16px;color:#475569;">open_in_full</span>'
                                     f'</div>'
-                                )
-                            _pjs = _CARD_ZOOM_JS.replace("__CID__", preview_cid).replace("__ROT__", str(rotation))
-                            ui.timer(0.15, lambda _js=_pjs: ui.run_javascript(_js), once=True)
+                                ).style("position:absolute;top:0;left:0;right:0;bottom:0")
+                            _pjs = _CARD_PREVIEW_JS.replace("__CID__", preview_cid).replace("__ROT__", str(rotation))
+                            ui.timer(0.5, lambda _js=_pjs: ui.run_javascript(_js), once=True)
                         elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
                             with ui.element("div").style(
                                 "width:100%;height:380px;position:relative;"
@@ -5552,20 +5465,12 @@ def page_submit(request: Request):
                     with ui.row().classes("items-center gap-2 mb-1"):
                         ui.icon("warning").classes("text-amber-500").style("font-size:18px")
                         ui.label("Not Ready").classes("text-sm font-semibold text-amber-800")
-                    if r.needs_fix:
-                        ui.label(
-                            f"{r.needs_fix} transaction{'s' if r.needs_fix != 1 else ''} "
-                            f"{'have' if r.needs_fix != 1 else 'has'} no receipt and "
-                            f"{'are' if r.needs_fix != 1 else 'is'} not marked as 'receipt missing'. "
-                            "Fix matches or mark items as receipt missing before submitting."
-                        ).classes("text-xs text-amber-700")
-                    if r.missing_justification:
-                        ui.label(
-                            f"{r.missing_justification} transaction{'s' if r.missing_justification != 1 else ''} "
-                            f"{'are' if r.missing_justification != 1 else 'is'} missing an expense type. "
-                            "Oracle requires a justification (expense type) for every line — "
-                            "set the expense type for each item before submitting."
-                        ).classes("text-xs text-red-700 mt-1")
+                    ui.label(
+                        f"{r.needs_fix} transaction{'s' if r.needs_fix != 1 else ''} "
+                        f"{'have' if r.needs_fix != 1 else 'has'} no receipt and "
+                        f"{'are' if r.needs_fix != 1 else 'is'} not marked as 'receipt missing'. "
+                        "Fix matches or mark items as receipt missing before submitting."
+                    ).classes("text-xs text-amber-700")
 
                 if r.attention_items:
                     ui.label("Items Needing Attention").classes(
