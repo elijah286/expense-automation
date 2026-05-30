@@ -242,7 +242,6 @@ class ReportSubmitter(TransactionScraper):
   const used = new Set();
   let selected = 0;
   for (const target of targets) {
-        if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
         const targetDate = dateKey(target?.date || '');
         const targetAmt = amountNum(target?.amount || '');
         const targetRow = Number.isFinite(Number(target?.row_index)) ? Number(target.row_index) : null;
@@ -279,21 +278,20 @@ class ReportSubmitter(TransactionScraper):
     def _select_on_current_page(self, targets: list[dict], current_page: int) -> int:
         """Run the selection JS against the currently visible page."""
         assert self.browser_page is not None
-        for frame in self.browser_page.frames:
-            try:
-                blob = frame.evaluate(
-                    "() => (document.body && document.body.innerText) ? document.body.innerText : ''"
-                )
-                if not _blob_shows_wizard_step(blob or "", 2):
-                    continue
-                result = frame.evaluate(
-                    self._SELECT_TRANSACTIONS_ON_PAGE_JS,
-                    {"targets": targets, "currentPage": current_page},
-                )
-                if isinstance(result, (int, float)) and result > 0:
-                    return int(result)
-            except Exception:
-                continue
+        picked = self._step2_pick_best_credit_snapshot()
+        if not picked:
+            return 0
+        frame, _ = picked
+        self._step2_credit_card_frame = frame
+        try:
+            result = frame.evaluate(
+                self._SELECT_TRANSACTIONS_ON_PAGE_JS,
+                {"targets": targets, "currentPage": current_page},
+            )
+            if isinstance(result, (int, float)) and result > 0:
+                return int(result)
+        except Exception:
+            return 0
         return 0
 
     def _select_specific_transactions_step2(
@@ -430,7 +428,6 @@ class ReportSubmitter(TransactionScraper):
             : null;
     let isTarget = false;
     for (const target of targets) {
-      if (currentPage !== null && Number.isFinite(Number(target?.page_index)) && Number(target.page_index) !== currentPage) continue;
       if (!rowMerchant.includes(target.merchant) && !target.merchant.includes(rowMerchant)) continue;
             const targetDate = dateKey(target?.date || '');
             if (targetDate && rowDate && targetDate !== rowDate) continue;
@@ -453,21 +450,20 @@ class ReportSubmitter(TransactionScraper):
     def _deselect_on_current_page(self, targets: list[dict], current_page: int) -> int:
         """Run the deselect JS against the currently visible page."""
         assert self.browser_page is not None
-        for frame in self.browser_page.frames:
-            try:
-                blob = frame.evaluate(
-                    "() => (document.body && document.body.innerText) ? document.body.innerText : ''"
-                )
-                if not _blob_shows_wizard_step(blob or "", 2):
-                    continue
-                result = frame.evaluate(
-                    self._DESELECT_EXTRA_TRANSACTIONS_STEP2_JS,
-                    {"targets": targets, "currentPage": current_page},
-                )
-                if isinstance(result, (int, float)) and result > 0:
-                    return int(result)
-            except Exception:
-                continue
+        picked = self._step2_pick_best_credit_snapshot()
+        if not picked:
+            return 0
+        frame, _ = picked
+        self._step2_credit_card_frame = frame
+        try:
+            result = frame.evaluate(
+                self._DESELECT_EXTRA_TRANSACTIONS_STEP2_JS,
+                {"targets": targets, "currentPage": current_page},
+            )
+            if isinstance(result, (int, float)) and result > 0:
+                return int(result)
+        except Exception:
+            return 0
         return 0
 
     def _deselect_extra_transactions_step2(
