@@ -1641,7 +1641,7 @@ class TransactionScraper:
     const containerSnippet = (container.innerText || '').slice(0, 600);
     if (reStep.test(containerSnippet)) break;
     const candidates = Array.from(container.querySelectorAll(
-      'a, button, span, td, [role="button"], [role="link"]'
+      'a, button, [role="button"], [role="link"]'
     ));
     for (const el of candidates) {
       const t = clean(el.innerText || el.textContent || '');
