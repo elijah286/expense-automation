@@ -1419,20 +1419,36 @@ class TransactionScraper:
   const rect = table.getBoundingClientRect();
   const visibleArea = isVisible(table) ? Math.round(rect.width * rect.height) : 0;
   let pageRange = null;
-  let el = table;
-  for (let depth = 0; depth < 12 && el; depth++) {
-    const txt = el.innerText || '';
-    const triples = [];
-    const r = new RegExp('(\\\\d+)\\\\s*[-\\\\u2013\\\\u2014]\\\\s*(\\\\d+)\\\\s+of\\\\s+(\\\\d+)', 'gi');
-    let m;
-    while ((m = r.exec(txt)) !== null) { triples.push([Number(m[1]), Number(m[2]), Number(m[3])]); }
-    if (triples.length) {
-      const maxTotal = Math.max(...triples.map((t) => t[2]));
-      const same = triples.filter((t) => t[2] === maxTotal);
-      pageRange = same.reduce((a, b) => (b[1] > a[1] ? b : a));
-      break;
+  /* Search for a small VISIBLE element near the table that shows "X - Y of Z".
+     Walk up a few levels from the table and look for compact elements
+     (spans, tds, divs) whose text matches the page-range pattern.
+     Skip anything inside the data table itself and hidden elements. */
+  const tableRect = table.getBoundingClientRect();
+  let prContainer = table;
+  let bestPrDist = Infinity;
+  for (let depth = 0; depth < 5 && prContainer; depth++) {
+    prContainer = prContainer.parentElement;
+    if (!prContainer) break;
+    const elems = prContainer.querySelectorAll('span, td, div, select, th, li');
+    for (const pg of elems) {
+      if (table.contains(pg)) continue;
+      const pgr = pg.getBoundingClientRect();
+      if (pgr.width > 350 || pgr.height > 60) continue;
+      if (pgr.width === 0 || pgr.height === 0) continue;
+      const pgs = window.getComputedStyle(pg);
+      if (pgs.display === 'none' || pgs.visibility === 'hidden') continue;
+      const pgText = (pg.innerText || pg.textContent || '').trim();
+      if (pgText.length > 50 || pgText.length < 5) continue;
+      const pm = pgText.match(/(\d+)\s*[-\u2013\u2014]\s*(\d+)\s+of\s+(\d+)/i);
+      if (pm) {
+        const dist = Math.abs(pgr.top - tableRect.top) + Math.abs(pgr.left - tableRect.left);
+        if (dist < bestPrDist) {
+          bestPrDist = dist;
+          pageRange = [Number(pm[1]), Number(pm[2]), Number(pm[3])];
+        }
+      }
     }
-    el = el.parentElement;
+    if (pageRange) break;
   }
   let bodyRows = [];
   if (table.tBodies && table.tBodies.length > 0) {
