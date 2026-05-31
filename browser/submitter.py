@@ -766,13 +766,36 @@ class ReportSubmitter(TransactionScraper):
         page_attempts: list[dict[str, Any]] = []
         matched_ids: set = set()
         self._last_step2_pagination_issue = ""
-        prev_page_range: tuple[int, int, int] | None = None
+        prev_first_merchant: str | None = None
         stale_page_count = 0
 
         for page_idx in range(max_pages):
             remaining = [t for t in targets if t["target_id"] not in matched_ids]
             if not remaining:
                 break
+
+            # Read snapshot for stale-page detection + status display
+            snapshot = self._step2_pick_best_credit_snapshot()
+            if snapshot:
+                self._step2_credit_card_frame = snapshot[0]
+                snap_data = snapshot[1]
+                snap_rows = snap_data.get("rows") or []
+                first_merchant = (
+                    (snap_rows[0].get("merchant_name") or "").strip().lower()
+                    if snap_rows else None
+                )
+                # Detect stuck pagination — same first row as previous page
+                if first_merchant and first_merchant == prev_first_merchant:
+                    stale_page_count += 1
+                    if stale_page_count >= 2:
+                        self._last_step2_pagination_issue = (
+                            f"pagination stuck (same first row '{first_merchant}') "
+                            f"with {len(matched_ids)}/{len(targets)} matched"
+                        )
+                        break
+                else:
+                    stale_page_count = 0
+                prev_first_merchant = first_merchant
 
             page_range = self.get_step2_credit_table_page_range_in_any_frame()
             if page_range:
@@ -781,18 +804,6 @@ class ReportSubmitter(TransactionScraper):
                     f"Step 2: selecting transactions on page "
                     f"({start}–{end} of {total})…"
                 )
-                # Detect stuck pagination — same page range as last iteration
-                if prev_page_range == page_range:
-                    stale_page_count += 1
-                    if stale_page_count >= 2:
-                        self._last_step2_pagination_issue = (
-                            f"pagination stuck on page {start}-{end} of {total} "
-                            f"with {len(matched_ids)}/{len(targets)} matched"
-                        )
-                        break
-                else:
-                    stale_page_count = 0
-                prev_page_range = page_range
             else:
                 self.set_status(
                     f"Step 2: selecting transactions (page {page_idx + 1})…"
