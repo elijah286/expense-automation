@@ -594,40 +594,6 @@ class ReportSubmitter(TransactionScraper):
 
         return "\n".join(lines_out)
 
-    def _click_next_n_via_playwright(
-        self, *, preferred_frame: Frame | None = None
-    ) -> bool:
-        """Click a 'Next N' pagination link using Playwright's real mouse click.
-
-        Unlike the DOM-based ``el.click()`` in Strategy 0 of the general
-        pagination helper, Playwright's ``.click()`` simulates a true mouse
-        event that triggers Oracle's PPR (Partial Page Rendering) handlers.
-        This is needed when the form is dirty (checkboxes changed without
-        Save) because Oracle's JS may ignore programmatic DOM click events
-        in that state.
-        """
-        if not self.browser_page:
-            return False
-        from browser.scraper import (
-            _EXPENSE_TABLE_NEXT_NAME,
-            _EXPENSE_TABLE_NEXT_NAME_LOOSE,
-        )
-        for frame in self._frames_preferred_first(preferred_frame):
-            try:
-                for name_pat in (_EXPENSE_TABLE_NEXT_NAME, _EXPENSE_TABLE_NEXT_NAME_LOOSE):
-                    loc = frame.get_by_role("link", name=name_pat)
-                    for i in range(loc.count()):
-                        cand = loc.nth(i)
-                        try:
-                            if cand.is_visible() and cand.is_enabled():
-                                cand.click(timeout=8000)
-                                return True
-                        except Exception:
-                            continue
-            except Exception:
-                continue
-        return False
-
     def _select_on_current_page(self, targets: list[dict]) -> tuple[int, list]:
         """Run the selection JS against the currently visible page.
 
@@ -882,18 +848,10 @@ class ReportSubmitter(TransactionScraper):
                     )
                 break
 
-            # Paginate: use Playwright's real mouse click on "Next N" link
-            # (simulates user click, triggers Oracle's PPR properly).
-            # The JS-based el.click() in Strategy 0 may not trigger PPR
-            # when the form is dirty (checkboxes changed without Save).
-            clicked = self._click_next_n_via_playwright(
-                preferred_frame=self._step2_credit_card_frame
+            self.set_status("Step 2: advancing to next page…")
+            clicked = self.click_expense_table_pagination_next_in_any_frame(
+                preferred_frame=self._step2_credit_card_frame,
             )
-            if not clicked:
-                # Fall back to the general pagination helper
-                clicked = self.click_expense_table_pagination_next_in_any_frame(
-                    preferred_frame=self._step2_credit_card_frame,
-                )
             if not clicked:
                 remaining_after = [t for t in targets if t["target_id"] not in matched_ids]
                 if remaining_after:
@@ -904,13 +862,9 @@ class ReportSubmitter(TransactionScraper):
                     refreshed = self._step2_pick_best_credit_snapshot()
                     if refreshed:
                         self._step2_credit_card_frame = refreshed[0]
-                    clicked = self._click_next_n_via_playwright(
-                        preferred_frame=self._step2_credit_card_frame
+                    clicked = self.click_expense_table_pagination_next_in_any_frame(
+                        preferred_frame=self._step2_credit_card_frame,
                     )
-                    if not clicked:
-                        clicked = self.click_expense_table_pagination_next_in_any_frame(
-                            preferred_frame=self._step2_credit_card_frame,
-                        )
                 if not clicked:
                     if len(matched_ids) < len(targets):
                         self._last_step2_pagination_issue = (
@@ -918,7 +872,7 @@ class ReportSubmitter(TransactionScraper):
                             f"{len(matched_ids)}/{len(targets)} matched"
                         )
                     break
-            self._wait_for_oracle_page_stable(settle_ms=600)
+            self.browser_page.wait_for_timeout(900)
 
             # Safety: verify we're still on Step 2 after pagination.
             # If a 'Next' click accidentally advanced the wizard, stop.
@@ -928,13 +882,6 @@ class ReportSubmitter(TransactionScraper):
                     f"{page_idx} with {len(matched_ids)}/{len(targets)} matched"
                 )
                 break
-
-        # Save once after all pages are processed — doing this mid-loop
-        # causes Oracle to reload the page and reset pagination.
-        if total_selected > 0:
-            self.set_status("Step 2: saving selections…")
-            if self.click_text_in_any_frame("Save"):
-                self._wait_for_oracle_page_stable(settle_ms=900)
 
         self._last_step2_selection_targets = targets
         self._last_step2_page_attempts = page_attempts
