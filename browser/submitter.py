@@ -1089,6 +1089,42 @@ class ReportSubmitter(TransactionScraper):
 }
 """
 
+    _FILL_EMPTY_JUSTIFICATIONS_JS = """
+() => {
+  const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
+  const norm = (v) => clean(v).toLowerCase();
+  let filled = 0;
+  for (const table of document.querySelectorAll('table')) {
+    const hr = table.querySelector('tr');
+    if (!hr) continue;
+    const hc = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+    const ei = hc.findIndex(t => t.includes('expense type'));
+    const ji = hc.findIndex(t => t.includes('justification'));
+    if (ei < 0 || ji < 0) continue;
+    const rows = Array.from(table.querySelectorAll('tr')).slice(1);
+    for (const tr of rows) {
+      const cells = Array.from(tr.querySelectorAll('td'));
+      if (ei >= cells.length || ji >= cells.length) continue;
+      const justInput = cells[ji].querySelector('input, textarea');
+      if (!justInput || justInput.value.trim()) continue;
+      const sel = cells[ei].querySelector('select');
+      if (!sel || !sel.value) continue;
+      const opt = Array.from(sel.options).find(o => o.value === sel.value);
+      const label = clean(opt ? opt.textContent : '') || sel.value;
+      if (!label || /^select/i.test(label)) continue;
+      justInput.focus();
+      justInput.value = label;
+      justInput.dispatchEvent(new Event('input', { bubbles: true }));
+      justInput.dispatchEvent(new Event('change', { bubbles: true }));
+      justInput.dispatchEvent(new Event('blur', { bubbles: true }));
+      filled++;
+    }
+    if (filled > 0) break;
+  }
+  return filled;
+}
+"""
+
     _APPLY_EXPENSE_TYPE_JS = """
 ([rowKey, selectedLabel]) => {
   const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
@@ -1216,6 +1252,11 @@ class ReportSubmitter(TransactionScraper):
                         expense_type = et
                         break
             if not expense_type:
+                # Keyword-based fallback for common merchant categories
+                expense_type = self._guess_expense_type_from_merchant(
+                    merchant, row.get("options") or []
+                )
+            if not expense_type:
                 continue
 
             row_key = row.get("row_key", "")
@@ -1228,7 +1269,55 @@ class ReportSubmitter(TransactionScraper):
             except Exception:
                 continue
 
+        # Cleanup pass: fill any remaining empty justifications with the
+        # label of whatever expense type is currently selected.
+        try:
+            frame.evaluate(self._FILL_EMPTY_JUSTIFICATIONS_JS)
+        except Exception:
+            pass
+
         return applied
+
+    @staticmethod
+    def _guess_expense_type_from_merchant(
+        merchant: str, available_options: list[str]
+    ) -> str | None:
+        """Return a likely expense type for *merchant* by keyword matching
+        against the dropdown options available on the Oracle page."""
+        opts_lower = {o.lower(): o for o in available_options}
+
+        # Keyword → preferred option substrings (first match wins)
+        keyword_map = [
+            (["uber", "lyft", "taxi", "cab ", "grab", "didi"],
+             ["travel", "transport", "ground", "miscellaneous"]),
+            (["hotel", "inn ", "suites", "marriott", "hilton", "hyatt",
+              "sheraton", "westin", "omni", "conrad", "airbnb", "vrbo"],
+             ["hotel", "lodging", "accommodation"]),
+            (["airline", "flight", "delta", "united", "american air",
+              "southwest", "jetblue"],
+             ["airfare", "air ", "flight", "travel"]),
+            (["restaurant", "cafe", "coffee", "starbuck", "bakery",
+              "pizza", "grill", "diner", "osteria", "bistro", "taco",
+              "burger", "sushi", "ramen", "bar ", " bar", "pub ",
+              "brewery", "oyster", "moon", "sangam", "collin street"],
+             ["meals", "food", "dining"]),
+        ]
+
+        for keywords, option_hints in keyword_map:
+            if not any(kw in merchant for kw in keywords):
+                continue
+            for hint in option_hints:
+                for ol, original in opts_lower.items():
+                    if hint in ol:
+                        return original
+            break  # matched keywords but no option found
+
+        # Last resort: pick a generic/miscellaneous option if available
+        for opt in available_options:
+            ol = opt.lower()
+            if any(w in ol for w in ["miscellaneous", "other", "general"]):
+                return opt
+        return None
 
     def _step3_table_can_advance(self) -> bool:
         """Check if the Step 3 Business Expenses table has a clickable
