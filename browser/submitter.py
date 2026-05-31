@@ -1128,7 +1128,17 @@ class ReportSubmitter(TransactionScraper):
       if (!select || !justInput) return false;
       const option = pickOption(select, selectedLabel);
       if (!option) return false;
-      if (select.value === option.value) return true;
+      if (select.value === option.value) {
+        // Expense type already correct — just ensure justification is filled
+        if (justInput.value.trim()) return true;
+        const appliedLabel = clean(option.textContent || '') || selectedLabel;
+        justInput.focus();
+        justInput.value = appliedLabel;
+        justInput.dispatchEvent(new Event('input', { bubbles: true }));
+        justInput.dispatchEvent(new Event('change', { bubbles: true }));
+        justInput.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
+      }
       const appliedLabel = clean(option.textContent || '') || selectedLabel;
       select.value = option.value;
       select.dispatchEvent(new Event('change', { bubbles: true }));
