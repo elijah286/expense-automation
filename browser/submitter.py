@@ -820,13 +820,20 @@ class ReportSubmitter(TransactionScraper):
             if len(matched_ids) >= len(targets):
                 break
 
-            # On last page, don't try to paginate further
-            if page_range and page_range[1] >= page_range[2]:
+            # On last page, don't try to paginate further.
+            # Use actual 'Next N' link visibility instead of pageRange
+            # (pageRange detection is unreliable on Oracle's 46-table DOM).
+            if not self._has_next_n_pagination_link(
+                preferred_frame=self._step2_credit_card_frame
+            ):
                 if len(matched_ids) < len(targets):
+                    page_info = (
+                        f"{page_range[0]}-{page_range[1]} of {page_range[2]}"
+                        if page_range else f"page {page_idx}"
+                    )
                     self._last_step2_pagination_issue = (
-                        f"reached last page ({page_range[0]}-{page_range[1]} of "
-                        f"{page_range[2]}) with {len(matched_ids)}/{len(targets)} "
-                        f"matched"
+                        f"reached last page ({page_info}) with "
+                        f"{len(matched_ids)}/{len(targets)} matched"
                     )
                 break
 

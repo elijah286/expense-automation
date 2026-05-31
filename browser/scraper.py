@@ -1804,15 +1804,38 @@ class TransactionScraper:
         if picked:
             self._step2_credit_card_frame = picked[0]
         for _ in range(max_steps):
-            pr = self.get_step2_credit_table_page_range_in_any_frame()
-            if pr is not None and pr[0] <= 1:
-                self.browser_page.wait_for_timeout(350)
-                return
             if not self.click_expense_table_pagination_previous_in_any_frame(
                 preferred_frame=self._step2_credit_card_frame,
             ):
-                break
+                break  # No Previous available — already on first page
             self.browser_page.wait_for_timeout(500)
+        self.browser_page.wait_for_timeout(350)
+
+    def _has_next_n_pagination_link(
+        self, *, preferred_frame: Frame | None = None
+    ) -> bool:
+        """True when a visible 'Next N' pagination link exists.
+
+        Only matches links like 'Next 10', never plain 'Next' —
+        safe to use on the last page without risking the wizard-level
+        Next button.
+        """
+        if not self.browser_page:
+            return False
+        for frame in self._frames_preferred_first(preferred_frame):
+            try:
+                for role in ("link", "button"):
+                    for name_pat in (_EXPENSE_TABLE_NEXT_NAME, _EXPENSE_TABLE_NEXT_NAME_LOOSE):
+                        loc = frame.get_by_role(role, name=name_pat)
+                        for i in range(loc.count()):
+                            try:
+                                if loc.nth(i).is_visible():
+                                    return True
+                            except Exception:
+                                continue
+            except Exception:
+                continue
+        return False
 
     def _credit_card_table_pagination_can_advance(
         self, *, preferred_frame: Frame | None = None
