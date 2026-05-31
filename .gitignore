@@ -19,3 +19,4 @@ photos-exports/
 *.log
 *.sqlite3
 
+debug_step2.py

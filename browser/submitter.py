@@ -118,14 +118,67 @@ class ReportSubmitter(TransactionScraper):
 }
 """
 
+    _UPDATE_TABLE_PAGE_INFO_JS = """
+() => {
+  const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  for (const table of document.querySelectorAll('table')) {
+    const hr = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!hr) continue;
+    const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+    if (!ht.some(h => h.includes('purpose')) || !ht.some(h => h.includes('update'))) continue;
+    // Walk up to find pagination text like "1-5 of 7"
+    let el = table;
+    for (let i = 0; i < 8 && el; i++) {
+      const blob = (el.innerText || el.textContent || '');
+      const m = blob.match(/(\\d+)\\s*[-\u2013]\\s*(\\d+)\\s+of\\s+(\\d+)/i);
+      if (m) return { start: Number(m[1]), end: Number(m[2]), total: Number(m[3]) };
+      el = el.parentElement;
+    }
+    return null;
+  }
+  return null;
+}
+"""
+
+    _UPDATE_TABLE_CLICK_NEXT_JS = """
+() => {
+  const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const isVisible = (el) => {
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0;
+  };
+  for (const table of document.querySelectorAll('table')) {
+    const hr = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!hr) continue;
+    const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+    if (!ht.some(h => h.includes('purpose')) || !ht.some(h => h.includes('update'))) continue;
+    // Walk up to find "Next" link near the table
+    let el = table;
+    for (let i = 0; i < 8 && el; i++) {
+      const links = el.querySelectorAll('a, span[role="link"]');
+      for (const a of links) {
+        const t = norm(a.textContent || '');
+        if (t === 'next' && isVisible(a)) { a.click(); return true; }
+      }
+      el = el.parentElement;
+    }
+    return false;
+  }
+  return false;
+}
+"""
+
     def _find_and_click_existing_report(
         self, report_name: str, *, timeout_s: float = 15.0,
+        max_pages: int = 10,
     ) -> bool:
         """Check for a saved/in-progress report with a matching Purpose.
 
         Waits up to *timeout_s* for the 'Update Expense Reports' table to
-        render before scanning.  Oracle's iExpenses landing page loads the
-        table asynchronously, so a single snapshot is unreliable.
+        render before scanning.  Paginates through all pages of the table
+        to find the report.
 
         Returns True when an existing report was opened for editing.
         """
@@ -161,6 +214,29 @@ class ReportSubmitter(TransactionScraper):
             self._wait_for_oracle_page_stable(
                 timeout_s=min(remaining, 8.0), settle_ms=600,
             )
+            for frame in self.browser_page.frames:
+                try:
+                    if frame.evaluate(self._FIND_EXISTING_REPORT_JS, report_name):
+                        return True
+                except Exception:
+                    continue
+
+        # Paginate through the reports table to find the report on later pages
+        for _ in range(max_pages):
+            clicked_next = False
+            for frame in self.browser_page.frames:
+                try:
+                    page_info = frame.evaluate(self._UPDATE_TABLE_PAGE_INFO_JS)
+                    if page_info and page_info.get("end", 0) >= page_info.get("total", 0):
+                        break  # on last page already
+                    if frame.evaluate(self._UPDATE_TABLE_CLICK_NEXT_JS):
+                        clicked_next = True
+                        break
+                except Exception:
+                    continue
+            if not clicked_next:
+                break
+            self._wait_for_oracle_page_stable(settle_ms=600)
             for frame in self.browser_page.frames:
                 try:
                     if frame.evaluate(self._FIND_EXISTING_REPORT_JS, report_name):
@@ -2566,6 +2642,18 @@ class ReportSubmitter(TransactionScraper):
                 diagnostic = self._collect_step2_failure_diagnostics(
                     targets, page_attempts,
                 )
+                if n_selected == 0:
+                    raise RuntimeError(
+                        f"Step 2: none of the {len(payload.lines)} transactions "
+                        "from this report were found in the credit card "
+                        "transactions table. This usually means the "
+                        "transactions are already assigned to an existing "
+                        "saved expense report with the same name. Check "
+                        "the 'Update Expense Reports' table in Oracle "
+                        "iExpenses and delete or update the existing report "
+                        "before retrying.\n"
+                        f"{diagnostic}"
+                    )
                 raise RuntimeError(
                     f"Step 2: selected {n_selected}/{len(payload.lines)} transactions; "
                     "expected all report lines to be selected before proceeding.\n"
