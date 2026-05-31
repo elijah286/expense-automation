@@ -570,6 +570,93 @@ class ReportSubmitter(TransactionScraper):
                 self._step2_credit_card_frame = frame
         return best_n, best_matched
 
+    _DIAGNOSE_SELECTION_JS = r"""
+(payload) => {
+  const targets = Array.isArray(payload?.targets) ? payload.targets : [];
+  const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
+  const norm = (v) => clean(v).toLowerCase();
+  const merchantKey = (v) => norm(v).replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+  const tables = document.querySelectorAll('table');
+  const isMerch = (t) => t.includes('merchant') || t.includes('vendor') || t.includes('payee') || t.includes('supplier');
+
+  let best = null;
+  let bestScore = -1;
+  let tableScores = [];
+  for (const table of tables) {
+    const hr = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!hr) continue;
+    const ht = Array.from(hr.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+    const mi = ht.findIndex(isMerch);
+    let sc = mi >= 0 ? 4 : 0;
+    const di = ht.findIndex(t => /\bdate\b/.test(t));
+    const ai = ht.findIndex(t => /\bamount\b/.test(t) || t.includes('amt'));
+    if (di >= 0) sc += 2;
+    if (ai >= 0) sc += 3;
+    if (table.querySelector('input[type="checkbox"]')) sc += 1;
+    tableScores.push({ sc, mi, di, ai, hdrs: ht.length, firstHeaders: ht.slice(0, 10).join(' | ') });
+    if (sc > bestScore) { bestScore = sc; best = { table, mi, di, ai, ht }; }
+  }
+
+  if (!best || best.mi < 0) {
+    return `no_table: ${tables.length} tables, scores=[${tableScores.map(t => t.sc).join(',')}], ` +
+           `best_headers=${tableScores.length > 0 ? tableScores[tableScores.length-1].firstHeaders : 'none'}`;
+  }
+
+  const { table, mi, di, ai, ht } = best;
+  const bodyRows = table.tBodies && table.tBodies.length
+    ? Array.from(table.tBodies[0].querySelectorAll('tr'))
+    : Array.from(table.querySelectorAll('tr')).filter(tr => tr.querySelector('td'));
+
+  // Get first row's cell count and merchant cell content
+  let firstRowInfo = 'no_rows';
+  if (bodyRows.length > 0) {
+    const cells = Array.from(bodyRows[0].querySelectorAll('td'));
+    const mVal = mi < cells.length ? merchantKey(cells[mi].innerText || cells[mi].textContent || '') : '(mi_oob)';
+    firstRowInfo = `cells=${cells.length}, mi=${mi}, merchant=${JSON.stringify(mVal).slice(0,40)}`;
+  }
+
+  // Try matching first target
+  let matchInfo = 'no_targets';
+  if (targets.length > 0) {
+    const t0 = targets[0];
+    const tgtM = merchantKey(t0?.merchant || '');
+    matchInfo = `tgtMerchant=${JSON.stringify(tgtM).slice(0,40)}`;
+    let rowChecks = [];
+    for (let i = 0; i < Math.min(bodyRows.length, 3); i++) {
+      const cells = Array.from(bodyRows[i].querySelectorAll('td'));
+      if (mi >= cells.length) { rowChecks.push(`r${i}:mi_oob(${cells.length})`); continue; }
+      const rm = merchantKey(cells[mi].innerText || cells[mi].textContent || '');
+      const inc = rm.includes(tgtM) || tgtM.includes(rm);
+      rowChecks.push(`r${i}:${JSON.stringify(rm).slice(0,30)}=${inc?'MATCH':'FAIL'}`);
+    }
+    matchInfo += `, rows=[${rowChecks.join('; ')}]`;
+  }
+
+  return `table_found: score=${bestScore}, headers=${ht.length}:[${ht.slice(0,8).join('|')}], ` +
+         `mi=${mi} di=${di} ai=${ai}, bodyRows=${bodyRows.length}, ` +
+         `firstRow={${firstRowInfo}}, match={${matchInfo}}`;
+}
+"""
+
+    def _diagnose_selection_mismatch(self, targets: list[dict]) -> str:
+        """Run diagnostic JS in all frames to explain why selection returns 0."""
+        if not self.browser_page:
+            return "no_browser"
+        results = []
+        for fi, frame in enumerate(self.browser_page.frames):
+            try:
+                r = frame.evaluate(self._DIAGNOSE_SELECTION_JS, {"targets": targets})
+                if r and isinstance(r, str) and "no_table" not in r:
+                    results.append(f"f{fi}: {r}")
+                elif r and isinstance(r, str) and "scores" in r:
+                    results.append(f"f{fi}: {r}")
+            except Exception as exc:
+                results.append(f"f{fi}: ERR({type(exc).__name__}: {exc})")
+        if not results:
+            return "no frames returned table data"
+        return " || ".join(results[:3])
+
     def _select_specific_transactions_step2(
         self, lines: list[SubmissionLine],
     ) -> int:
@@ -623,24 +710,9 @@ class ReportSubmitter(TransactionScraper):
 
             n, newly_matched = self._select_on_current_page(remaining)
             if n == 0 and page_idx == 0:
-                # Diagnostic: report why page 1 had no matches
-                diag_parts = [f"targets={len(remaining)}"]
-                snap = self._step2_pick_best_credit_snapshot()
-                if snap:
-                    _, sdata = snap
-                    sr = sdata.get("rows") or []
-                    diag_parts.append(f"snapshot_rows={len(sr)}")
-                    if sr:
-                        diag_parts.append(
-                            f"first_merchant={sr[0].get('merchant_name','?')[:30]}"
-                        )
-                    diag_parts.append(f"frames={len(self.browser_page.frames)}")
-                else:
-                    diag_parts.append("snapshot=None")
-                    diag_parts.append(f"frames={len(self.browser_page.frames)}")
-                self.set_status(
-                    f"Step 2: page 1 selected 0 — {', '.join(diag_parts)}"
-                )
+                # Deep diagnostic: run a JS that explains WHY matching failed
+                diag = self._diagnose_selection_mismatch(remaining)
+                self.set_status(f"Step 2: page 1 selected 0 — {diag}")
             total_selected += n
             matched_ids.update(newly_matched)
             page_attempts.append({
