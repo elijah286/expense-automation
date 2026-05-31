@@ -709,9 +709,9 @@ class ReportSubmitter(TransactionScraper):
     matchInfo += `, rows=[${rowChecks.join('; ')}]`;
   }
 
-  return `table_found: score=${bestScore}, headers=${ht.length}:[${ht.slice(0,8).join('|')}], ` +
-         `mi=${mi} di=${di} ai=${ai}, bodyRows=${bodyRows.length}, ` +
-         `firstRow={${firstRowInfo}}, match={${matchInfo}}`;
+  return `table_found: score=${bestScore}, mi=${mi} di=${di} ai=${ai}, bodyRows=${bodyRows.length}, ` +
+         `firstRow={${firstRowInfo}}, match={${matchInfo}}, ` +
+         `pageRows=[${bodyRows.slice(0, 5).map(r => { const c = Array.from(r.querySelectorAll('td')); return mi < c.length ? JSON.stringify(merchantKey(c[mi].innerText||'')).slice(0,25) : '"?"'; }).join(',')}]`;
 }
 """
 
@@ -766,6 +766,8 @@ class ReportSubmitter(TransactionScraper):
         page_attempts: list[dict[str, Any]] = []
         matched_ids: set = set()
         self._last_step2_pagination_issue = ""
+        prev_page_range: tuple[int, int, int] | None = None
+        stale_page_count = 0
 
         for page_idx in range(max_pages):
             remaining = [t for t in targets if t["target_id"] not in matched_ids]
@@ -779,16 +781,31 @@ class ReportSubmitter(TransactionScraper):
                     f"Step 2: selecting transactions on page "
                     f"({start}–{end} of {total})…"
                 )
+                # Detect stuck pagination — same page range as last iteration
+                if prev_page_range == page_range:
+                    stale_page_count += 1
+                    if stale_page_count >= 2:
+                        self._last_step2_pagination_issue = (
+                            f"pagination stuck on page {start}-{end} of {total} "
+                            f"with {len(matched_ids)}/{len(targets)} matched"
+                        )
+                        break
+                else:
+                    stale_page_count = 0
+                prev_page_range = page_range
             else:
                 self.set_status(
                     f"Step 2: selecting transactions (page {page_idx + 1})…"
                 )
 
             n, newly_matched = self._select_on_current_page(remaining)
-            if n == 0 and page_idx == 0:
-                # Deep diagnostic: run a JS that explains WHY matching failed
+            if n == 0:
+                # Per-page diagnostic: report what the JS sees on this page
                 diag = self._diagnose_selection_mismatch(remaining)
-                self.set_status(f"Step 2: page 1 selected 0 — {diag}")
+                self.set_status(
+                    f"Step 2: page {page_idx + 1} selected 0/{len(remaining)} "
+                    f"remaining — {diag}"
+                )
             total_selected += n
             matched_ids.update(newly_matched)
             page_attempts.append({
@@ -801,6 +818,16 @@ class ReportSubmitter(TransactionScraper):
             })
 
             if len(matched_ids) >= len(targets):
+                break
+
+            # On last page, don't try to paginate further
+            if page_range and page_range[1] >= page_range[2]:
+                if len(matched_ids) < len(targets):
+                    self._last_step2_pagination_issue = (
+                        f"reached last page ({page_range[0]}-{page_range[1]} of "
+                        f"{page_range[2]}) with {len(matched_ids)}/{len(targets)} "
+                        f"matched"
+                    )
                 break
 
             # Save after selecting checkboxes — Oracle requires this
