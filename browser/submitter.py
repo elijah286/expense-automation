@@ -524,45 +524,51 @@ class ReportSubmitter(TransactionScraper):
         Returns (selected_count, list_of_matched_target_ids).
         """
         assert self.browser_page is not None
+
+        def _try_select_in_frame(frame: Frame) -> tuple[int, list]:
+            best_n = 0
+            best_matched: list = []
+            for js in (self._SELECT_TRANSACTIONS_ON_PAGE_JS,
+                       self._SELECT_TRANSACTIONS_BY_ROW_JS):
+                try:
+                    result = frame.evaluate(js, {"targets": targets})
+                    if isinstance(result, dict):
+                        n = int(result.get("selected", 0))
+                        m = result.get("matched", [])
+                    elif isinstance(result, (int, float)) and result > 0:
+                        n = int(result)
+                        m = []
+                    else:
+                        continue
+                    if n > best_n:
+                        best_n = n
+                        best_matched = m
+                except Exception:
+                    continue
+            return best_n, best_matched
+
+        # Strategy 1: use the snapshot to find the best frame
         picked = self._step2_pick_best_credit_snapshot()
-        if not picked:
-            return 0, []
-        frame, _ = picked
-        self._step2_credit_card_frame = frame
+        if picked:
+            frame, _ = picked
+            self._step2_credit_card_frame = frame
+            n, matched = _try_select_in_frame(frame)
+            if n > 0:
+                return n, matched
 
-        primary_selected = 0
-        primary_matched: list = []
-        try:
-            result = frame.evaluate(
-                self._SELECT_TRANSACTIONS_ON_PAGE_JS,
-                {"targets": targets},
-            )
-            if isinstance(result, dict):
-                primary_selected = int(result.get("selected", 0))
-                primary_matched = result.get("matched", [])
-            elif isinstance(result, (int, float)) and result > 0:
-                primary_selected = int(result)
-        except Exception:
-            pass
-
-        fallback_selected = 0
-        fallback_matched: list = []
-        try:
-            result = frame.evaluate(
-                self._SELECT_TRANSACTIONS_BY_ROW_JS,
-                {"targets": targets},
-            )
-            if isinstance(result, dict):
-                fallback_selected = int(result.get("selected", 0))
-                fallback_matched = result.get("matched", [])
-            elif isinstance(result, (int, float)) and result > 0:
-                fallback_selected = int(result)
-        except Exception:
-            pass
-
-        if primary_selected >= fallback_selected:
-            return primary_selected, primary_matched
-        return fallback_selected, fallback_matched
+        # Strategy 2: try every frame (snapshot may have failed or picked
+        # the wrong frame — the selection JS does its own table detection)
+        best_n = 0
+        best_matched: list = []
+        for frame in self.browser_page.frames:
+            if picked and frame is picked[0]:
+                continue  # already tried
+            n, matched = _try_select_in_frame(frame)
+            if n > best_n:
+                best_n = n
+                best_matched = matched
+                self._step2_credit_card_frame = frame
+        return best_n, best_matched
 
     def _select_specific_transactions_step2(
         self, lines: list[SubmissionLine],
@@ -616,6 +622,25 @@ class ReportSubmitter(TransactionScraper):
                 )
 
             n, newly_matched = self._select_on_current_page(remaining)
+            if n == 0 and page_idx == 0:
+                # Diagnostic: report why page 1 had no matches
+                diag_parts = [f"targets={len(remaining)}"]
+                snap = self._step2_pick_best_credit_snapshot()
+                if snap:
+                    _, sdata = snap
+                    sr = sdata.get("rows") or []
+                    diag_parts.append(f"snapshot_rows={len(sr)}")
+                    if sr:
+                        diag_parts.append(
+                            f"first_merchant={sr[0].get('merchant_name','?')[:30]}"
+                        )
+                    diag_parts.append(f"frames={len(self.browser_page.frames)}")
+                else:
+                    diag_parts.append("snapshot=None")
+                    diag_parts.append(f"frames={len(self.browser_page.frames)}")
+                self.set_status(
+                    f"Step 2: page 1 selected 0 — {', '.join(diag_parts)}"
+                )
             total_selected += n
             matched_ids.update(newly_matched)
             page_attempts.append({
