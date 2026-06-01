@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1122,8 +1123,8 @@ class ReportSubmitter(TransactionScraper):
       const justInput = cells[ji].querySelector('input, textarea');
       if (!justInput || justInput.value.trim()) continue;
       const sel = cells[ei].querySelector('select');
-      if (!sel || !sel.value) continue;
-      const opt = Array.from(sel.options).find(o => o.value === sel.value);
+    if (!sel || sel.selectedIndex < 0) continue;
+    const opt = sel.options[sel.selectedIndex] || null;
       const label = clean(opt ? opt.textContent : '') || sel.value;
       if (!label || /^select/i.test(label)) continue;
       justInput.focus();
@@ -1134,7 +1135,6 @@ class ReportSubmitter(TransactionScraper):
       justInput.dispatchEvent(new Event('blur', { bubbles: true }));
       filled++;
     }
-    if (filled > 0) break;
   }
   return filled;
 }
@@ -1269,6 +1269,12 @@ class ReportSubmitter(TransactionScraper):
         if not frame or not rows:
             return 0
 
+        preferred_types = [
+            et for et, _count in Counter(
+                et.strip() for et in merchant_to_type.values() if et and et.strip()
+            ).most_common()
+        ]
+
         self._nudge_step3_table(frame)
         self.browser_page.wait_for_timeout(400)
         frame, rows = self._extract_step3_rows()
@@ -1288,6 +1294,13 @@ class ReportSubmitter(TransactionScraper):
                 # Keyword-based fallback for common merchant categories
                 expense_type = self._guess_expense_type_from_merchant(
                     merchant, row.get("options") or []
+                )
+            if not expense_type:
+                # Hard fallback: pick a valid dropdown option so the row is
+                # never left blank when Oracle requires an expense type.
+                expense_type = self._pick_required_expense_type_from_options(
+                    row.get("options") or [],
+                    preferred_types,
                 )
             if not expense_type:
                 continue
@@ -1350,6 +1363,35 @@ class ReportSubmitter(TransactionScraper):
             ol = opt.lower()
             if any(w in ol for w in ["miscellaneous", "other", "general"]):
                 return opt
+        return None
+
+    @staticmethod
+    def _pick_required_expense_type_from_options(
+        available_options: list[str],
+        preferred_types: list[str],
+    ) -> str | None:
+        """Pick a deterministic fallback option from the row dropdown.
+
+        Preference order:
+        1) Options matching already-used categories in the same report.
+        2) The first non-placeholder option in this row's dropdown.
+        """
+        opts = [o.strip() for o in available_options if o and o.strip()]
+        if not opts:
+            return None
+
+        opts_lc = [(o.lower(), o) for o in opts]
+        for preferred in preferred_types:
+            p = preferred.strip().lower()
+            if not p:
+                continue
+            for ol, original in opts_lc:
+                if ol == p or ol in p or p in ol:
+                    return original
+
+        for original in opts:
+            if not re.match(r"(?i)^\s*select", original):
+                return original
         return None
 
     def _step3_table_can_advance(self) -> bool:
@@ -2159,6 +2201,11 @@ class ReportSubmitter(TransactionScraper):
         fixed_total = 0
         fail_streak = 0
         max_rounds = 40
+        preferred_types = [
+            et for et, _count in Counter(
+                et.strip() for et in merchant_to_type.values() if et and et.strip()
+            ).most_common()
+        ]
 
         for _ in range(max_rounds):
             errs = self._scrape_step3_banner_errors()
@@ -2210,6 +2257,11 @@ class ReportSubmitter(TransactionScraper):
                     expense_type = self._guess_expense_type_from_merchant(
                         merchant,
                         row_options,
+                    ) or ""
+                if not expense_type:
+                    expense_type = self._pick_required_expense_type_from_options(
+                        row_options,
+                        preferred_types,
                     ) or ""
 
                 if expense_type:
