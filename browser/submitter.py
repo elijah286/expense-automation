@@ -1093,6 +1093,20 @@ class ReportSubmitter(TransactionScraper):
 () => {
   const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
   const norm = (v) => clean(v).toLowerCase();
+    const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    const textAreaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    const setInputValue = (el, value) => {
+        if (!el) return;
+        if (el instanceof HTMLTextAreaElement && textAreaSetter) {
+            textAreaSetter.call(el, value);
+            return;
+        }
+        if (el instanceof HTMLInputElement && inputSetter) {
+            inputSetter.call(el, value);
+            return;
+        }
+        el.value = value;
+    };
   let filled = 0;
   for (const table of document.querySelectorAll('table')) {
     const hr = table.querySelector('tr');
@@ -1113,8 +1127,9 @@ class ReportSubmitter(TransactionScraper):
       const label = clean(opt ? opt.textContent : '') || sel.value;
       if (!label || /^select/i.test(label)) continue;
       justInput.focus();
-      justInput.value = label;
+    setInputValue(justInput, label);
       justInput.dispatchEvent(new Event('input', { bubbles: true }));
+    justInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'End' }));
       justInput.dispatchEvent(new Event('change', { bubbles: true }));
       justInput.dispatchEvent(new Event('blur', { bubbles: true }));
       filled++;
@@ -1129,6 +1144,21 @@ class ReportSubmitter(TransactionScraper):
 ([rowKey, selectedLabel]) => {
   const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
   const normalize = (value) => clean(value).toLowerCase();
+    const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+    const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    const textAreaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    const setInputValue = (el, value) => {
+        if (!el) return;
+        if (el instanceof HTMLTextAreaElement && textAreaSetter) {
+            textAreaSetter.call(el, value);
+            return;
+        }
+        if (el instanceof HTMLInputElement && inputSetter) {
+            inputSetter.call(el, value);
+            return;
+        }
+        el.value = value;
+    };
   const pickOption = (select, label) => {
     const want = normalize(label);
     const opts = Array.from(select.options);
@@ -1169,20 +1199,23 @@ class ReportSubmitter(TransactionScraper):
         if (justInput.value.trim()) return true;
         const appliedLabel = clean(option.textContent || '') || selectedLabel;
         justInput.focus();
-        justInput.value = appliedLabel;
+                setInputValue(justInput, appliedLabel);
         justInput.dispatchEvent(new Event('input', { bubbles: true }));
+                justInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'End' }));
         justInput.dispatchEvent(new Event('change', { bubbles: true }));
         justInput.dispatchEvent(new Event('blur', { bubbles: true }));
         return true;
       }
       const appliedLabel = clean(option.textContent || '') || selectedLabel;
-      select.value = option.value;
+            if (selectSetter) selectSetter.call(select, option.value);
+            else select.value = option.value;
       select.dispatchEvent(new Event('change', { bubbles: true }));
       select.dispatchEvent(new Event('input', { bubbles: true }));
       select.dispatchEvent(new Event('blur', { bubbles: true }));
       justInput.focus();
-      justInput.value = appliedLabel;
+            setInputValue(justInput, appliedLabel);
       justInput.dispatchEvent(new Event('input', { bubbles: true }));
+            justInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'End' }));
       justInput.dispatchEvent(new Event('change', { bubbles: true }));
       justInput.dispatchEvent(new Event('blur', { bubbles: true }));
       return true;
@@ -2156,6 +2189,7 @@ class ReportSubmitter(TransactionScraper):
                 )
             else:
                 merchant = ""
+                row_options: list[str] = []
                 _, rows = self._extract_step3_rows()
                 for r in (rows or []):
                     if str(r.get("row_key", "")).strip() == row_key:
@@ -2163,6 +2197,7 @@ class ReportSubmitter(TransactionScraper):
                             r"\s+", " ",
                             str(r.get("merchant_name", ""))
                         ).lower().strip()
+                        row_options = list(r.get("options") or [])
                         break
 
                 expense_type = merchant_to_type.get(merchant, "")
@@ -2171,6 +2206,11 @@ class ReportSubmitter(TransactionScraper):
                         if mk in merchant or merchant in mk:
                             expense_type = et
                             break
+                if not expense_type:
+                    expense_type = self._guess_expense_type_from_merchant(
+                        merchant,
+                        row_options,
+                    ) or ""
 
                 if expense_type:
                     try:
