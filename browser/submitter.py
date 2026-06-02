@@ -1078,11 +1078,17 @@ class ReportSubmitter(TransactionScraper):
       const options = Array.from(select.options)
         .map(opt => clean(opt.textContent || ''))
         .filter(txt => txt && !/^select/i.test(txt));
-      if (!merchant || !options.length) return;
+            const selectedLabel = clean(
+                select.selectedIndex >= 0
+                    ? (select.options[select.selectedIndex]?.textContent || '')
+                    : ''
+            );
+            if (!merchant) return;
       rowData.push({
         row_key: `${tableIndex}:${rowIndex}`,
         merchant_name: merchant,
         options,
+                selected_label: /^select/i.test(selectedLabel) ? '' : selectedLabel,
       });
     });
   });
@@ -1162,12 +1168,23 @@ class ReportSubmitter(TransactionScraper):
   const pickOption = (select, label) => {
     const want = normalize(label);
     const opts = Array.from(select.options);
+        if (!want) {
+            return opts.find(o => {
+                const ot = normalize(o.textContent || '');
+                return ot && !/^select/i.test(ot);
+            }) || null;
+        }
     let opt = opts.find(o => normalize(o.textContent || '') === want);
     if (opt) return opt;
     opt = opts.find(o => {
       const ot = normalize(o.textContent || '');
       return ot && !/^select/i.test(ot) && (ot.includes(want) || want.includes(ot));
     });
+        if (opt) return opt;
+        opt = opts.find(o => {
+            const ot = normalize(o.textContent || '');
+            return ot && !/^select/i.test(ot);
+        });
     return opt || null;
   };
   const tables = Array.from(document.querySelectorAll('table'));
@@ -1302,15 +1319,16 @@ class ReportSubmitter(TransactionScraper):
                     row.get("options") or [],
                     preferred_types,
                 )
-            if not expense_type:
-                continue
+            selected_label = str(row.get("selected_label") or "").strip()
+            target_label = str(expense_type or selected_label).strip()
 
             row_key = row.get("row_key", "")
             try:
-                ok = frame.evaluate(self._APPLY_EXPENSE_TYPE_JS, [row_key, expense_type])
+                ok = frame.evaluate(self._APPLY_EXPENSE_TYPE_JS, [row_key, target_label])
                 if ok:
                     applied += 1
-                    self.set_status(f"Step 3: set '{expense_type}' for {row.get('merchant_name', '')}")
+                    shown = target_label or "[auto]"
+                    self.set_status(f"Step 3: set '{shown}' for {row.get('merchant_name', '')}")
                     self.browser_page.wait_for_timeout(250)
             except Exception:
                 continue
@@ -2237,6 +2255,7 @@ class ReportSubmitter(TransactionScraper):
             else:
                 merchant = ""
                 row_options: list[str] = []
+                row_selected_label = ""
                 _, rows = self._extract_step3_rows()
                 for r in (rows or []):
                     if str(r.get("row_key", "")).strip() == row_key:
@@ -2245,6 +2264,7 @@ class ReportSubmitter(TransactionScraper):
                             str(r.get("merchant_name", ""))
                         ).lower().strip()
                         row_options = list(r.get("options") or [])
+                        row_selected_label = str(r.get("selected_label") or "").strip()
                         break
 
                 expense_type = merchant_to_type.get(merchant, "")
@@ -2264,19 +2284,20 @@ class ReportSubmitter(TransactionScraper):
                         preferred_types,
                     ) or ""
 
-                if expense_type:
-                    try:
-                        ok = frame.evaluate(
-                            self._APPLY_EXPENSE_TYPE_JS,
-                            [row_key, expense_type],
+                target_label = expense_type or row_selected_label
+                try:
+                    ok = frame.evaluate(
+                        self._APPLY_EXPENSE_TYPE_JS,
+                        [row_key, target_label],
+                    )
+                    fixed = bool(ok)
+                    if fixed:
+                        shown = target_label or "[auto]"
+                        self.set_status(
+                            f"Step 3: fixed '{shown}' for line {line_no}"
                         )
-                        fixed = bool(ok)
-                        if fixed:
-                            self.set_status(
-                                f"Step 3: fixed '{expense_type}' for line {line_no}"
-                            )
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
             if fixed:
                 fixed_total += 1
