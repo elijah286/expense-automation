@@ -413,6 +413,10 @@ class ExpenseService:
             "reason": "Marked as receipt missing by user.",
         }
         save_receipt_line_matches(self.app_dir, matches)
+        approved = load_approved_matches(self.app_dir)
+        if line_id in approved:
+            approved.pop(line_id, None)
+            save_approved_matches(self.app_dir, approved)
 
     def unmark_receipt_missing(self, line_id: str) -> None:
         """Remove the 'receipt missing' flag so the item requires a receipt again."""

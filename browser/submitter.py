@@ -2605,6 +2605,7 @@ class ReportSubmitter(TransactionScraper):
 
         @dataclass
         class _ReceiptEntry:
+            line_id: str
             merchant: str
             date: str
             amount: str
@@ -2627,6 +2628,7 @@ class ReportSubmitter(TransactionScraper):
                 skipped_not_found += 1
                 continue
             receipt_pool.append(_ReceiptEntry(
+                line_id=ln.line_id,
                 merchant=ln.merchant_name.lower().strip(),
                 date=ln.transaction_date.strip(),
                 amount=self._normalize_amount(ln.amount),
@@ -2647,98 +2649,152 @@ class ReportSubmitter(TransactionScraper):
 
         self.set_status("Step 6: waiting for expense table to render…")
 
-        import time as _time
-        _deadline = _time.monotonic() + 30
-        step6_rows: list[dict] = []
-        target_frame: Frame | None = None
-        while _time.monotonic() < _deadline:
-            for frame in self.browser_page.frames:
-                try:
-                    rows = frame.evaluate(self._EXTRACT_STEP6_ROWS_JS)
-                    if rows and isinstance(rows, list) and len(rows) > 0:
-                        step6_rows = rows
-                        target_frame = frame
-                        break
-                except Exception:
-                    continue
-            if step6_rows:
-                break
-            self.browser_page.wait_for_timeout(500)
+        def _extract_step6_rows_with_frame(wait_timeout_s: float = 0.0) -> tuple[Frame | None, list[dict]]:
+            import time as _time
 
-        if not step6_rows or not target_frame:
+            deadline = _time.monotonic() + max(0.0, float(wait_timeout_s))
+            while True:
+                best_rows: list[dict] = []
+                best_frame: Frame | None = None
+                for frame in self.browser_page.frames:
+                    try:
+                        rows = frame.evaluate(self._EXTRACT_STEP6_ROWS_JS)
+                    except Exception:
+                        continue
+                    if isinstance(rows, list) and len(rows) > len(best_rows):
+                        best_rows = rows
+                        best_frame = frame
+                if best_rows or _time.monotonic() >= deadline:
+                    return best_frame, best_rows
+                self.browser_page.wait_for_timeout(400)
+
+        frame0, rows0 = _extract_step6_rows_with_frame(wait_timeout_s=30.0)
+        if not rows0 or not frame0:
             self.set_status("Step 6: could not find expense lines table — skipping attachments.")
             return 0
 
-        row_merchants = [r.get("merchant", "") for r in step6_rows]
+        row_merchants = [r.get("merchant", "") for r in rows0]
         self.set_status(
-            f"Step 6: found {len(step6_rows)} row(s). "
+            f"Step 6: found {len(rows0)} row(s). "
             f"Table merchants: {row_merchants[:5]}{'…' if len(row_merchants) > 5 else ''}"
         )
 
-        def find_best_receipt(row_merchant: str, row_date: str, row_amount: str) -> _ReceiptEntry | None:
-            norm_amt = self._normalize_amount(row_amount)
-            for entry in receipt_pool:
-                if entry.used:
+        def _norm_text(raw: str) -> str:
+            return re.sub(r"\s+", " ", str(raw or "")).strip().lower()
+
+        def _norm_date(raw: str) -> str:
+            return _norm_text(raw)
+
+        def _pick_target_row(rows: list[dict], entry: _ReceiptEntry) -> dict | None:
+            best: dict | None = None
+            best_score = -1
+            for row in rows:
+                if row.get("hasExistingAttachment"):
                     continue
-                if entry.merchant == row_merchant and entry.amount == norm_amt:
-                    return entry
-            for entry in receipt_pool:
-                if entry.used:
+                row_merchant = _norm_text(row.get("merchant", ""))
+                if not row_merchant:
                     continue
-                if entry.merchant == row_merchant:
-                    return entry
-            for entry in receipt_pool:
-                if entry.used:
+
+                score = 0
+                if row_merchant == entry.merchant:
+                    score += 100
+                elif self._fuzzy_merchant_match(entry.merchant, row_merchant):
+                    score += 60
+                else:
                     continue
-                if self._fuzzy_merchant_match(entry.merchant, row_merchant):
-                    return entry
-            return None
+
+                row_amount = self._normalize_amount(str(row.get("receiptAmount", "")))
+                if entry.amount and row_amount:
+                    if entry.amount != row_amount:
+                        continue
+                    score += 40
+
+                row_date = _norm_date(row.get("date", ""))
+                entry_date = _norm_date(entry.date)
+                if row_date and entry_date and row_date == entry_date:
+                    score += 10
+
+                if score > best_score:
+                    best_score = score
+                    best = row
+            return best
+
+        def _count_attached_matches(rows: list[dict], entry: _ReceiptEntry) -> int:
+            count = 0
+            for row in rows:
+                if not row.get("hasExistingAttachment"):
+                    continue
+                row_merchant = _norm_text(row.get("merchant", ""))
+                if row_merchant != entry.merchant and not self._fuzzy_merchant_match(entry.merchant, row_merchant):
+                    continue
+                row_amount = self._normalize_amount(str(row.get("receiptAmount", "")))
+                if entry.amount and row_amount and entry.amount != row_amount:
+                    continue
+                count += 1
+            return count
 
         attached = 0
-        for row in step6_rows:
-            if row.get("hasExistingAttachment"):
+        for entry in receipt_pool:
+            if entry.used:
                 continue
-            merchant = row.get("merchant", "").lower().strip()
-            row_date = row.get("date", "")
-            row_amount = row.get("receiptAmount", "")
 
-            entry = find_best_receipt(merchant, row_date, row_amount)
-            if not entry:
-                self.set_status(f"Step 6: no receipt match for '{merchant}'")
+            target_frame, current_rows = _extract_step6_rows_with_frame(wait_timeout_s=2.0)
+            if not target_frame or not current_rows:
+                self.set_status("Step 6: table became unavailable while attaching receipts.")
+                break
+
+            row = _pick_target_row(current_rows, entry)
+            if not row:
+                self.set_status(
+                    f"Step 6: no target row found for line {entry.line_id} "
+                    f"('{entry.merchant}', amount {entry.amount or 'n/a'})."
+                )
                 continue
+
+            pre_attach_count = _count_attached_matches(current_rows, entry)
 
             staged = self._stage_attachment_file(f"s6_{attached}", entry.path)
             if not staged:
-                self.set_status(f"Step 6: failed to stage file for '{merchant}'")
+                self.set_status(f"Step 6: failed to stage file for '{entry.merchant}'")
                 continue
 
             try:
-                self.set_status(f"Step 6: clicking attach for '{merchant}'…")
+                self.set_status(f"Step 6: clicking attach for '{entry.merchant}'…")
                 clicked = target_frame.evaluate(
                     self._CLICK_ATTACH_PLUS_JS,
                     [row["tableIndex"], row["bodyRowIndex"]],
                 )
                 if not clicked:
-                    self.set_status(f"Step 6: could not click attach icon for '{merchant}'")
+                    self.set_status(f"Step 6: could not click attach icon for '{entry.merchant}'")
                     continue
                 self._wait_for_oracle_page_stable(timeout_s=12.0, settle_ms=600)
 
                 if not self._wait_for_add_attachment_modal(timeout_s=15.0):
-                    self.set_status(f"Step 6: attach modal did not appear for '{merchant}'")
+                    self.set_status(f"Step 6: attach modal did not appear for '{entry.merchant}'")
                     continue
 
                 if self._complete_attachment_upload(staged):
-                    attached += 1
-                    entry.used = True
-                    self.set_status(
-                        f"Step 6: attached receipt for '{merchant}' "
-                        f"({attached}/{len(receipt_pool)})"
-                    )
                     self._wait_for_oracle_page_stable(settle_ms=600)
+
+                    _, post_rows = _extract_step6_rows_with_frame(wait_timeout_s=2.0)
+                    post_attach_count = _count_attached_matches(post_rows, entry)
+                    if post_attach_count > pre_attach_count:
+                        attached += 1
+                        entry.used = True
+                        self.set_status(
+                            f"Step 6: attached receipt for '{entry.merchant}' "
+                            f"({attached}/{len(receipt_pool)})"
+                        )
+                    else:
+                        self.set_status(
+                            f"Step 6: upload completed but could not verify row for line {entry.line_id}; "
+                            "stopping to avoid mis-attachments."
+                        )
+                        break
                 else:
-                    self.set_status(f"Step 6: upload failed for '{merchant}'")
+                    self.set_status(f"Step 6: upload failed for '{entry.merchant}'")
             except Exception as exc:
-                self.set_status(f"Step 6: error attaching '{merchant}': {exc}")
+                self.set_status(f"Step 6: error attaching '{entry.merchant}': {exc}")
                 continue
 
         return attached
