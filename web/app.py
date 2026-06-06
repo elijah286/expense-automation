@@ -392,8 +392,9 @@ _TERMINAL_HTML = """\
     </span>
     <span class="terminal-status" id="terminal-status"></span>
     <div class="terminal-actions">
-      <span class="material-icons terminal-action-btn"
-            onclick="event.stopPropagation();document.getElementById('terminal-content').innerHTML=''"
+      <span class="material-icons terminal-action-btn" id="terminal-copy-all"
+            title="Copy all output">content_copy</span>
+      <span class="material-icons terminal-action-btn" id="terminal-clear"
             title="Clear log">delete_outline</span>
       <span class="material-icons terminal-action-btn terminal-toggle"
             id="terminal-toggle-icon"
@@ -401,6 +402,9 @@ _TERMINAL_HTML = """\
     </div>
   </div>
   <div class="terminal-content" id="terminal-content"></div>
+  <button class="terminal-jump" id="terminal-jump" title="Resume auto-scroll">
+    <span class="material-icons">arrow_downward</span>
+  </button>
 </div>
 """
 
@@ -409,11 +413,86 @@ _TERMINAL_JS = """\
   var hdr=document.getElementById('terminal-header');
   var wrap=document.getElementById('terminal-wrapper');
   var handle=document.getElementById('terminal-resize');
-  if(!hdr||!wrap||!handle)return;
+  var content=document.getElementById('terminal-content');
+  var jump=document.getElementById('terminal-jump');
+  if(!hdr||!wrap||!handle||!content)return;
 
+  // Follow-the-tail state, shared with the server-driven append helpers below.
+  window.__termState=window.__termState||{stick:true};
+
+  function atBottom(){
+    return content.scrollHeight-content.scrollTop-content.clientHeight<24;
+  }
+  function syncJump(){
+    if(jump)jump.classList.toggle('terminal-jump-visible',!window.__termState.stick);
+  }
+
+  // Collapse / expand on header click.
   hdr.addEventListener('click',function(){
     wrap.classList.toggle('terminal-collapsed');
+    if(!wrap.classList.contains('terminal-collapsed')&&window.__termState.stick){
+      content.scrollTop=content.scrollHeight;
+    }
   });
+
+  // Pause auto-scroll when the user scrolls up; resume when back at the bottom.
+  content.addEventListener('scroll',function(){
+    window.__termState.stick=atBottom();
+    syncJump();
+  });
+  if(jump){
+    jump.addEventListener('click',function(e){
+      e.stopPropagation();
+      window.__termState.stick=true;
+      content.scrollTop=content.scrollHeight;
+      syncJump();
+    });
+  }
+
+  // Append/replace helpers used by the polling loop — only scroll when sticking.
+  window.__termAppend=function(html){
+    content.insertAdjacentHTML('beforeend',html);
+    if(window.__termState.stick){content.scrollTop=content.scrollHeight;}
+    syncJump();
+  };
+  window.__termSet=function(html){
+    content.innerHTML=html;
+    if(window.__termState.stick){content.scrollTop=content.scrollHeight;}
+    syncJump();
+  };
+
+  // Copy the entire log to the clipboard.
+  var copyAll=document.getElementById('terminal-copy-all');
+  if(copyAll){
+    copyAll.addEventListener('click',function(e){
+      e.stopPropagation();
+      var lines=[];
+      content.querySelectorAll('.terminal-line').forEach(function(ln){
+        var t=ln.querySelector('.terminal-time');
+        var c=ln.querySelector('.terminal-cat');
+        var m=ln.querySelector('.terminal-msg');
+        lines.push(((t?t.textContent:'')+'  '+(c?c.textContent.toUpperCase():'')+
+                    '  '+(m?m.textContent:'')).replace(/\\s+$/,''));
+      });
+      var text=lines.join('\\n');
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text);
+      }
+      copyAll.textContent='check';
+      setTimeout(function(){copyAll.textContent='content_copy';},900);
+    });
+  }
+
+  // Clear the log (and resume following the tail).
+  var clearBtn=document.getElementById('terminal-clear');
+  if(clearBtn){
+    clearBtn.addEventListener('click',function(e){
+      e.stopPropagation();
+      content.innerHTML='';
+      window.__termState.stick=true;
+      syncJump();
+    });
+  }
 
   var dragging=false,startY=0,startH=0;
   handle.addEventListener('mousedown',function(e){
@@ -449,8 +528,9 @@ def _build_terminal():
     if entries:
         html_str = _format_terminal_entries(entries)
         ui.run_javascript(
-            'var el=document.getElementById("terminal-content");'
-            f'if(el){{el.innerHTML={json.dumps(html_str)};el.scrollTop=el.scrollHeight;}}'
+            'if(window.__termSet){window.__termSet(' + json.dumps(html_str) + ');}'
+            'else{var el=document.getElementById("terminal-content");'
+            'if(el){el.innerHTML=' + json.dumps(html_str) + ';el.scrollTop=el.scrollHeight;}}'
         )
 
     seen = [count]
@@ -463,9 +543,10 @@ def _build_terminal():
         if new_entries:
             html_str = _format_terminal_entries(new_entries)
             js.append(
-                'var tc=document.getElementById("terminal-content");'
-                f'if(tc){{tc.insertAdjacentHTML("beforeend",{json.dumps(html_str)});'
-                'tc.scrollTop=tc.scrollHeight;}'
+                'if(window.__termAppend){window.__termAppend(' + json.dumps(html_str) + ');}'
+                'else{var tc=document.getElementById("terminal-content");'
+                'if(tc){tc.insertAdjacentHTML("beforeend",' + json.dumps(html_str) + ');'
+                'tc.scrollTop=tc.scrollHeight;}}'
             )
             seen[0] = new_count
 
@@ -1247,6 +1328,8 @@ body.body--dark .q-drawer .nav-section-title { color: #475569; }
     font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
     font-size: 0.78rem;
     line-height: 1.6;
+    user-select: text;
+    -webkit-user-select: text;
 }
 .terminal-collapsed .terminal-content {
     display: none;
@@ -1255,6 +1338,29 @@ body.body--dark .q-drawer .nav-section-title { color: #475569; }
 .terminal-content::-webkit-scrollbar-track { background: transparent; }
 .terminal-content::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
 .terminal-content::-webkit-scrollbar-thumb:hover { background: #475569; }
+.terminal-jump {
+    position: absolute;
+    right: 18px;
+    bottom: 14px;
+    z-index: 5;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 32px; height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: #2563eb;
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+    opacity: 0.9;
+    transition: opacity 0.15s, transform 0.15s, background 0.15s;
+}
+.terminal-jump:hover { opacity: 1; background: #1d4ed8; transform: translateY(-1px); }
+.terminal-jump .material-icons { font-size: 18px; }
+.terminal-jump-visible { display: inline-flex; }
+.terminal-collapsed .terminal-jump { display: none !important; }
 .terminal-line {
     padding: 1px 20px;
     display: flex;
@@ -2362,9 +2468,61 @@ def page_documents(request: Request):
 
         # Page-level timer for live refresh during receipt analysis
         # (must be outside header_container so it survives re-renders)
-        def _analysis_poll():
-            if state.get("_analysis_running"):
+        def _row_sig(r):
+            """Signature of the data a row displays — used to detect real changes."""
+            return (
+                r.vendor, r.total, r.currency, r.date, r.date_added,
+                round(r.confidence, 4) if r.confidence else 0.0,
+                r.analyzed, r.used, r.matched,
+                len(r.used_by_line_ids), len(r.matched_line_ids), r.rotation,
+                r.source_file in state["selected"],
+                state["selected_doc"] == r.source_file,
+            )
+
+        def _live_update():
+            """Targeted, in-place refresh while analysis runs.
+
+            Only the rows whose extracted data actually changed are re-rendered,
+            and the detail drawer is left untouched. This avoids the full-screen
+            redraw that destroys input focus and causes the panel to flash.
+            """
+            if not state.get("_analysis_running"):
+                return
+            slots = state.get("_row_slots")
+            if not slots:
                 _render_documents()
+                return
+            by_path = {r.source_file: r for r in svc.get_receipts()}
+            order = state.get("_rendered_order") or list(slots.keys())
+            # If a rendered receipt disappeared (removed) — safe full re-render.
+            # New files don't appear mid-analysis, so we only guard against removals.
+            if any(p not in by_path for p in slots.keys()):
+                _render_documents()
+                return
+            sigs = state.setdefault("_row_sigs", {})
+            ordered = [by_path[p] for p in order if p in by_path]
+            for r in ordered:
+                new_sig = _row_sig(r)
+                if sigs.get(r.source_file) != new_sig:
+                    slot = slots.get(r.source_file)
+                    if slot is not None:
+                        slot.clear()
+                        with slot:
+                            _render_one_row(r)
+                        sigs[r.source_file] = new_sig
+            # Refresh the lightweight summary counts (no focusable elements here).
+            summary_slot = state.get("_summary_slot")
+            if summary_slot is not None:
+                summary_slot.clear()
+                with summary_slot:
+                    _build_summary(
+                        ordered,
+                        state.get("_total_count", len(ordered)),
+                        state.get("search", "").strip().lower(),
+                    )
+
+        def _analysis_poll():
+            _live_update()
 
         _analysis_refresh_timer = ui.timer(2.0, _analysis_poll, active=False)
 
@@ -2480,6 +2638,98 @@ def page_documents(request: Request):
         def _on_search(e):
             state["search"] = e.args or ""
             _render_documents()
+
+        def _make_remove_single(path):
+            def _do():
+                svc.remove_receipts([path])
+                state["selected"].discard(path)
+                if state["selected_doc"] == path:
+                    state["selected_doc"] = None
+                ui.notify("Removed receipt", type="positive")
+                _render_documents()
+            return _do
+
+        def _make_rescan_single(path):
+            def _do():
+                ui.notify("Rescanning receipt...", type="info")
+                _run_background(
+                    "Receipt Rescan",
+                    lambda on_status: svc.rescan_receipts([path], on_status=on_status),
+                    "Finished rescanning receipt",
+                    on_done=lambda _: _render_documents(),
+                )
+            return _do
+
+        def _make_toggle_cb(path):
+            def _toggle(e):
+                if e.value:
+                    state["selected"].add(path)
+                    state["selected_doc"] = path
+                else:
+                    state["selected"].discard(path)
+                    if state["selected_doc"] == path:
+                        state["selected_doc"] = next(iter(state["selected"]), None)
+                _render_documents()
+            return _toggle
+
+        def _render_one_row(r):
+            """Render a single receipt row (used by full render and live updates)."""
+            _receipt_row(
+                r,
+                selected=r.source_file in state["selected"],
+                focused=state["selected_doc"] == r.source_file,
+                on_row_click=lambda doc=r: _select_doc(doc.source_file),
+                on_remove=_make_remove_single(r.source_file),
+                on_rescan=_make_rescan_single(r.source_file),
+                on_checkbox=_make_toggle_cb(r.source_file),
+            )
+
+        def _build_summary(receipts, total_count, _q):
+            """Render the summary strip (counts + est. total) for a receipt set."""
+            filtered_count = len(receipts)
+            with ui.row().classes("items-center gap-4 mb-5"):
+                count_text = (
+                    f"{filtered_count} of {total_count} receipt{'s' if total_count != 1 else ''}"
+                    if _q else
+                    f"{total_count} receipt{'s' if total_count != 1 else ''}"
+                )
+                ui.label(count_text).classes(
+                    "text-sm font-semibold text-slate-600"
+                )
+                total_amt = sum(
+                    float(r.total) for r in receipts
+                    if r.total and r.total.replace(".", "", 1).replace("-", "", 1).isdigit()
+                )
+                if total_amt:
+                    ui.label(f"·  Est. total: ${total_amt:,.2f}").classes(
+                        "text-sm text-slate-400"
+                    )
+                filtered_used = sum(1 for r in receipts if r.used)
+                if filtered_used:
+                    ui.html(
+                        f'<span class="confidence-badge badge-high">'
+                        f'{filtered_used} used</span>'
+                    )
+                filtered_matched = sum(1 for r in receipts if r.matched and not r.used)
+                if filtered_matched:
+                    ui.html(
+                        f'<span style="display:inline-flex;align-items:center;gap:4px;'
+                        f'padding:2px 8px;border-radius:12px;background:#dbeafe;'
+                        f'color:#1d4ed8;font-size:0.7rem;font-weight:600">'
+                        f'{filtered_matched} matched</span>'
+                    )
+                filtered_unmatched = sum(1 for r in receipts if r.analyzed and not r.matched and not r.used)
+                if filtered_unmatched:
+                    ui.html(
+                        f'<span class="confidence-badge badge-unmatched">'
+                        f'{filtered_unmatched} unmatched</span>'
+                    )
+                filtered_unreviewed = sum(1 for r in receipts if not r.analyzed)
+                if filtered_unreviewed:
+                    ui.html(
+                        f'<span class="confidence-badge badge-medium">'
+                        f'{filtered_unreviewed} not reviewed</span>'
+                    )
 
         def _render_documents():
             receipts = svc.get_receipts()
@@ -2628,50 +2878,11 @@ def page_documents(request: Request):
                     receipts = [r for r in receipts if _matches(r)]
 
                 # Summary strip
-                filtered_count = len(receipts)
-                with ui.row().classes("items-center gap-4 mb-5"):
-                    count_text = (
-                        f"{filtered_count} of {total_count} receipt{'s' if total_count != 1 else ''}"
-                        if _q else
-                        f"{total_count} receipt{'s' if total_count != 1 else ''}"
-                    )
-                    ui.label(count_text).classes(
-                        "text-sm font-semibold text-slate-600"
-                    )
-                    total_amt = sum(
-                        float(r.total) for r in receipts
-                        if r.total and r.total.replace(".", "", 1).replace("-", "", 1).isdigit()
-                    )
-                    if total_amt:
-                        ui.label(f"·  Est. total: ${total_amt:,.2f}").classes(
-                            "text-sm text-slate-400"
-                        )
-                    filtered_used = sum(1 for r in receipts if r.used)
-                    if filtered_used:
-                        ui.html(
-                            f'<span class="confidence-badge badge-high">'
-                            f'{filtered_used} used</span>'
-                        )
-                    filtered_matched = sum(1 for r in receipts if r.matched and not r.used)
-                    if filtered_matched:
-                        ui.html(
-                            f'<span style="display:inline-flex;align-items:center;gap:4px;'
-                            f'padding:2px 8px;border-radius:12px;background:#dbeafe;'
-                            f'color:#1d4ed8;font-size:0.7rem;font-weight:600">'
-                            f'{filtered_matched} matched</span>'
-                        )
-                    filtered_unmatched = sum(1 for r in receipts if r.analyzed and not r.matched and not r.used)
-                    if filtered_unmatched:
-                        ui.html(
-                            f'<span class="confidence-badge badge-unmatched">'
-                            f'{filtered_unmatched} unmatched</span>'
-                        )
-                    filtered_unreviewed = sum(1 for r in receipts if not r.analyzed)
-                    if filtered_unreviewed:
-                        ui.html(
-                            f'<span class="confidence-badge badge-medium">'
-                            f'{filtered_unreviewed} not reviewed</span>'
-                        )
+                state["_total_count"] = total_count
+                summary_slot = ui.element("div")
+                state["_summary_slot"] = summary_slot
+                with summary_slot:
+                    _build_summary(receipts, total_count, _q)
 
                 # Prune selection to only include files still in the list
                 valid_files = {r.source_file for r in receipts}
@@ -2764,6 +2975,9 @@ def page_documents(request: Request):
                             )
                             lbl.on("click", lambda _, c=col_key: _doc_toggle_sort(c))
 
+                    state["_row_slots"] = {}
+                    state["_row_sigs"] = {}
+                    state["_rendered_order"] = []
                     if not receipts and _q:
                         with ui.element("div").style(
                             "padding:40px 20px;text-align:center;"
@@ -2773,51 +2987,16 @@ def page_documents(request: Request):
                                 "text-sm text-slate-400"
                             )
                     else:
-                        def _make_remove_single(path):
-                            def _do():
-                                svc.remove_receipts([path])
-                                state["selected"].discard(path)
-                                if state["selected_doc"] == path:
-                                    state["selected_doc"] = None
-                                ui.notify("Removed receipt", type="positive")
-                                _render_documents()
-                            return _do
-
-                        def _make_rescan_single(path):
-                            def _do():
-                                ui.notify("Rescanning receipt...", type="info")
-                                _run_background(
-                                    "Receipt Rescan",
-                                    lambda on_status: svc.rescan_receipts([path], on_status=on_status),
-                                    "Finished rescanning receipt",
-                                    on_done=lambda _: _render_documents(),
-                                )
-                            return _do
-
-                        def _make_toggle_cb(path):
-                            def _toggle(e):
-                                if e.value:
-                                    state["selected"].add(path)
-                                    state["selected_doc"] = path
-                                else:
-                                    state["selected"].discard(path)
-                                    if state["selected_doc"] == path:
-                                        state["selected_doc"] = next(iter(state["selected"]), None)
-                                _render_documents()
-                            return _toggle
-
+                        # Each row lives in its own stable wrapper so that live
+                        # updates during analysis can refresh a single row in place
+                        # without redrawing (and unfocusing) the whole list.
                         for r in receipts:
-                            is_sel = r.source_file in state["selected"]
-                            is_focused = state["selected_doc"] == r.source_file
-                            _receipt_row(
-                                r,
-                                selected=is_sel,
-                                focused=is_focused,
-                                on_row_click=lambda doc=r: _select_doc(doc.source_file),
-                                on_remove=_make_remove_single(r.source_file),
-                                on_rescan=_make_rescan_single(r.source_file),
-                                on_checkbox=_make_toggle_cb(r.source_file),
-                            )
+                            slot = ui.element("div").style("min-width:740px")
+                            state["_row_slots"][r.source_file] = slot
+                            state["_row_sigs"][r.source_file] = _row_sig(r)
+                            with slot:
+                                _render_one_row(r)
+                        state["_rendered_order"] = [r.source_file for r in receipts]
 
             _sync_doc_detail_drawer()
 
