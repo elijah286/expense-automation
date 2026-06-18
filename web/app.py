@@ -2110,7 +2110,7 @@ def _open_update_check_dialog():
             def _open_releases():
                 import webbrowser
                 webbrowser.open(
-                    "https://github.com/elijah286/oracle-expense-automation/releases"
+                    "https://github.com/elijah286/expense-automation/releases"
                 )
                 dlg.close()
 

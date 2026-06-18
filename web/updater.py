@@ -57,6 +57,61 @@ def _is_newer(latest: str, current: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Auto-update attempt tracking (prevents infinite update loops)
+# ---------------------------------------------------------------------------
+
+def _update_state_path() -> Path:
+    from web.env_paths import user_data_dir
+    return user_data_dir() / "update_attempts.json"
+
+
+def auto_update_attempts(target_version: str, current_version: str) -> int:
+    """Return how many times we've already auto-attempted current -> target."""
+    try:
+        data = json.loads(_update_state_path().read_text())
+    except Exception:
+        return 0
+    if data.get("target") == target_version and data.get("from") == current_version:
+        try:
+            return int(data.get("attempts", 0))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def record_update_attempt(target_version: str, current_version: str) -> int:
+    """Record an auto-update attempt for current -> target. Returns new count."""
+    path = _update_state_path()
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        data = {}
+    if data.get("target") != target_version or data.get("from") != current_version:
+        data = {"target": target_version, "from": current_version, "attempts": 0}
+    try:
+        data["attempts"] = int(data.get("attempts", 0)) + 1
+    except (TypeError, ValueError):
+        data["attempts"] = 1
+    data["last_attempt"] = time.time()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+    except Exception:
+        pass
+    return int(data["attempts"])
+
+
+def clear_update_attempts() -> None:
+    """Forget any recorded auto-update attempts (call when already up to date)."""
+    try:
+        _update_state_path().unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Check for updates
 # ---------------------------------------------------------------------------
 
@@ -364,34 +419,62 @@ open "$APP_DIR/$NEW_APP_NAME"
 # ---------------------------------------------------------------------------
 
 def apply_windows_update(exe_path: Path) -> None:
-    """Launch the Inno Setup installer in silent mode and exit the running app.
+    """Run the Inno Setup installer after the app exits, then relaunch it.
 
-    The installer will wait for this process to exit, then upgrade in place
-    and relaunch the app.
+    A small hidden batch script waits for this process to exit, waits a short
+    grace period so Windows releases file locks on the app directory (otherwise
+    the in-place upgrade can fail and Inno Setup shows "reverting install"),
+    runs the installer silently with logging, and relaunches the app.
     """
     if not exe_path.is_file():
         raise RuntimeError(f"Installer not found: {exe_path}")
 
-    # Create a small batch script that:
-    # 1. Waits for the current process to exit
-    # 2. Runs the installer silently
-    # 3. Cleans up
+    app_exe = Path(sys.executable)
+
+    try:
+        from web.env_paths import user_data_dir
+        log_dir = user_data_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        log_dir = Path(tempfile.gettempdir())
+    updater_log = log_dir / "windows_update.log"
+    install_log = log_dir / "windows_install_inno.log"
+
+    # Batch script:
+    #   1. Wait for the running app (PID) to exit.
+    #   2. Grace delay so the OS releases locks on the app files.
+    #   3. Run the installer silently (with an Inno log for diagnostics).
+    #   4. Relaunch the app (whatever version is now installed).
     script = tempfile.NamedTemporaryFile(
         mode="w", suffix=".cmd", delete=False, prefix="ea_update_",
     )
     script_path = script.name
     script.write(f"""@echo off
-set APP_PID={os.getpid()}
-set INSTALLER={exe_path}
+set "APP_PID={os.getpid()}"
+set "INSTALLER={exe_path}"
+set "APPEXE={app_exe}"
+set "ULOG={updater_log}"
+
+echo [%date% %time%] updater started, waiting for pid %APP_PID%>>"%ULOG%"
 
 :wait_loop
-tasklist /FI "PID eq %APP_PID%" /NH 2>NUL | findstr /I /C:"%APP_PID%" >NUL 2>NUL
-if %ERRORLEVEL% EQU 0 (
+tasklist /FI "PID eq %APP_PID%" /NH 2>NUL | find "%APP_PID%" >NUL 2>NUL
+if not errorlevel 1 (
     ping -n 2 127.0.0.1 >NUL 2>NUL
     goto wait_loop
 )
 
-start "" "%INSTALLER%" /SILENT /SUPPRESSMSGBOXES /NORESTART
+rem Grace period so Windows fully releases locks on the app files.
+ping -n 4 127.0.0.1 >NUL 2>NUL
+
+echo [%date% %time%] running installer>>"%ULOG%"
+"%INSTALLER%" /SILENT /SUPPRESSMSGBOXES /NORESTART /LOG="{install_log}"
+echo [%date% %time%] installer exit code %ERRORLEVEL%>>"%ULOG%"
+
+if exist "%APPEXE%" (
+    echo [%date% %time%] relaunching app>>"%ULOG%"
+    start "" "%APPEXE%"
+)
 del "%~f0"
 """)
     script.close()

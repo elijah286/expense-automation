@@ -64,13 +64,18 @@ if __name__ == "__main__":
             sys.argv = argv_prev
 
     # --install-chromium: download Chromium and exit (used by installers).
+    # Always exit 0: a download hiccup must never fail/roll back the installer.
+    # The app re-downloads Chromium on first launch if it is missing.
     if "--install-chromium" in sys.argv:
-        from web.env_paths import user_data_dir as _udd
+        try:
+            from web.env_paths import user_data_dir as _udd
 
-        _dest = _udd() / "ms-playwright"
-        _dest.mkdir(parents=True, exist_ok=True)
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_dest)
-        _install_playwright_chromium()
+            _dest = _udd() / "ms-playwright"
+            _dest.mkdir(parents=True, exist_ok=True)
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_dest)
+            _install_playwright_chromium()
+        except Exception as _exc:
+            _crash_write(f"--install-chromium failed (non-fatal): {_exc}")
         sys.exit(0)
 
     from dotenv import load_dotenv
@@ -137,39 +142,70 @@ if __name__ == "__main__":
             _st.set_update_checking(False)
 
         # --- Phase 2: Download & apply update if available ---
-        if info and getattr(sys, "frozen", False):
+        from web.updater import (
+            auto_update_attempts,
+            clear_update_attempts,
+            record_update_attempt,
+        )
+        if not info:
+            # Up to date (this also covers a just-completed update): reset the
+            # loop guard so a future update starts with a clean attempt count.
+            clear_update_attempts()
+        elif getattr(sys, "frozen", False):
             is_mac = sys.platform == "darwin"
             is_win = sys.platform == "win32"
             asset_url = info.get("macos_url", "") if is_mac else info.get("windows_url", "")
+            target_ver = info.get("version", "")
             if asset_url and (is_mac or is_win):
-                _st.set_update_downloading(True)
-                try:
-                    def _on_progress(downloaded, total):
-                        if total > 0:
-                            _st.set_update_progress(downloaded / total)
+                # Loop guard: a failed installer (e.g. a Windows "reverting
+                # install") otherwise makes the app re-download and re-run the
+                # installer on every launch forever. After a couple of failed
+                # attempts at the SAME version, stop auto-applying and just run.
+                MAX_AUTO_ATTEMPTS = 2
+                prior_attempts = auto_update_attempts(target_ver, _VERSION)
+                if prior_attempts >= MAX_AUTO_ATTEMPTS:
+                    log.warning(
+                        "Skipping auto-update to v%s after %d attempt(s); running "
+                        "current version. Update manually if needed.",
+                        target_ver, prior_attempts,
+                    )
+                    _st.set_update_error(
+                        f"Automatic update to v{target_ver} did not complete after "
+                        f"{prior_attempts} attempts. Please update manually."
+                    )
+                else:
+                    record_update_attempt(target_ver, _VERSION)
+                    _st.set_update_downloading(True)
+                    try:
+                        def _on_progress(downloaded, total):
+                            if total > 0:
+                                _st.set_update_progress(downloaded / total)
 
-                    log.info("Downloading update v%s...", info["version"])
-                    installer_path = download_update(asset_url, on_progress=_on_progress)
-                    _st.set_update_downloading(False)
-                    _st.set_update_applying(True)
+                        log.info(
+                            "Downloading update v%s (attempt %d of %d)...",
+                            target_ver, prior_attempts + 1, MAX_AUTO_ATTEMPTS,
+                        )
+                        installer_path = download_update(asset_url, on_progress=_on_progress)
+                        _st.set_update_downloading(False)
+                        _st.set_update_applying(True)
 
-                    if is_mac:
-                        from web.updater import apply_macos_update
-                        log.info("Applying macOS update...")
-                        apply_macos_update(installer_path)
-                    else:
-                        from web.updater import apply_windows_update
-                        log.info("Applying Windows update...")
-                        apply_windows_update(installer_path)
+                        if is_mac:
+                            from web.updater import apply_macos_update
+                            log.info("Applying macOS update...")
+                            apply_macos_update(installer_path)
+                        else:
+                            from web.updater import apply_windows_update
+                            log.info("Applying Windows update...")
+                            apply_windows_update(installer_path)
 
-                    import time; time.sleep(1)
-                    os._exit(0)  # Force-quit so updater script can replace the app
-                except Exception as exc:
-                    log.error("Auto-update failed: %s", exc)
-                    _st.set_update_error(str(exc))
-                finally:
-                    _st.set_update_downloading(False)
-                    _st.set_update_applying(False)
+                        import time; time.sleep(1)
+                        os._exit(0)  # Force-quit so updater script can replace the app
+                    except Exception as exc:
+                        log.error("Auto-update failed: %s", exc)
+                        _st.set_update_error(str(exc))
+                    finally:
+                        _st.set_update_downloading(False)
+                        _st.set_update_applying(False)
 
         # --- Phase 3: Download Chromium if needed ---
         if _st.chromium_downloading():
