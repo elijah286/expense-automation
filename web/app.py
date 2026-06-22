@@ -2431,10 +2431,168 @@ def _stat_card(icon: str, value: str, label: str, color: str, href: str = "/"):
 # Documents (receipts)
 # ---------------------------------------------------------------------------
 
+def _documents_drop_zone_html(upload_url: str) -> str:
+    """Whole-page drag & drop overlay for the Documents page.
+
+    Lets the user drop receipts straight from Finder/Explorer anywhere on the
+    page instead of clicking through a file picker. Reuses the same
+    ``/api/upload`` endpoint as the "Add Files" button.
+    """
+    return (
+        """
+<script>
+(function () {
+    var UPLOAD_URL = "__UPLOAD_URL__";
+    var ALLOWED = ["jpg", "jpeg", "png", "gif", "webp", "heic", "tiff", "pdf"];
+    var OVERLAY_ID = "ea-doc-drop-overlay";
+    var dragDepth = 0;
+
+    function ensureOverlay() {
+        var el = document.getElementById(OVERLAY_ID);
+        if (el) return el;
+        el = document.createElement("div");
+        el.id = OVERLAY_ID;
+        el.style.cssText = "position:fixed;inset:0;z-index:100000;display:none;"
+            + "align-items:center;justify-content:center;pointer-events:none;"
+            + "background:rgba(37,99,235,0.10);backdrop-filter:blur(2px);"
+            + "-webkit-backdrop-filter:blur(2px);";
+        var card = document.createElement("div");
+        card.style.cssText = "display:flex;flex-direction:column;align-items:center;"
+            + "gap:10px;border:3px dashed #3b82f6;border-radius:20px;padding:44px 60px;"
+            + "background:rgba(255,255,255,0.97);box-shadow:0 24px 60px rgba(0,0,0,0.18);"
+            + "font-family:Inter,system-ui,sans-serif;text-align:center;";
+        card.innerHTML =
+            '<span class="material-icons" style="font-size:46px;color:#3b82f6">cloud_upload</span>'
+            + '<div style="font-size:1.2rem;font-weight:700;color:#1e293b">Drop to add files</div>'
+            + '<div style="font-size:0.85rem;color:#64748b">Photos or PDFs &mdash; JPG, PNG, HEIC, PDF&hellip;</div>';
+        el.appendChild(card);
+        document.body.appendChild(el);
+        return el;
+    }
+
+    function dragHasFiles(e) {
+        if (!e.dataTransfer || !e.dataTransfer.types) return false;
+        var types = e.dataTransfer.types;
+        for (var i = 0; i < types.length; i++) {
+            if (types[i] === "Files") return true;
+        }
+        return false;
+    }
+
+    function show() { ensureOverlay().style.display = "flex"; }
+    function hide() {
+        dragDepth = 0;
+        var el = document.getElementById(OVERLAY_ID);
+        if (el) el.style.display = "none";
+    }
+
+    function onDragEnter(e) {
+        if (!dragHasFiles(e)) return;
+        e.preventDefault();
+        dragDepth++;
+        show();
+    }
+    function onDragOver(e) {
+        if (!dragHasFiles(e)) return;
+        // preventDefault is required so the browser fires `drop` instead of
+        // navigating to the dropped file:// URL.
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = "copy"; } catch (err) {}
+    }
+    function onDragLeave(e) {
+        if (!dragHasFiles(e)) return;
+        dragDepth--;
+        if (dragDepth <= 0) hide();
+    }
+    function onDrop(e) {
+        if (!dragHasFiles(e)) return;
+        e.preventDefault();
+        hide();
+        var dropped = (e.dataTransfer && e.dataTransfer.files)
+            ? Array.prototype.slice.call(e.dataTransfer.files) : [];
+        var files = dropped.filter(function (f) {
+            var ext = (f.name.split(".").pop() || "").toLowerCase();
+            return ALLOWED.indexOf(ext) !== -1;
+        });
+        if (!files.length) {
+            if (dropped.length && window.Quasar && window.Quasar.Notify) {
+                window.Quasar.Notify.create({
+                    message: "Only images or PDFs can be added.",
+                    type: "warning",
+                    position: "top",
+                });
+            }
+            return;
+        }
+        var fd = new FormData();
+        files.forEach(function (f) { fd.append("files", f); });
+        if (window.Quasar && window.Quasar.Notify) {
+            window.Quasar.Notify.create({
+                message: "Adding " + files.length + " file" + (files.length === 1 ? "" : "s") + "\u2026",
+                type: "ongoing",
+                position: "top",
+                timeout: 0,
+                group: "ea-doc-drop-upload",
+            });
+        }
+        fetch(UPLOAD_URL, { method: "POST", body: fd })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.count > 0) {
+                    location.reload();
+                } else if (window.Quasar && window.Quasar.Notify) {
+                    window.Quasar.Notify.create({
+                        message: "No files were added.",
+                        type: "warning",
+                        position: "top",
+                    });
+                }
+            })
+            .catch(function (err) {
+                console.error("Drop upload failed:", err);
+                if (window.Quasar && window.Quasar.Notify) {
+                    window.Quasar.Notify.create({
+                        message: "Upload failed. Please try again.",
+                        type: "negative",
+                        position: "top",
+                    });
+                }
+            });
+    }
+
+    function bind() {
+        if (window.__eaDocDropBound) return;
+        window.__eaDocDropBound = true;
+        window.addEventListener("dragenter", onDragEnter);
+        window.addEventListener("dragover", onDragOver);
+        window.addEventListener("dragleave", onDragLeave);
+        window.addEventListener("drop", onDrop);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", bind);
+    } else {
+        bind();
+    }
+})();
+</script>
+"""
+    ).replace("__UPLOAD_URL__", upload_url)
+
+
 @ui.page("/documents")
 def page_documents(request: Request):
     report_filter_id = (request.query_params.get("report") or "").strip()
     page_frame("Documents", report_filter_id)
+
+    # Whole-page drag & drop — drop receipts straight from Finder/Explorer
+    # anywhere on the page (reuses the same /api/upload as the Add Files button).
+    _dz_report = report_filter_id or ""
+    _dz_upload_url = (
+        f"/api/upload?report={urllib.parse.quote(_dz_report, safe='')}"
+        if _dz_report else "/api/upload"
+    )
+    ui.add_head_html(_documents_drop_zone_html(_dz_upload_url))
 
     _doc_actions: dict[str, Callable[[], None]] = {"close": lambda: None}
 
@@ -2852,7 +3010,7 @@ def page_documents(request: Request):
                     _empty_state(
                         "description",
                         "No receipts imported",
-                        "Import receipt images or PDFs to get started.",
+                        "Drag receipts here, or use Add Files, to get started.",
                     )
                 _sync_doc_detail_drawer()
                 return
