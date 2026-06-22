@@ -420,6 +420,16 @@ _TERMINAL_JS = """\
   // Follow-the-tail state, shared with the server-driven append helpers below.
   window.__termState=window.__termState||{stick:true};
 
+  // Reserve just enough page bottom-padding to clear the fixed terminal: a small gap
+  // when collapsed, the panel height when expanded. Avoids a phantom vertical scrollbar
+  // over empty space (visible on Windows; hidden by macOS overlay scrollbars).
+  function updateClearance(){
+    var h=wrap.classList.contains('terminal-collapsed')?64:(wrap.offsetHeight+24);
+    document.documentElement.style.setProperty('--terminal-clearance',h+'px');
+  }
+  updateClearance();
+  window.addEventListener('resize',updateClearance);
+
   function atBottom(){
     return content.scrollHeight-content.scrollTop-content.clientHeight<24;
   }
@@ -430,6 +440,7 @@ _TERMINAL_JS = """\
   // Collapse / expand on header click.
   hdr.addEventListener('click',function(){
     wrap.classList.toggle('terminal-collapsed');
+    updateClearance();
     if(!wrap.classList.contains('terminal-collapsed')&&window.__termState.stick){
       content.scrollTop=content.scrollHeight;
     }
@@ -508,6 +519,7 @@ _TERMINAL_JS = """\
     var h=startH+(startY-e.clientY);
     if(h<60)h=60;if(h>window.innerHeight*0.7)h=window.innerHeight*0.7;
     wrap.style.height=h+'px';
+    updateClearance();
   });
   window.addEventListener('mouseup',function(){
     if(!dragging)return;
@@ -770,6 +782,9 @@ body {
 
 .q-drawer { background: #ffffff !important; border-right: 1px solid #e2e8f0; }
 body.body--dark .q-drawer { background: #0f172a !important; border-right: 1px solid rgba(255,255,255,0.07); }
+/* Left nav drawer: never reserve space for a horizontal scrollbar. Windows shows one
+   even when not needed; macOS overlay scrollbars hide it. */
+.q-drawer__content { overflow-x: hidden !important; }
 .q-drawer.detail-side-drawer {
     background: var(--bg-card) !important;
     border-left: 1px solid var(--border-default);
@@ -790,7 +805,9 @@ body.body--dark .q-drawer { background: #0f172a !important; border-right: 1px so
 .page-container {
     max-width: 1400px;
     margin: 0 auto;
-    padding: 32px 40px 280px;
+    /* Bottom clearance tracks the live terminal height (collapsed by default) so the
+       window doesn't show a vertical scrollbar over empty space on Windows. */
+    padding: 32px 40px var(--terminal-clearance, 64px);
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
@@ -2110,7 +2127,7 @@ def _open_update_check_dialog():
             def _open_releases():
                 import webbrowser
                 webbrowser.open(
-                    "https://github.com/elijah286/oracle-expense-automation/releases"
+                    "https://github.com/elijah286/expense-automation/releases"
                 )
                 dlg.close()
 
