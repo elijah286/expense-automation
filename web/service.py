@@ -42,8 +42,56 @@ from expense_lines_cache import (
 import keychain_credentials
 from classification.service import classify_transactions
 from persistence.atomic_json import atomic_write_json
+from portal_expense_types import get_expense_type_options
 
 APP_DIR = Path.home() / ".expense-automator"
+
+
+def _canonical_expense_type(value: str, options: list[str]) -> str:
+    """Map classifier labels to the exact configured Oracle expense type text."""
+    label = re.sub(r"\s+", " ", str(value or "").strip())
+    if not label:
+        return ""
+    lower_to_option = {opt.lower(): opt for opt in options}
+    exact = lower_to_option.get(label.lower())
+    if exact:
+        return exact
+
+    normalized = label.lower()
+    aliases = {
+        "lodging": ("hotel", "lodging"),
+        "transportation": ("transportation", "gas", "parking", "cabs"),
+        "travel": ("miscellaneous travel", "travel"),
+        "cellular": ("telephone", "cellular"),
+        "supplies": ("miscellaneous supplies", "office supplies", "supplies"),
+        "miscellaneous": ("miscellaneous supplies", "miscellaneous travel", "miscellaneous"),
+    }
+    search_terms = aliases.get(normalized, (normalized,))
+    for term in search_terms:
+        term_norm = term.lower()
+        for opt in options:
+            if term_norm in opt.lower():
+                return opt
+    return ""
+
+
+def _default_expense_type(options: list[str]) -> str:
+    """Return a valid, conservative fallback type for merchants we cannot infer."""
+    preferred = (
+        "Miscellaneous Supplies",
+        "Miscellaneous Travel",
+        "Miscellaneous Personnel Expense",
+        "Office Supplies",
+    )
+    lower_to_option = {opt.lower(): opt for opt in options}
+    for label in preferred:
+        match = lower_to_option.get(label.lower())
+        if match:
+            return match
+    for opt in options:
+        if "miscellaneous" in opt.lower():
+            return opt
+    return options[0] if options else "Miscellaneous Supplies"
 
 
 @dataclass
@@ -183,6 +231,8 @@ class ExpenseService:
         matches = load_receipt_line_matches(self.app_dir)
         approved = load_approved_matches(self.app_dir)
         vendor_types = load_vendor_expense_types_flat(self.app_dir)
+        if self._auto_classify_unclassified(lines):
+            vendor_types = load_vendor_expense_types_flat(self.app_dir)
         grouped_map = self.get_grouped_line_ids()
         report_groups = {g.id: g.name for g in self.get_expense_report_groups()}
 
@@ -635,6 +685,9 @@ class ExpenseService:
         matches = load_receipt_line_matches(self.app_dir)
         approved = load_approved_matches(self.app_dir)
         vendor_types = load_vendor_expense_types_flat(self.app_dir)
+        report_lines = [line for lid, line in lines_by_id.items() if lid in lid_set]
+        if self._auto_classify_unclassified(report_lines):
+            vendor_types = load_vendor_expense_types_flat(self.app_dir)
 
         with_receipt = 0
         receipt_missing_marked = 0
@@ -754,6 +807,13 @@ class ExpenseService:
         if not lid_set:
             return {"error": "Report has no transactions"}
 
+        lines, _ = load_expense_lines_cache(self.app_dir)
+        report_lines = [
+            l for l in lines
+            if str(l.get("line_id", "")).strip() in lid_set
+        ]
+        classified = self._auto_classify_unclassified(report_lines)
+
         matches = load_receipt_line_matches(self.app_dir)
         approved = load_approved_matches(self.app_dir)
         receipt_approved = 0
@@ -774,6 +834,7 @@ class ExpenseService:
         return {
             "approved": receipt_approved,
             "receipt_missing_marked": receipt_missing_marked,
+            "classified": classified,
             "ready_total": ready_total,
             "total": len(lid_set),
         }
@@ -781,12 +842,14 @@ class ExpenseService:
     def _auto_classify_unclassified(self, lines: list[dict]) -> int:
         """Run classify_transactions for lines missing a vendor type and persist results.
 
-        Only saves non-'Uncategorized' results so that unrecognised merchants
-        are not silently given a wrong classification.
+        Unknown merchants are assigned a conservative, valid fallback expense
+        type so Oracle submission never reaches a blank Type/justification.
         Returns the number of newly classified lines.
         """
         vendor_path = self.app_dir / "vendor_expense_types.json"
         vendor_types = load_vendor_expense_types_flat(self.app_dir)
+        expense_options = get_expense_type_options()
+        fallback_type = _default_expense_type(expense_options)
         unclassified = [
             l for l in lines
             if not vendor_types.get(re.sub(r"\s+", " ", str(l.get("merchant_name", "")).strip()).lower())
@@ -809,7 +872,9 @@ class ExpenseService:
         for s in suggestions:
             etype = str(s.get("type", "") or "").strip()
             if not etype or etype.lower() == "uncategorized":
-                continue
+                etype = fallback_type
+            else:
+                etype = _canonical_expense_type(etype, expense_options) or fallback_type
             txn_id = str(s.get("transaction_id", "") or "").strip()
             merchant_key = ""
             for l in unclassified:
@@ -1589,29 +1654,13 @@ class ExpenseService:
             str(l.get("line_id", "")).strip(): l
             for l in lines_cache if isinstance(l, dict)
         }
+        self._auto_classify_unclassified([
+            line for lid, line in lines_by_id.items() if lid in line_ids
+        ])
         matches = load_receipt_line_matches(self.app_dir)
         approved = load_approved_matches(self.app_dir)
         vendor_types = load_vendor_expense_types_flat(self.app_dir)
-
-        # Block submission if any line is missing an expense type (Oracle requires
-        # justification for every line, which is derived from the expense type).
-        missing_etype_lines: list[str] = []
-        for lid in sorted(line_ids):
-            line = lines_by_id.get(lid, {})
-            merchant = str(line.get("merchant_name", "")).strip()
-            if not merchant:
-                continue
-            merchant_key = re.sub(r"\s+", " ", merchant).lower()
-            if not vendor_types.get(merchant_key, ""):
-                missing_etype_lines.append(merchant or lid)
-        if missing_etype_lines:
-            items_str = ", ".join(missing_etype_lines[:5])
-            suffix = f" (and {len(missing_etype_lines) - 5} more)" if len(missing_etype_lines) > 5 else ""
-            raise RuntimeError(
-                f"Cannot submit: {len(missing_etype_lines)} item(s) are missing an expense type / "
-                f"justification: {items_str}{suffix}. "
-                "Set an expense type for each item before submitting."
-            )
+        fallback_type = _default_expense_type(get_expense_type_options())
 
         submission_lines: list[SubmissionLine] = []
         for lid in sorted(line_ids):
@@ -1621,7 +1670,7 @@ class ExpenseService:
                 continue
 
             merchant_key = re.sub(r"\s+", " ", merchant).lower()
-            expense_type = vendor_types.get(merchant_key, "")
+            expense_type = vendor_types.get(merchant_key, "") or fallback_type
 
             m = matches.get(lid, {})
             reason = str(m.get("reason") or "").strip().lower()
