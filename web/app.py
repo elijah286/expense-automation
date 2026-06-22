@@ -57,6 +57,72 @@ from web.activity_log import activity_log
 
 svc = ExpenseService()
 
+
+_GLOBAL_FILE_DROP_GUARD_JS = """<script>
+(function () {
+    function hasFiles(e) {
+        if (!e.dataTransfer || !e.dataTransfer.types) return false;
+        var types = e.dataTransfer.types;
+        for (var i = 0; i < types.length; i++) {
+            if (types[i] === "Files") return true;
+        }
+        return false;
+    }
+
+    function blockFileNavigation(e) {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = "copy"; } catch (err) {}
+    }
+
+    if (window.__eaFileDropGuardBound) return;
+    window.__eaFileDropGuardBound = true;
+    window.addEventListener("dragenter", blockFileNavigation, true);
+    window.addEventListener("dragover", blockFileNavigation, true);
+    window.addEventListener("drop", blockFileNavigation, true);
+})();
+</script>"""
+
+
+def _is_llm_connection_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".upper()
+    return "OPENAI API UNREACHABLE" in text or any(
+        kw in text for kw in ("CONNECTION", "SSL", "CERTIFICATE", "TLS", "TIMEOUT", "NETWORK")
+    )
+
+
+def _is_llm_task(task_name: str) -> bool:
+    normalized = task_name.lower()
+    return any(
+        marker in normalized
+        for marker in ("matching", "scan & match", "receipt analysis", "receipt rescan")
+    )
+
+
+def _open_llm_connection_dialog(message: str = "") -> None:
+    detail = (
+        "The app could not connect to the LLM service. This often happens when a "
+        "corporate VPN or network filter blocks the OpenAI API."
+    )
+    with ui.dialog() as dlg, ui.card().style(
+        "min-width:420px;max-width:540px;border-radius:16px;padding:28px"
+    ):
+        with ui.row().classes("items-start gap-3 w-full"):
+            ui.icon("cloud_off").classes("text-3xl text-red-500")
+            with ui.column().classes("gap-1").style("flex:1;min-width:0"):
+                ui.label("Could not connect to the LLM").classes(
+                    "text-lg font-bold text-slate-800"
+                )
+                ui.label(detail).classes("text-sm text-slate-600 leading-relaxed")
+                ui.label("Please disable VPN, then try again.").classes(
+                    "text-sm font-semibold text-slate-700 mt-2"
+                )
+                if message:
+                    ui.label(message).classes("text-xs text-slate-400 mt-1")
+        with ui.row().classes("items-center justify-end gap-2 w-full mt-6"):
+            ui.button("OK", on_click=dlg.close).props("no-caps unelevated color=primary")
+    dlg.open()
+
 def _read_version() -> str:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
     try:
@@ -162,6 +228,11 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
         except Exception as exc:
             status_lines.append(f"Error: {exc}")
             activity_log.emit("error", f"{task_name} failed: {exc}")
+            if _is_llm_task(task_name) and _is_llm_connection_error(exc):
+                try:
+                    ui.timer(0.1, lambda e=exc: _open_llm_connection_dialog(str(e)), once=True)
+                except Exception:
+                    pass
         finally:
             with _task_lock:
                 _running_tasks[task_name] = {"running": False, "status": status_lines}
@@ -1988,6 +2059,7 @@ def page_frame(active: str, report_id: str = ""):
     _schedule_keychain_consent_if_needed()
     ui.add_head_html(_GOOGLE_FONTS_HTML)
     ui.add_head_html(f"<style>{CUSTOM_CSS}</style>")
+    ui.add_head_html(_GLOBAL_FILE_DROP_GUARD_JS)
     ui.add_head_html(_DARK_MODE_JS)
     nav_drawer = shared_nav(active, report_id)
     shared_header(nav_drawer)
