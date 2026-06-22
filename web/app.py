@@ -4793,6 +4793,23 @@ def page_matching(request: Request):
             n_unmatched = sum(1 for q in queue if q.transaction.match_status == "unmatched")
             all_receipts = svc.get_receipts()
 
+        def _match_queue_sig() -> tuple:
+            return tuple(
+                (
+                    q.transaction.line_id,
+                    q.transaction.match_status,
+                    round(q.transaction.match_confidence, 4) if q.transaction.match_confidence else 0.0,
+                    q.transaction.matched_receipt,
+                    q.transaction.expense_type,
+                    q.transaction.approved,
+                    q.transaction.match_reason,
+                    q.receipt.source_file if q.receipt else "",
+                    q.receipt.vendor if q.receipt else "",
+                    q.receipt.filename if q.receipt else "",
+                )
+                for q in queue
+            )
+
         with ui.row().classes("items-center gap-4 mb-5"):
             ui.label(
                 f"{total} transaction{'s' if total != 1 else ''}"
@@ -4898,6 +4915,7 @@ def page_matching(request: Request):
             _render_all()
 
         def _render_all():
+            state["_queue_sig"] = _match_queue_sig()
             _render_filter_chips()
             layout_container.clear()
             with layout_container:
@@ -4908,6 +4926,18 @@ def page_matching(request: Request):
                 _render_detail()
             show = bool(state.get("selected_lid")) or len(state.get("selected_lids", set())) > 1
             match_detail_drawer.set_value(show)
+
+        def _live_match_update():
+            old_sig = state.get("_queue_sig")
+            _refresh_queue()
+            valid_lids = {q.transaction.line_id for q in queue}
+            state["selected_lids"] = state.get("selected_lids", set()) & valid_lids
+            if state.get("selected_lid") not in valid_lids:
+                state["selected_lid"] = next(iter(state["selected_lids"]), None)
+            new_sig = _match_queue_sig()
+            if old_sig != new_sig:
+                state["_queue_sig"] = new_sig
+                _render_all()
 
         def _render_filter_chips():
             filter_chips_container.clear()
@@ -5466,6 +5496,7 @@ def page_matching(request: Request):
             ui.navigate.to(url)
 
         _render_all()
+        ui.timer(1.0, _live_match_update)
 
         # Keyboard shortcuts
         def _on_key(e):
