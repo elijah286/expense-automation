@@ -192,9 +192,31 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
             )
 
     status_lines: list[str] = []
+    started_at = time.time()
+    log_dir = user_data_dir() / "automation-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_name.strip()).strip("-") or "task"
+    log_path = log_dir / f"{stamp}-{safe_task}.log"
+
+    def _write_run_log(final_state: str, result: Any | None = None) -> None:
+        lines = [
+            "Expense Automator run log",
+            f"Task: {task_name}",
+            f"Started: {datetime.fromtimestamp(started_at).isoformat(timespec='seconds')}",
+            f"Finished: {datetime.now().isoformat(timespec='seconds')}",
+            f"State: {final_state}",
+        ]
+        if result is not None:
+            lines.append(f"Result: {result}")
+        lines.append("")
+        lines.extend(status_lines)
+        log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     activity_log.clear_cancel()
     activity_log.set_active_task(task_name)
     activity_log.emit("step", f"Starting {task_name}\u2026")
+    activity_log.emit("info", f"Run log: {log_path}")
 
     def _on_status(msg: str):
         status_lines.append(msg)
@@ -216,9 +238,13 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
             if activity_log.is_cancel_requested():
                 status_lines.append("Stopped by user")
                 activity_log.emit("info", f"{task_name} stopped by user")
+                _write_run_log("stopped", result)
+                activity_log.emit("info", f"Saved run log: {log_path}")
             else:
                 status_lines.append(f"Done: {result}")
                 activity_log.emit("success", f"{task_name} complete")
+                _write_run_log("complete", result)
+                activity_log.emit("info", f"Saved run log: {log_path}")
             if on_done:
                 # Schedule UI callback on the main event loop, not from this thread
                 try:
@@ -228,6 +254,8 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
         except Exception as exc:
             status_lines.append(f"Error: {exc}")
             activity_log.emit("error", f"{task_name} failed: {exc}")
+            _write_run_log("failed")
+            activity_log.emit("info", f"Saved run log: {log_path}")
             if _is_llm_task(task_name) and _is_llm_connection_error(exc):
                 try:
                     ui.timer(0.1, lambda e=exc: _open_llm_connection_dialog(str(e)), once=True)

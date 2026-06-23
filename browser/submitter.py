@@ -2387,10 +2387,41 @@ class ReportSubmitter(TransactionScraper):
     # Step 6 — receipt attachments
     # ------------------------------------------------------------------
 
-    _EXTRACT_STEP6_ROWS_JS = """
+        _EXTRACT_STEP6_ROWS_JS = """
 () => {
-  const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
-  const norm = (v) => clean(v).toLowerCase();
+    const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
+    const norm = (v) => clean(v).toLowerCase();
+    const readAttachmentState = (cell) => {
+        if (!cell) return { hasExistingAttachment: false, attachmentCount: 0, attachmentText: '' };
+        const text = clean(cell.innerText || cell.textContent || '');
+        const blob = norm(text);
+        let count = 0;
+        if (blob && !blob.includes('+') && (blob.includes('.pdf') || blob.includes('.png') || blob.includes('.jpg') || blob.includes('.jpeg'))) {
+            count = 1;
+        }
+        const explicitCount = blob.match(/(?:^|\b)(\d+)\s*(?:attachment|file|document|receipt)s?(?:\b|$)/i);
+        if (explicitCount) count = Math.max(count, Number(explicitCount[1]) || 0);
+        const numericBadges = Array.from(cell.querySelectorAll('span, div, a, font, b, strong'))
+            .map(el => clean(el.innerText || el.textContent || ''))
+            .filter(t => /^\d+$/.test(t))
+            .map(t => Number(t));
+        if (numericBadges.length) count = Math.max(count, ...numericBadges);
+        const imgs = Array.from(cell.querySelectorAll('img'));
+        for (const img of imgs) {
+            const src = norm(img.getAttribute('src') || '');
+            const alt = norm(img.getAttribute('alt') || '');
+            const title = norm(img.getAttribute('title') || '');
+            const combined = `${src} ${alt} ${title}`;
+            if (combined.includes('paperclip') || combined.includes('attachment') || combined.includes('attached')) {
+                count = Math.max(count, 1);
+                break;
+            }
+        }
+        if (blob.includes('view attachment') || blob.includes('update attachment') || blob.includes('delete attachment')) {
+            count = Math.max(count, 1);
+        }
+        return { hasExistingAttachment: count > 0, attachmentCount: count, attachmentText: text };
+    };
   const tables = Array.from(document.querySelectorAll('table'));
   let best = null;
   let bestScore = -1;
@@ -2426,28 +2457,22 @@ class ReportSubmitter(TransactionScraper):
     const date = di < cells.length ? clean(cells[di].innerText || cells[di].textContent) : '';
     const receiptAmt = (rai >= 0 && rai < cells.length) ? clean(cells[rai].innerText || cells[rai].textContent) : '';
     const merchant = clean(cells[mi].innerText || cells[mi].textContent);
-    let hasExistingAttachment = false;
+        let attachmentState = { hasExistingAttachment: false, attachmentCount: 0, attachmentText: '' };
     if (ai >= 0 && ai < cells.length) {
-      const ac = cells[ai];
-      const acBlob = norm(ac.innerText || ac.textContent || '');
-      if (acBlob && !acBlob.includes('+') && (acBlob.includes('.pdf') || acBlob.includes('.png') || acBlob.includes('.jpg') || acBlob.includes('.jpeg'))) {
-        hasExistingAttachment = true;
-      }
-      if (!hasExistingAttachment) {
-        const imgs = Array.from(ac.querySelectorAll('img'));
-        for (const img of imgs) {
-          const src = norm(img.getAttribute('src') || '');
-          const alt = norm(img.getAttribute('alt') || '');
-          if (src.includes('paperclip') || alt.includes('paperclip')) {
-            hasExistingAttachment = true;
-            break;
-          }
-        }
-      }
+            attachmentState = readAttachmentState(cells[ai]);
     }
     if (norm(merchant).includes('merchant name')) return;
     if (!merchant) return;
-    out.push({ tableIndex, bodyRowIndex, date, receiptAmount: receiptAmt, merchant, hasExistingAttachment });
+        out.push({
+            tableIndex,
+            bodyRowIndex,
+            date,
+            receiptAmount: receiptAmt,
+            merchant,
+            hasExistingAttachment: attachmentState.hasExistingAttachment,
+            attachmentCount: attachmentState.attachmentCount,
+            attachmentText: attachmentState.attachmentText,
+        });
   });
   return out;
 }
@@ -2730,8 +2755,23 @@ class ReportSubmitter(TransactionScraper):
                 row_amount = self._normalize_amount(str(row.get("receiptAmount", "")))
                 if entry.amount and row_amount and entry.amount != row_amount:
                     continue
-                count += 1
+                count += max(1, int(row.get("attachmentCount") or 0))
             return count
+
+        def _target_row_is_attached(rows: list[dict], target_row: dict, entry: _ReceiptEntry) -> bool:
+            for row in rows:
+                if not row.get("hasExistingAttachment"):
+                    continue
+                if row.get("tableIndex") == target_row.get("tableIndex") and row.get("bodyRowIndex") == target_row.get("bodyRowIndex"):
+                    return True
+                row_merchant = _norm_text(row.get("merchant", ""))
+                if row_merchant != entry.merchant and not self._fuzzy_merchant_match(entry.merchant, row_merchant):
+                    continue
+                row_amount = self._normalize_amount(str(row.get("receiptAmount", "")))
+                if entry.amount and row_amount and entry.amount != row_amount:
+                    continue
+                return True
+            return False
 
         attached = 0
         for entry in receipt_pool:
@@ -2778,7 +2818,7 @@ class ReportSubmitter(TransactionScraper):
 
                     _, post_rows = _extract_step6_rows_with_frame(wait_timeout_s=2.0)
                     post_attach_count = _count_attached_matches(post_rows, entry)
-                    if post_attach_count > pre_attach_count:
+                    if post_attach_count > pre_attach_count or _target_row_is_attached(post_rows, row, entry):
                         attached += 1
                         entry.used = True
                         self.set_status(
@@ -2788,9 +2828,10 @@ class ReportSubmitter(TransactionScraper):
                     else:
                         self.set_status(
                             f"Step 6: upload completed but could not verify row for line {entry.line_id}; "
-                            "stopping to avoid mis-attachments."
+                            f"before={pre_attach_count}, after={post_attach_count}. "
+                            "Continuing with the next receipt."
                         )
-                        break
+                        continue
                 else:
                     self.set_status(f"Step 6: upload failed for '{entry.merchant}'")
             except Exception as exc:
