@@ -65,6 +65,72 @@ def _confidence_level(c: float) -> str:
     return "low"
 
 
+_TIP_RE = re.compile(r"tip|gratuit", re.IGNORECASE)
+
+
+def _is_tip_item(desc: object) -> bool:
+    return bool(_TIP_RE.search(str(desc or "")))
+
+
+def _txn_currency(txn: dict[str, Any]) -> str:
+    t_cur = str(txn.get("currency") or "").strip().upper()
+    if not t_cur:
+        m = re.search(r"[A-Z]{3}", str(txn.get("amount") or ""))
+        t_cur = m.group(0) if m else ""
+    return t_cur
+
+
+def _best_amount_delta(txn: dict[str, Any], receipt: dict[str, Any], t_amt: float | None) -> float | None:
+    """Smallest |txn amount - receipt amount signal| across all plausible signals.
+
+    Besides the receipt total / matched / card-charged amount, this also considers
+    the printed subtotal, individual line items, and subset sums of line items
+    (e.g. fare + booking fee excluding a separately-charged tip). Corporate portals
+    frequently bill only the base charge while the tip posts as a separate
+    transaction, so the expense line can equal the subtotal rather than the total.
+    Returns None when no signal is available.
+    """
+    if t_amt is None:
+        return None
+    t_cur = _txn_currency(txn)
+    deltas: list[float] = []
+
+    # Native (document-currency) signals: only trust them when the txn currency
+    # is unknown or matches the receipt's own currency.
+    nat_cur = str(receipt.get("currency") or "").strip().upper()
+    if not t_cur or not nat_cur or nat_cur == t_cur:
+        for key in ("matched_amount", "total_amount", "subtotal"):
+            a = _to_amount(receipt.get(key))
+            if a is not None:
+                deltas.append(abs(t_amt - a))
+        items = receipt.get("line_items")
+        if isinstance(items, list):
+            all_amts: list[float] = []
+            non_tip_amts: list[float] = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                a = _to_amount(it.get("amount"))
+                if a is None:
+                    continue
+                all_amts.append(a)
+                deltas.append(abs(t_amt - a))
+                if not _is_tip_item(it.get("description")):
+                    non_tip_amts.append(a)
+            if all_amts:
+                deltas.append(abs(t_amt - sum(all_amts)))
+            if non_tip_amts and len(non_tip_amts) != len(all_amts):
+                deltas.append(abs(t_amt - sum(non_tip_amts)))
+
+    # Card-charged signal carries its own currency.
+    cc_amt = _to_amount(receipt.get("card_charged_amount"))
+    cc_cur = str(receipt.get("card_charged_currency") or "").strip().upper()
+    if cc_amt is not None and (not t_cur or not cc_cur or cc_cur == t_cur):
+        deltas.append(abs(t_amt - cc_amt))
+
+    return min(deltas) if deltas else None
+
+
 def match_transactions_to_receipts(
     transactions: list[dict[str, Any]],
     receipts: list[dict[str, Any]],
@@ -93,26 +159,11 @@ def match_transactions_to_receipts(
         t_date = _to_date(txn.get("transaction_date") or txn.get("date"))
         t_merchant = str(txn.get("merchant_name") or txn.get("merchant") or "").strip()
         for receipt in receipts:
-            r_amt = _to_amount(receipt.get("matched_amount") or receipt.get("total_amount"))
-            if t_amt is None or r_amt is None:
+            if t_amt is None:
                 continue
-            delta = abs(t_amt - r_amt)
-            if delta > amount_tolerance:
-                cc_amt = _to_amount(receipt.get("card_charged_amount"))
-                cc_cur = str(receipt.get("card_charged_currency") or "").strip().upper()
-                t_cur = str(txn.get("currency") or "").strip().upper()
-                amt_field = str(txn.get("amount") or "")
-                if not t_cur:
-                    cur_match = re.search(r"[A-Z]{3}", amt_field)
-                    t_cur = cur_match.group(0) if cur_match else "USD"
-                if cc_amt is not None and cc_cur and (cc_cur == t_cur or not t_cur):
-                    delta = abs(t_amt - cc_amt)
-                    if delta > amount_tolerance:
-                        continue
-                elif cc_amt is not None and abs(t_amt - cc_amt) <= amount_tolerance:
-                    delta = abs(t_amt - cc_amt)
-                else:
-                    continue
+            delta = _best_amount_delta(txn, receipt, t_amt)
+            if delta is None or delta > amount_tolerance:
+                continue
             r_date = _to_date(receipt.get("receipt_date") or receipt.get("transaction_date"))
             if t_date and r_date:
                 corrected = _correct_ddmmyy_misparse(r_date, t_date)
