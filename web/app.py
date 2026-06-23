@@ -856,6 +856,13 @@ body.body--dark .q-drawer { background: #0f172a !important; border-right: 1px so
 /* Left nav drawer: never reserve space for a horizontal scrollbar. Windows shows one
    even when not needed; macOS overlay scrollbars hide it. */
 .q-drawer__content { overflow-x: hidden !important; }
+/* Make the nav content a full-height flex column so the flex:1 spacer can push the
+   SETTINGS section to the bottom of the sidebar. */
+.q-drawer__content > .nicegui-content {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
 .q-drawer.detail-side-drawer {
     background: var(--bg-card) !important;
     border-left: 1px solid var(--border-default);
@@ -1625,8 +1632,6 @@ def shared_nav(active: str, report_id: str = ""):
                     f'<span class="material-icons" style="font-size:1.05rem;flex-shrink:0">{icon}</span>'
                     f'<span>{label}</span></div>'
                 )
-
-        ui.element("div").style("flex:1")
 
         with ui.element("div").style(
             "padding:8px 14px 12px;font-size:0.65rem;cursor:pointer;"
