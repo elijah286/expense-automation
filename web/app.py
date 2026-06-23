@@ -648,6 +648,10 @@ def _build_terminal():
                 f'if(bt)bt.textContent={json.dumps(badge_text)};'
                 'var sb=document.getElementById("terminal-stop-btn");'
                 'if(sb)sb.style.display="inline";'
+                'var ga=document.getElementById("global-activity");'
+                'if(ga)ga.classList.add("ga-on");'
+                'var gat=document.getElementById("global-activity-text");'
+                f'if(gat)gat.textContent={json.dumps(badge_text)};'
             )
         else:
             js.append(
@@ -655,6 +659,8 @@ def _build_terminal():
                 'if(b)b.classList.remove("terminal-badge-active");'
                 'var sb=document.getElementById("terminal-stop-btn");'
                 'if(sb)sb.style.display="none";'
+                'var ga=document.getElementById("global-activity");'
+                'if(ga)ga.classList.remove("ga-on");'
             )
 
         processing = list(state.get("processing_items", set()))
@@ -1508,6 +1514,40 @@ body.body--dark .q-drawer .nav-section-title { color: #475569; }
     vertical-align: middle;
 }
 
+/* ---- Global header activity indicator ---- */
+
+.global-activity {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-left: 16px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    max-width: 360px;
+}
+.global-activity.ga-on { display: inline-flex; }
+.ga-spinner {
+    width: 13px; height: 13px;
+    border: 2px solid #3b82f6;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: match-spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+.ga-text {
+    font-size: 0.78rem; font-weight: 600; color: #1d4ed8;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ga-stop {
+    font-size: 16px; color: #ef4444; cursor: pointer; flex-shrink: 0;
+    transition: color 0.15s;
+}
+.ga-stop:hover { color: #dc2626; }
+body.body--dark .global-activity { background: #1e293b; border-color: #334155; }
+body.body--dark .ga-text { color: #93c5fd; }
+
 /* ---- Dark mode: Quasar component overrides ---- */
 
 body.body--dark .q-page-container, body.body--dark .q-page { background: var(--bg-page) !important; }
@@ -1572,6 +1612,15 @@ def shared_header(nav_drawer=None):
             ui.icon("receipt_long").classes("text-2xl").style("color: #3b82f6")
             ui.label("Expense Automator").classes(
                 "text-lg font-bold tracking-tight header-title"
+            )
+            ui.html(
+                '<div id="global-activity" class="global-activity">'
+                '<span class="ga-spinner"></span>'
+                '<span id="global-activity-text" class="ga-text"></span>'
+                '<span class="material-icons ga-stop" title="Stop operation"'
+                " onclick=\"event.stopPropagation();fetch('/api/cancel-task',{method:'POST'})\">"
+                'stop_circle</span>'
+                '</div>'
             )
             ui.html(_THEME_SWITCHER_HTML).style("margin-left: auto")
 
@@ -3781,8 +3830,16 @@ _VIEWER_JS = """
         img.style.width = "auto"; img.style.height = "auto"; img.style.objectFit = "";
         const sw = (rot%180)!==0, ew = sw?nh:nw, eh = sw?nw:nh;
         scale = Math.min((cw-32)/ew, (ch-32)/eh);
-        tx = (cw - nw*scale)/2;
-        ty = (ch - nh*scale)/2;
+        if (!isFinite(scale) || scale <= 0) scale = 1;
+        /* Center the image accounting for rotation. With transform-origin 0 0 the
+           image center (nw/2,nh/2) maps to scale*R*(center); place that at the
+           container center so rotated receipts never land off screen. */
+        const rad = rot * Math.PI / 180;
+        const cosr = Math.cos(rad), sinr = Math.sin(rad);
+        const cxr = scale * (nw/2 * cosr - nh/2 * sinr);
+        const cyr = scale * (nw/2 * sinr + nh/2 * cosr);
+        tx = cw/2 - cxr;
+        ty = ch/2 - cyr;
         apply();
     }
 
@@ -4706,9 +4763,13 @@ def page_matching(request: Request):
         with ui.column().classes("w-full").style(
             "height:100%;max-height:100vh;display:flex;flex-direction:column"
         ):
-            with ui.row().classes("items-center justify-end w-full").style(
+            with ui.row().classes("items-center justify-between w-full").style(
                 "flex-shrink:0;padding:6px 8px;border-bottom:1px solid var(--border-subtle)"
             ):
+                _drawer_expand_btn = ui.button(
+                    icon="open_in_full",
+                    on_click=lambda: _match_actions["toggle_width"](),
+                ).props("flat dense round").tooltip("Widen panel")
                 ui.button(icon="close", on_click=lambda: _match_actions["close"]()).props(
                     "flat dense round"
                 )
@@ -4726,6 +4787,7 @@ def page_matching(request: Request):
             "sort_col": None,
             "sort_asc": True,
             "search": "",
+            "drawer_wide": False,
         }
 
         # --- Header row ---
@@ -5010,6 +5072,17 @@ def page_matching(request: Request):
 
         _match_actions["close"] = _clear_match_selection
 
+        def _toggle_drawer_width():
+            wide = not state.get("drawer_wide", False)
+            state["drawer_wide"] = wide
+            match_detail_drawer.props(f'width={820 if wide else 440}')
+            _drawer_expand_btn.props(
+                f'icon={"close_fullscreen" if wide else "open_in_full"}'
+            ).tooltip("Narrow panel" if wide else "Widen panel")
+            _render_all()
+
+        _match_actions["toggle_width"] = _toggle_drawer_width
+
         def _toggle_receipt_missing(lid: str, is_currently_missing: bool):
             if is_currently_missing:
                 svc.unmark_receipt_missing(lid)
@@ -5174,7 +5247,10 @@ def page_matching(request: Request):
                         ).style("margin:0;padding:0;min-height:0")
                         _row_cb.on("click.stop", lambda: None)
                         ui.html(
+                            f'<span class="match-status-cell" data-lineid="{_esc(t.line_id)}" '
+                            f'style="display:inline-flex;align-items:center;justify-content:center">'
                             f'<span class="status-dot status-dot-{t.match_status}"></span>'
+                            f'</span>'
                         )
 
                         with ui.element("div").style(
@@ -5351,12 +5427,13 @@ def page_matching(request: Request):
                         if r.is_image and Path(r.source_file).is_file():
                             rotation = r.rotation * 90
                             preview_cid = f"pv{id(r)}"
+                            _ph = "620px" if state.get("drawer_wide") else "380px"
                             rot_css = (
                                 f"transform:rotate({rotation}deg);transform-origin:center;"
                                 if rotation else ""
                             )
                             with ui.element("div").style(
-                                "width:100%;height:380px;position:relative;"
+                                f"width:100%;height:{_ph};position:relative;"
                                 "border-radius:8px;border:1px solid var(--border-default);overflow:hidden;"
                                 "background:var(--bg-surface);"
                                 "display:flex;align-items:center;justify-content:center;"
@@ -5378,7 +5455,7 @@ def page_matching(request: Request):
                             ui.timer(0.15, lambda _js=_pjs: ui.run_javascript(_js), once=True)
                         elif Path(r.source_file).is_file() and Path(r.source_file).suffix.lower() == ".pdf":
                             with ui.element("div").style(
-                                "width:100%;height:380px;position:relative;"
+                                f"width:100%;height:{'620px' if state.get('drawer_wide') else '380px'};position:relative;"
                                 "border-radius:8px;border:1px solid var(--border-default);overflow:hidden;"
                                 "background:var(--bg-surface);cursor:pointer;"
                             ).on("click", lambda _, d=r: _open_receipt_viewer(d)):
