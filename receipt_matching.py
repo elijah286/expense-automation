@@ -563,6 +563,89 @@ def _line_amount_matches_card_charge(line: dict[str, Any], analysis: dict[str, A
     return abs(line_amt - cc_amt) <= tolerance
 
 
+def _amount_match_strength(line: dict[str, Any], analysis: dict[str, Any]) -> str:
+    """
+    Classify how strongly the receipt amounts corroborate this expense line.
+
+    Returns one of:
+      "exact"    - an explicit same-currency / card-charged equality (high confidence).
+                   A wrong receipt DATE on an exact-amount match is almost always an
+                   OCR/parse error rather than a different transaction, so the date
+                   penalty is softened to a review (not a rejection) for this tier.
+      "estimate" - only a USD-estimate / foreign-currency-band signal aligns (medium).
+                   A coincidental same amount is more plausible here, so keep strict
+                   date gating.
+      "none"     - no positive amount signal aligns.
+
+    Mirrors the branches of line_and_receipt_amounts_align().
+    """
+    line_usd = _line_rough_usd_equiv(line)
+    if line_usd is None:
+        return "none"
+
+    nat, doc_cur = _native_total_from_analysis(analysis)
+    cc_amt = _float_or_none(analysis.get("card_charged_amount"))
+    cc_cur = normalize_currency_code(analysis.get("card_charged_currency"))
+    est = _float_or_none(analysis.get("estimated_usd_total"))
+    tol = _usd_amount_tolerance(line_usd)
+
+    # --- Explicit equality (exact) ---
+    if cc_cur == "USD" and cc_amt is not None and abs(cc_amt - line_usd) <= tol:
+        return "exact"
+    line_amt_raw = _float_or_none(line.get("amount"))
+    if cc_amt is not None and line_amt_raw is not None and abs(cc_amt - line_amt_raw) <= tol:
+        return "exact"
+    if doc_cur == "USD" and nat is not None and abs(nat - line_usd) <= tol:
+        return "exact"
+
+    # --- Estimate / foreign-currency band (medium) ---
+    if nat is not None and doc_cur and doc_cur != "USD":
+        lo, hi = _plausible_usd_band_for_foreign(nat, doc_cur)
+        if lo <= line_usd <= hi:
+            return "estimate"
+        if est is not None and _folio_est_usd_plausible(native_amt=nat, doc_cur=doc_cur, est_usd=est):
+            if abs(est - line_usd) <= tol:
+                return "estimate"
+
+    raw_li = analysis.get("line_items")
+    if isinstance(raw_li, list) and est is not None:
+        for it in raw_li[:24]:
+            if not isinstance(it, dict):
+                continue
+            eu = _float_or_none(it.get("estimated_usd"))
+            if eu is None:
+                continue
+            li_amt = _float_or_none(it.get("amount"))
+            lic = normalize_currency_code(it.get("currency")) or doc_cur
+            if li_amt is not None and lic and lic != "USD":
+                if not _folio_est_usd_plausible(native_amt=li_amt, doc_cur=lic, est_usd=eu):
+                    continue
+            if abs(eu - line_usd) <= tol:
+                return "estimate"
+
+    return "none"
+
+
+def _date_confidence_from_gap(gap: int | None) -> float:
+    """Per-field date confidence in [0,1] from the absolute day gap."""
+    if gap is None:
+        return 0.5
+    if gap <= 2:
+        return 1.0
+    if gap <= 4:
+        return 0.85
+    if gap <= 14:
+        return 0.6
+    if gap <= 30:
+        return 0.45
+    return 0.15
+
+
+def _amount_confidence_from_strength(strength: str) -> float:
+    """Per-field amount confidence in [0,1] from the match strength tier."""
+    return {"exact": 0.95, "estimate": 0.7}.get(strength, 0.1)
+
+
 def _apply_match_quality_policy(
     line: dict[str, Any],
     analyses_by_path: dict[str, dict[str, Any]],
@@ -593,12 +676,23 @@ def _apply_match_quality_policy(
         }
 
     cap = 0.99
+    floor = 0.0
     policy_notes: list[str] = []
+
+    strength = _amount_match_strength(line, analysis)
+    amount_exact = strength == "exact"
 
     gap = _date_gap_days(line.get("transaction_date"), analysis.get("receipt_date"))
     if gap is None:
-        cap = min(cap, 0.88)
-        policy_notes.append("date missing/unparseable")
+        if amount_exact:
+            # Exact amount but no usable receipt date (OCR failed / missing).
+            # Surface for review rather than penalising toward rejection.
+            cap = min(cap, REVIEW_CONFIDENCE_THRESHOLD - 0.05)
+            floor = max(floor, MIN_MATCH_CONFIDENCE + 0.10)
+            policy_notes.append("date missing; amount exact (likely OCR error)")
+        else:
+            cap = min(cap, 0.88)
+            policy_notes.append("date missing/unparseable")
     elif gap <= 2:
         pass
     elif gap <= 4:
@@ -613,11 +707,29 @@ def _apply_match_quality_policy(
     elif gap <= 30:
         cap = min(cap, 0.45)
         policy_notes.append(f"date gap {gap}d")
+    elif amount_exact:
+        # Large date gap (e.g. wrong year from OCR) but the amount matches exactly.
+        # Don't reject on date alone — keep it as a review candidate so it stays
+        # attributable to the correct line.
+        cap = min(cap, REVIEW_CONFIDENCE_THRESHOLD - 0.05)
+        floor = max(floor, MIN_MATCH_CONFIDENCE + 0.10)
+        policy_notes.append(f"date gap {gap}d but amount exact; receipt date likely OCR error")
     else:
         cap = min(cap, MIN_MATCH_CONFIDENCE - 0.01)
         policy_notes.append(f"date gap {gap}d too large")
 
+    field_confidence = {
+        "amount": round(_amount_confidence_from_strength(strength), 4),
+        "date": round(_date_confidence_from_gap(gap), 4),
+        "merchant": round(_token_jaccard(str(line.get("merchant_name") or ""), str(analysis.get("vendor") or "")), 4),
+    }
+
     conf = min(conf, cap)
+    # An exact amount match must not be rejected purely because the model assigned
+    # a low confidence to a wrong/implausible receipt date. Floor it into the
+    # review band (still below auto-approve) so it remains attributable.
+    if floor:
+        conf = max(conf, min(floor, cap))
     if conf < MIN_MATCH_CONFIDENCE:
         policy_text = ", ".join(policy_notes) if policy_notes else "weak date signals"
         base = f"Rejected match: confidence policy (<{MIN_MATCH_CONFIDENCE:.2f}) due to {policy_text}. "
@@ -625,6 +737,7 @@ def _apply_match_quality_policy(
             "best_receipt": None,
             "confidence": min(conf, MIN_MATCH_CONFIDENCE - 0.01),
             "reason": (base + reason)[:500],
+            "field_confidence": field_confidence,
         }
     if conf < REVIEW_CONFIDENCE_THRESHOLD:
         policy_text = ", ".join(policy_notes) if policy_notes else "partial evidence"
@@ -638,6 +751,7 @@ def _apply_match_quality_policy(
         "best_receipt": path,
         "confidence": conf,
         "reason": reason[:500],
+        "field_confidence": field_confidence,
     }
 
 
@@ -698,6 +812,10 @@ def build_receipt_match_prompt(lines: list[dict[str, Any]], analyses: list[dict[
         "and travel charges (especially hotels) can cause gaps of weeks. Gaps up to ~7 days are normal; "
         "7-30 days should reduce confidence but NOT cause rejection when amount and merchant evidence is strong. "
         "Only reject on date alone if the gap exceeds ~30 days.\n"
+        "   Exception: when the amount is an EXACT Phase A match (card-charged or same-currency total equal to line.amount), "
+        "do NOT reject even on a large or implausible date gap — a wrong year/month is almost always a receipt OCR/parse error, "
+        "not a different transaction. Still pick that receipt, state 'date likely OCR error' in reason, and set a reduced "
+        "confidence (~0.5-0.65) so it surfaces for review.\n"
         "- One best_receipt per expense line. The same source_file may be best_receipt for multiple lines when one "
         "receipt covers several card charges (e.g. rideshare trip amount on one line and tip on another). "
         "In that case each line should match a distinct line_items amount when possible.\n"
@@ -741,6 +859,9 @@ def build_single_line_receipt_match_prompt(line: dict[str, Any], analyses: list[
         "and travel charges (especially hotels) can cause gaps of weeks. Gaps up to ~7 days are normal; "
         "7-30 days should reduce confidence but NOT cause rejection when amount and merchant evidence is strong. "
         "Only reject on date alone if the gap exceeds ~30 days.\n"
+        "   Exception: when the amount is an EXACT Phase A match (card-charged or same-currency total equal to line.amount), "
+        "do NOT reject even on a large or implausible date gap — a wrong year/month is almost always a receipt OCR/parse error. "
+        "Still pick that receipt, state 'date likely OCR error' in reason, and set a reduced confidence (~0.5-0.65) for review.\n"
         "The same receipt file may correctly apply to this line even if another expense line also uses it (split charges). "
         "Prefer null if nothing fits.\n\n"
         f"expense_line: {json.dumps(line_obj, ensure_ascii=False)}\n\n"

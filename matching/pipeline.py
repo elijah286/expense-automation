@@ -82,8 +82,8 @@ def match_transactions_to_receipts(
     transaction (the one with the highest score).
     """
     # Phase 1: build scored candidates for every (txn, receipt) pair.
-    # Each entry: (score, txn_index, receipt_key, receipt_obj)
-    candidates: list[tuple[float, int, str, dict[str, Any]]] = []
+    # Each entry: (score, txn_index, receipt_key, receipt_obj, date_overridden)
+    candidates: list[tuple[float, int, str, dict[str, Any], bool]] = []
     txn_ids: list[str] = []
 
     for ti, txn in enumerate(transactions):
@@ -118,28 +118,40 @@ def match_transactions_to_receipts(
                 corrected = _correct_ddmmyy_misparse(r_date, t_date)
                 if corrected is not None:
                     r_date = corrected
-            if t_date and r_date and abs((t_date - r_date).days) > date_window_days:
+            date_out_of_window = bool(
+                t_date and r_date and abs((t_date - r_date).days) > date_window_days
+            )
+            # An exact amount match (near-zero difference) is almost never a
+            # coincidence, so a wrong receipt date — typically an OCR/parse error
+            # such as the wrong year — should not discard the candidate. Keep it as
+            # a review-band match instead of dropping it.
+            amount_is_exact = delta <= 0.05
+            if date_out_of_window and not amount_is_exact:
                 continue
-            amount_score = max(0.0, 1.0 - (delta / max(amount_tolerance, 0.01)))
-            date_score = 1.0
-            if t_date and r_date:
-                date_score = max(0.0, 1.0 - (abs((t_date - r_date).days) / max(1.0, float(date_window_days))))
             merchant_score = _merchant_similarity(t_merchant, receipt.get("vendor"))
-            score = 0.55 * amount_score + 0.30 * date_score + 0.15 * merchant_score
+            if date_out_of_window:
+                # Review band [0.60, 0.69): persisted, but flagged for review.
+                score = min(0.69, 0.60 + 0.09 * merchant_score)
+            else:
+                amount_score = max(0.0, 1.0 - (delta / max(amount_tolerance, 0.01)))
+                date_score = 1.0
+                if t_date and r_date:
+                    date_score = max(0.0, 1.0 - (abs((t_date - r_date).days) / max(1.0, float(date_window_days))))
+                score = 0.55 * amount_score + 0.30 * date_score + 0.15 * merchant_score
             r_key = str(receipt.get("source_file") or receipt.get("receipt_id") or "").strip()
             if r_key:
-                candidates.append((score, ti, r_key, receipt))
+                candidates.append((score, ti, r_key, receipt, date_out_of_window))
 
     # Phase 2: greedy assignment — highest score first, each receipt used once.
     candidates.sort(key=lambda c: c[0], reverse=True)
     assigned_txns: set[int] = set()
     assigned_receipts: set[str] = set()
-    txn_result: dict[int, tuple[float, str, dict[str, Any]]] = {}
+    txn_result: dict[int, tuple[float, str, dict[str, Any], bool]] = {}
 
-    for score, ti, r_key, receipt in candidates:
+    for score, ti, r_key, receipt, date_overridden in candidates:
         if ti in assigned_txns or r_key in assigned_receipts:
             continue
-        txn_result[ti] = (score, r_key, receipt)
+        txn_result[ti] = (score, r_key, receipt, date_overridden)
         assigned_txns.add(ti)
         assigned_receipts.add(r_key)
 
@@ -159,15 +171,22 @@ def match_transactions_to_receipts(
             )
             continue
 
-        conf_raw, r_key, receipt = txn_result[ti]
+        conf_raw, r_key, receipt, date_overridden = txn_result[ti]
         conf = round(float(conf_raw), 4)
+        if date_overridden:
+            reasoning = (
+                "Exact amount match; receipt date is outside the expected window "
+                "(likely OCR/parse error) — flagged for review."
+            )
+        else:
+            reasoning = "Matched by amount tolerance first, date proximity second, merchant similarity third."
         output.append(
             {
                 "transaction_id": txn_id,
                 "receipt_id": r_key or None,
                 "confidence": conf,
                 "confidence_level": _confidence_level(conf),
-                "reasoning": "Matched by amount tolerance first, date proximity second, merchant similarity third.",
+                "reasoning": reasoning,
             }
         )
     return output
