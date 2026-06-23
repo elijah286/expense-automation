@@ -443,6 +443,48 @@ class ExpenseService:
         approved[line_id] = {"source_file": best, "approved": True}
         save_approved_matches(self.app_dir, approved)
 
+    def approve_matches(self, line_ids: list[str]) -> int:
+        matches = load_receipt_line_matches(self.app_dir)
+        approved = load_approved_matches(self.app_dir)
+        count = 0
+        for line_id in line_ids:
+            lid = str(line_id).strip()
+            if not lid:
+                continue
+            m = matches.get(lid, {})
+            best = str(m.get("best_receipt") or "").strip()
+            if not best:
+                continue
+            if approved.get(lid, {}).get("source_file") == best:
+                continue
+            approved[lid] = {"source_file": best, "approved": True}
+            count += 1
+        if count:
+            save_approved_matches(self.app_dir, approved)
+        return count
+
+    def unapprove_matches(self, line_ids: list[str]) -> int:
+        approved = load_approved_matches(self.app_dir)
+        count = 0
+        for line_id in line_ids:
+            lid = str(line_id).strip()
+            if lid in approved:
+                approved.pop(lid, None)
+                count += 1
+        if count:
+            save_approved_matches(self.app_dir, approved)
+        return count
+
+    def reject_matches(self, line_ids: list[str]) -> int:
+        count = 0
+        for line_id in line_ids:
+            lid = str(line_id).strip()
+            if not lid:
+                continue
+            self.reject_match(lid)
+            count += 1
+        return count
+
     def reject_match(self, line_id: str) -> None:
         matches = load_receipt_line_matches(self.app_dir)
         if line_id in matches:

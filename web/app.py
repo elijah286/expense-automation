@@ -5065,6 +5065,22 @@ def page_matching(request: Request):
                 state["selected_lids"] = {lid}
             _render_all()
 
+        def _toggle_item_checkbox(lid: str, shift: bool = False, ctrl: bool = False):
+            if shift:
+                _select_item(lid, shift=True)
+                return
+            if ctrl:
+                _select_item(lid, ctrl=True)
+                return
+            if lid in state["selected_lids"]:
+                state["selected_lids"].discard(lid)
+                if state["selected_lid"] == lid:
+                    state["selected_lid"] = next(iter(state["selected_lids"]), None)
+            else:
+                state["selected_lids"].add(lid)
+                state["selected_lid"] = lid
+            _render_all()
+
         def _clear_match_selection():
             state["selected_lid"] = None
             state["selected_lids"] = set()
@@ -5118,6 +5134,53 @@ def page_matching(request: Request):
             _refresh_queue()
             _render_all()
 
+        def _do_bulk_approve_selected():
+            sel = list(state["selected_lids"])
+            if not sel:
+                ui.notify("Select one or more items first", type="warning")
+                return
+            count = svc.approve_matches(sel)
+            if count:
+                ui.notify(f"Approved {count} selected match{'es' if count != 1 else ''}", type="positive")
+            else:
+                ui.notify("No selected items have a receipt to approve", type="info")
+            _refresh_queue()
+            _render_all()
+
+        def _do_bulk_unapprove_selected():
+            sel = list(state["selected_lids"])
+            if not sel:
+                ui.notify("Select one or more items first", type="warning")
+                return
+            count = svc.unapprove_matches(sel)
+            if count:
+                ui.notify(f"Unapproved {count} selected item{'s' if count != 1 else ''}", type="positive")
+            else:
+                ui.notify("No selected items were approved", type="info")
+            _refresh_queue()
+            _render_all()
+
+        def _do_bulk_reject_selected():
+            sel = list(state["selected_lids"])
+            if not sel:
+                ui.notify("Select one or more items first", type="warning")
+                return
+            count = svc.reject_matches(sel)
+            ui.notify(f"Rejected {count} selected match{'es' if count != 1 else ''}", type="warning")
+            _refresh_queue()
+            _render_all()
+
+        def _do_bulk_unmark_missing():
+            sel = list(state["selected_lids"])
+            if not sel:
+                ui.notify("Select one or more items first", type="warning")
+                return
+            for lid in sel:
+                svc.unmark_receipt_missing(lid)
+            ui.notify(f"Removed receipt-missing flag from {len(sel)} selected item{'s' if len(sel) != 1 else ''}", type="positive")
+            _refresh_queue()
+            _render_all()
+
 
         _MATCH_GRID_COLS = "28px 32px 2fr 100px 100px 110px 1fr 1.5fr 36px"
 
@@ -5147,8 +5210,17 @@ def page_matching(request: Request):
                         ui.element("div").style("flex:1")
                         ui.label(f"{sel_count} selected").classes("text-xs font-semibold text-blue-600")
                         ui.button(
+                            "Approve", icon="check", on_click=_do_bulk_approve_selected,
+                        ).props("no-caps outline size=xs dense color=positive").style("font-size:0.7rem")
+                        ui.button(
+                            "Unapprove", icon="undo", on_click=_do_bulk_unapprove_selected,
+                        ).props("no-caps outline size=xs dense").style("font-size:0.7rem")
+                        ui.button(
                             "Rescan", icon="refresh", on_click=_do_rescan_selected,
                         ).props("no-caps outline size=xs dense").style("font-size:0.7rem")
+                        ui.button(
+                            "Reject", icon="close", on_click=_do_bulk_reject_selected,
+                        ).props("no-caps outline size=xs dense color=negative").style("font-size:0.7rem")
                         ui.button(
                             "Mark Missing", icon="do_not_disturb", on_click=_do_bulk_mark_missing,
                         ).props("no-caps outline size=xs dense color=amber").style("font-size:0.7rem")
@@ -5232,20 +5304,19 @@ def page_matching(request: Request):
                         ["shiftKey", "ctrlKey", "metaKey"],
                     )
                     with row_el:
-                        def _toggle_row_cb(e, lid=t.line_id):
-                            if e.value:
-                                state["selected_lids"].add(lid)
-                                state["selected_lid"] = lid
-                            else:
-                                state["selected_lids"].discard(lid)
-                                if state["selected_lid"] == lid:
-                                    state["selected_lid"] = next(iter(state["selected_lids"]), None)
-                            _render_all()
-
-                        _row_cb = ui.checkbox("", value=is_active, on_change=_toggle_row_cb).props(
+                        _row_cb = ui.checkbox("", value=is_active).props(
                             "dense size=xs"
                         ).style("margin:0;padding:0;min-height:0")
-                        _row_cb.on("click.stop", lambda: None)
+                        _row_cb.on(
+                            "click.stop",
+                            lambda e, lid=t.line_id: _toggle_item_checkbox(
+                                lid,
+                                shift=e.args.get("shiftKey", False) if isinstance(e.args, dict) else False,
+                                ctrl=e.args.get("ctrlKey", False) or e.args.get("metaKey", False)
+                                if isinstance(e.args, dict) else False,
+                            ),
+                            ["shiftKey", "ctrlKey", "metaKey"],
+                        )
                         ui.html(
                             f'<span class="match-status-cell" data-lineid="{_esc(t.line_id)}" '
                             f'style="display:inline-flex;align-items:center;justify-content:center">'
@@ -5330,16 +5401,40 @@ def page_matching(request: Request):
                         )
                         with ui.column().classes("gap-2 w-full"):
                             ui.button(
+                                "Approve selected",
+                                icon="check",
+                                on_click=_do_bulk_approve_selected,
+                            ).props("no-caps outline size=sm color=positive").classes("action-btn w-full")
+
+                            ui.button(
+                                "Unapprove selected",
+                                icon="undo",
+                                on_click=_do_bulk_unapprove_selected,
+                            ).props("no-caps outline size=sm").classes("action-btn w-full")
+
+                            ui.button(
                                 "Rescan selected",
                                 icon="refresh",
                                 on_click=_do_rescan_selected,
                             ).props("no-caps outline size=sm").classes("action-btn w-full")
 
                             ui.button(
+                                "Reject selected",
+                                icon="close",
+                                on_click=_do_bulk_reject_selected,
+                            ).props("no-caps outline size=sm color=negative").classes("action-btn w-full")
+
+                            ui.button(
                                 "Mark selected as receipt missing",
                                 icon="do_not_disturb",
                                 on_click=_do_bulk_mark_missing,
                             ).props("no-caps outline size=sm color=amber").classes("action-btn w-full")
+
+                            ui.button(
+                                "Undo receipt missing",
+                                icon="undo",
+                                on_click=_do_bulk_unmark_missing,
+                            ).props("no-caps outline size=sm").classes("action-btn w-full")
 
                             if report_filter_id:
                                 ui.button(
