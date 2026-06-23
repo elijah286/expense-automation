@@ -4649,10 +4649,16 @@ def _esc(s: str) -> str:
 @ui.page("/matching")
 def page_matching(request: Request):
     report_filter_id: str = ""
+    initial_filter: str = "all"
+    initial_line_id: str = ""
     try:
         report_filter_id = (request.query_params.get("report") or "").strip()
+        initial_filter = (request.query_params.get("filter") or "all").strip().lower()
+        initial_line_id = (request.query_params.get("line") or "").strip()
     except Exception:
         pass
+    if initial_filter not in {"all", "review", "missing", "unmatched", "high", "approved"}:
+        initial_filter = "all"
     page_frame("Matching", report_filter_id)
 
     report_filter_name: str = ""
@@ -4714,9 +4720,9 @@ def page_matching(request: Request):
 
         all_receipts = svc.get_receipts()
         state: dict[str, Any] = {
-            "selected_lid": None,
-            "selected_lids": set(),
-            "filter": "all",
+            "selected_lid": initial_line_id or None,
+            "selected_lids": {initial_line_id} if initial_line_id else set(),
+            "filter": initial_filter,
             "sort_col": None,
             "sort_asc": True,
             "search": "",
@@ -4757,6 +4763,10 @@ def page_matching(request: Request):
             state["search"] = e.args or ""
             _render_all()
 
+        def _match_item_missing_receipt(item: MatchReviewItem) -> bool:
+            reason = item.transaction.match_reason.lower()
+            return item.receipt is None and "receipt missing" not in reason
+
         # --- Search input ---
         match_search_container = ui.element("div")
         with match_search_container:
@@ -4779,11 +4789,12 @@ def page_matching(request: Request):
         n_high = sum(1 for q in queue if q.transaction.match_status == "high")
         n_approved = sum(1 for q in queue if q.transaction.approved)
         n_unmatched = sum(1 for q in queue if q.transaction.match_status == "unmatched")
+        n_missing = sum(1 for q in queue if _match_item_missing_receipt(q))
         reviewed = n_approved
         progress_pct = int((reviewed / total) * 100) if total else 0
 
         def _refresh_queue():
-            nonlocal queue, total, n_review, n_high, n_approved, n_unmatched, all_receipts
+            nonlocal queue, total, n_review, n_high, n_approved, n_unmatched, n_missing, all_receipts
             fresh = svc.get_match_review_queue()
             if report_filter_id == "__uncategorized__":
                 queue = [q for q in fresh if not q.transaction.report_id]
@@ -4796,6 +4807,7 @@ def page_matching(request: Request):
             n_high = sum(1 for q in queue if q.transaction.match_status == "high")
             n_approved = sum(1 for q in queue if q.transaction.approved)
             n_unmatched = sum(1 for q in queue if q.transaction.match_status == "unmatched")
+            n_missing = sum(1 for q in queue if _match_item_missing_receipt(q))
             all_receipts = svc.get_receipts()
 
         def _match_queue_sig() -> tuple:
@@ -4874,6 +4886,8 @@ def page_matching(request: Request):
                 result = [q for q in queue if q.transaction.match_status == "high"]
             elif f == "approved":
                 result = [q for q in queue if q.transaction.approved]
+            elif f == "missing":
+                result = [q for q in queue if _match_item_missing_receipt(q)]
             elif f == "unmatched":
                 result = [q for q in queue if q.transaction.match_status == "unmatched"]
             else:
@@ -4950,6 +4964,7 @@ def page_matching(request: Request):
                 for fval, flabel, fcount in [
                     ("all", "All", total),
                     ("review", "Needs Review", n_review),
+                    ("missing", "Missing Receipts", n_missing),
                     ("unmatched", "Unmatched", n_unmatched),
                     ("high", "High Confidence", n_high),
                     ("approved", "Approved", n_approved),
@@ -5717,6 +5732,13 @@ def _submit_mini_stat(label: str, current: int, total: int, color: str):
         )
 
 
+def _matching_missing_url(report_id: str, line_id: str = "") -> str:
+    url = f"/matching?report={report_id}&filter=missing" if report_id else "/matching?filter=missing"
+    if line_id:
+        url += f"&line={line_id}"
+    return url
+
+
 @ui.page("/submit")
 def page_submit(request: Request):
     svc.purge_expired()
@@ -5866,40 +5888,54 @@ def page_submit(request: Request):
                 ):
                     with ui.row().classes("items-center gap-2 mb-1"):
                         ui.icon("warning").classes("text-amber-500").style("font-size:18px")
-                        ui.label("Not Ready").classes("text-sm font-semibold text-amber-800")
-                    ui.label(
-                        f"{r.needs_fix} transaction{'s' if r.needs_fix != 1 else ''} "
-                        f"{'have' if r.needs_fix != 1 else 'has'} no receipt and "
-                        f"{'are' if r.needs_fix != 1 else 'is'} not marked as 'receipt missing'. "
-                        "Fix matches or mark items as receipt missing before submitting."
-                    ).classes("text-xs text-amber-700")
+                        ui.label("Partial Submission").classes("text-sm font-semibold text-amber-800")
+                    if r.submittable:
+                        ui.label(
+                            f"{r.submittable_lines}/{r.total_lines} transaction"
+                            f"{'s are' if r.total_lines != 1 else ' is'} ready to submit. "
+                            f"{r.needs_fix} missing-receipt item"
+                            f"{'s will' if r.needs_fix != 1 else ' will'} be left out."
+                        ).classes("text-xs text-amber-700")
+                    else:
+                        ui.label(
+                            f"{r.needs_fix} transaction{'s' if r.needs_fix != 1 else ''} "
+                            f"{'have' if r.needs_fix != 1 else 'has'} no receipt and "
+                            f"{'are' if r.needs_fix != 1 else 'is'} not marked as 'receipt missing'. "
+                            "Fix matches or mark items as receipt missing before submitting."
+                        ).classes("text-xs text-amber-700")
 
                 if r.attention_items:
                     ui.label("Items Needing Attention").classes(
                         "text-sm font-semibold text-slate-700 mt-4 mb-2"
                     )
-                    tbl = '<table class="data-table"><thead><tr>'
-                    for col in ["Merchant", "Date", "Amount", "Issue"]:
-                        tbl += f"<th>{col}</th>"
-                    tbl += "</tr></thead><tbody>"
-                    for item in r.attention_items:
-                        _curr = (
-                            f' <span style="color:#94a3b8;font-size:0.75rem"> '
-                            f"{_esc(item.currency)}</span>"
-                            if item.currency and item.currency != "USD"
-                            else ""
-                        )
-                        tbl += (
-                            f"<tr>"
-                            f"<td><strong>{_esc(item.merchant)}</strong></td>"
-                            f"<td>{_esc(item.date)}</td>"
-                            f"<td>{_esc(item.amount)}{_curr}</td>"
-                            f"<td><span style='color:#dc2626;font-weight:500'>"
-                            f"{_esc(item.issue)}</span></td>"
-                            f"</tr>"
-                        )
-                    tbl += "</tbody></table>"
-                    ui.html(tbl)
+                    with ui.element("table").classes("data-table"):
+                        with ui.element("thead"):
+                            with ui.element("tr"):
+                                for col in ["Merchant", "Date", "Amount", "Issue"]:
+                                    with ui.element("th"):
+                                        ui.label(col)
+                        with ui.element("tbody"):
+                            for item in r.attention_items:
+                                _curr = item.currency if item.currency and item.currency != "USD" else ""
+                                row = ui.element("tr").style("cursor:pointer")
+                                row.on(
+                                    "click",
+                                    lambda _, gid=g.id, lid=item.line_id: ui.navigate.to(
+                                        _matching_missing_url(gid, lid)
+                                    ),
+                                )
+                                with row:
+                                    with ui.element("td"):
+                                        ui.label(item.merchant).classes("font-semibold")
+                                    with ui.element("td"):
+                                        ui.label(item.date)
+                                    with ui.element("td"):
+                                        with ui.row().classes("items-center gap-1"):
+                                            ui.label(item.amount)
+                                            if _curr:
+                                                ui.label(_curr).classes("text-xs text-slate-400")
+                                    with ui.element("td"):
+                                        ui.label(item.issue).classes("font-medium text-red-600")
 
             # ---- Action buttons ----
             with ui.row().classes("items-center gap-2 mt-4"):
@@ -5919,9 +5955,9 @@ def page_submit(request: Request):
                         icon="delete_outline",
                         on_click=lambda _: _do_discard_submission(),
                     ).props("color=negative flat no-caps size=sm").classes("text-xs")
-                elif r.ready and r.total_lines > 0:
+                elif r.submittable and r.total_lines > 0:
                     ui.button(
-                        "Submit Report",
+                        "Submit Report" if r.ready else f"Submit {r.submittable_lines} Ready",
                         icon="send",
                         on_click=lambda _, gid=g.id, gname=g.name: _do_submit(gid, gname),
                     ).props("color=positive no-caps unelevated size=sm").classes("action-btn")
@@ -5943,7 +5979,7 @@ def page_submit(request: Request):
                     ui.button(
                         "Fix Matches",
                         icon="build",
-                        on_click=lambda _, gid=g.id: ui.navigate.to(f"/matching?report={gid}"),
+                        on_click=lambda _, gid=g.id: ui.navigate.to(_matching_missing_url(gid)),
                     ).props("color=warning no-caps unelevated size=sm").classes("action-btn")
 
                 ui.button(
@@ -5963,6 +5999,7 @@ def page_submit(request: Request):
                 return
             approved_n = int(result.get("approved", 0) or 0)
             missing_n = int(result.get("receipt_missing_marked", 0) or 0)
+            skipped_n = int(result.get("skipped_missing_receipt", 0) or 0)
             ready_n = int(result.get("ready_total", approved_n + missing_n) or 0)
             total_n = int(result.get("total", ready_n) or 0)
 
@@ -5970,6 +6007,8 @@ def page_submit(request: Request):
                 detail_bits = [f"{approved_n} receipt(s) approved"]
                 if missing_n:
                     detail_bits.append(f"{missing_n} marked receipt missing")
+                if skipped_n:
+                    detail_bits.append(f"{skipped_n} left out")
                 ui.notify(
                     f"Report '{report_name}' prepared — {ready_n}/{total_n} ready "
                     f"({', '.join(detail_bits)}). "

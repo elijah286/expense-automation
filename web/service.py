@@ -175,7 +175,9 @@ class AttentionItem:
 @dataclass
 class ReportReadiness:
     ready: bool = False
+    submittable: bool = False
     total_lines: int = 0
+    submittable_lines: int = 0
     matched: int = 0
     approved: int = 0
     classified: int = 0
@@ -694,6 +696,7 @@ class ExpenseService:
         matched_count = 0
         approved_count = 0
         classified_count = 0
+        submittable_line_ids: set[str] = set()
         needs_fix: list[str] = []
         missing_justification: list[str] = []
         attention: list[AttentionItem] = []
@@ -719,8 +722,10 @@ class ExpenseService:
 
             if best and Path(best).expanduser().is_file():
                 with_receipt += 1
+                submittable_line_ids.add(lid)
             elif is_receipt_missing:
                 receipt_missing_marked += 1
+                submittable_line_ids.add(lid)
             else:
                 needs_fix.append(lid)
                 if not best:
@@ -751,7 +756,9 @@ class ExpenseService:
 
         return ReportReadiness(
             ready=len(needs_fix) == 0 and len(missing_justification) == 0 and len(lid_set) > 0,
+            submittable=bool(submittable_line_ids) and len(missing_justification) == 0,
             total_lines=len(lid_set),
+            submittable_lines=len(submittable_line_ids),
             matched=matched_count,
             approved=approved_count,
             classified=classified_count,
@@ -794,8 +801,10 @@ class ExpenseService:
     def prepare_report_for_submission(self, report_id: str) -> dict[str, Any]:
         """Approve all matched lines in this report so they are ready for Oracle automation.
 
-        Returns summary of what was approved.  Lines marked receipt-missing are
+        Returns summary of what was approved. Lines marked receipt-missing are
         left without an approval entry (Oracle will get 'Original Receipt Missing').
+        Lines without a usable receipt and without a receipt-missing flag are
+        skipped during submission.
         """
         groups = load_expense_report_groups(self.app_dir)
         group = groups.get(report_id)
@@ -818,22 +827,29 @@ class ExpenseService:
         approved = load_approved_matches(self.app_dir)
         receipt_approved = 0
         receipt_missing_marked = 0
+        skipped_missing_receipt = 0
 
         for lid in lid_set:
             m = matches.get(lid, {})
             reason = str(m.get("reason") or "").strip().lower()
             if "receipt missing" in reason:
                 receipt_missing_marked += 1
+                continue
             best = str(m.get("best_receipt") or "").strip()
             if best and Path(best).expanduser().is_file():
                 approved[lid] = {"source_file": best, "approved": True}
                 receipt_approved += 1
+            else:
+                skipped_missing_receipt += 1
 
         save_approved_matches(self.app_dir, approved)
         ready_total = receipt_approved + receipt_missing_marked
+        if ready_total <= 0:
+            return {"error": "Report has no transactions ready to submit"}
         return {
             "approved": receipt_approved,
             "receipt_missing_marked": receipt_missing_marked,
+            "skipped_missing_receipt": skipped_missing_receipt,
             "classified": classified,
             "ready_total": ready_total,
             "total": len(lid_set),
@@ -1680,6 +1696,9 @@ class ExpenseService:
             if lid in approved:
                 receipt_path = str(approved[lid].get("source_file", "") or "").strip() or None
 
+            if not receipt_path and not is_missing:
+                continue
+
             submission_lines.append(SubmissionLine(
                 line_id=lid,
                 merchant_name=merchant,
@@ -1690,6 +1709,9 @@ class ExpenseService:
                 receipt_path=receipt_path,
                 receipt_missing=is_missing,
             ))
+
+        if not submission_lines:
+            raise RuntimeError("Report has no transactions ready to submit.")
 
         payload = SubmissionPayload(
             report_name=report_name,
