@@ -2396,29 +2396,45 @@ class ReportSubmitter(TransactionScraper):
         const text = clean(cell.innerText || cell.textContent || '');
         const blob = norm(text);
         let count = 0;
-        if (blob && !blob.includes('+') && (blob.includes('.pdf') || blob.includes('.png') || blob.includes('.jpg') || blob.includes('.jpeg'))) {
-            count = 1;
+        // A filename in the cell text means a real attachment is present.
+        if (blob.includes('.pdf') || blob.includes('.png') || blob.includes('.jpg') ||
+            blob.includes('.jpeg') || blob.includes('.gif') || blob.includes('.tif') ||
+            blob.includes('.tiff') || blob.includes('.doc') || blob.includes('.docx') ||
+            blob.includes('.xls') || blob.includes('.xlsx') || blob.includes('.heic')) {
+            count = Math.max(count, 1);
         }
-        const explicitCount = blob.match(/(?:^|\\b)(\\d+)\\s*(?:attachment|file|document|receipt)s?(?:\\b|$)/i);
+        // "N attachments" / "N files" style text.
+        const explicitCount = blob.match(/(\\d+)\\s*(?:attachment|file|document|receipt)s?\\b/i);
         if (explicitCount) count = Math.max(count, Number(explicitCount[1]) || 0);
-        const numericBadges = Array.from(cell.querySelectorAll('span, div, a, font, b, strong'))
+        // A numeric badge (e.g. a "1" shown next to a paperclip).
+        const numericBadges = Array.from(cell.querySelectorAll('span, font, b, strong'))
             .map(el => clean(el.innerText || el.textContent || ''))
-            .filter(t => /^\d+$/.test(t))
-            .map(t => Number(t));
+            .filter(t => /^\\d+$/.test(t))
+            .map(t => Number(t))
+            .filter(n => n > 0);
         if (numericBadges.length) count = Math.max(count, ...numericBadges);
+        // Existing-attachment actions present in the cell text.
+        if (blob.includes('view attachment') || blob.includes('update attachment') ||
+            blob.includes('delete attachment') || blob.includes('manage attachment')) {
+            count = Math.max(count, 1);
+        }
+        // Image indicators. CRITICAL: the green "Add Attachment" button
+        // (src add_attach.png / alt "Add Attachment") means there is NO
+        // attachment yet — it must never be counted. Only treat a paperclip
+        // or an existing-attachment image (without "add") as a real one.
         const imgs = Array.from(cell.querySelectorAll('img'));
         for (const img of imgs) {
-            const src = norm(img.getAttribute('src') || '');
-            const alt = norm(img.getAttribute('alt') || '');
-            const title = norm(img.getAttribute('title') || '');
-            const combined = `${src} ${alt} ${title}`;
-            if (combined.includes('paperclip') || combined.includes('attachment') || combined.includes('attached')) {
+            const combined = norm([
+                img.getAttribute('src') || '',
+                img.getAttribute('alt') || '',
+                img.getAttribute('title') || '',
+            ].join(' '));
+            if (!combined) continue;
+            if (combined.includes('add') || combined.includes('spacer') || combined.includes('/t.gif')) continue;
+            if (combined.includes('paperclip') || combined.includes('attachment') ||
+                combined.includes('attached') || combined.includes('paper_clip')) {
                 count = Math.max(count, 1);
-                break;
             }
-        }
-        if (blob.includes('view attachment') || blob.includes('update attachment') || blob.includes('delete attachment')) {
-            count = Math.max(count, 1);
         }
         return { hasExistingAttachment: count > 0, attachmentCount: count, attachmentText: text };
     };
@@ -2710,11 +2726,21 @@ class ReportSubmitter(TransactionScraper):
         def _norm_date(raw: str) -> str:
             return _norm_text(raw)
 
+        # Visual rows we have already uploaded to, keyed by (tableIndex, bodyRowIndex).
+        # Guards against re-targeting the same line even if Oracle's post-upload
+        # attachment indicator is briefly ambiguous.
+        attached_row_keys: set[str] = set()
+
+        def _row_key(row: dict) -> str:
+            return f"{row.get('tableIndex')}:{row.get('bodyRowIndex')}"
+
         def _pick_target_row(rows: list[dict], entry: _ReceiptEntry) -> dict | None:
             best: dict | None = None
             best_score = -1
             for row in rows:
                 if row.get("hasExistingAttachment"):
+                    continue
+                if _row_key(row) in attached_row_keys:
                     continue
                 row_merchant = _norm_text(row.get("merchant", ""))
                 if not row_merchant:
@@ -2815,6 +2841,9 @@ class ReportSubmitter(TransactionScraper):
                         self.set_status(f"Step 6: could not click attach icon for '{entry.merchant}'")
                         entry.used = True
                         return "progress"
+                    # Never target this visual row again, regardless of how the
+                    # post-upload indicator renders.
+                    attached_row_keys.add(_row_key(row))
                     self._wait_for_oracle_page_stable(timeout_s=12.0, settle_ms=600)
 
                     if not self._wait_for_add_attachment_modal(timeout_s=15.0):
@@ -2875,6 +2904,9 @@ class ReportSubmitter(TransactionScraper):
             self.set_status("Step 6: advancing to next page of expense lines…")
             if not self.click_expense_table_pagination_next_in_any_frame():
                 break
+            # Row keys are per-page (bodyRowIndex repeats across pages), so
+            # forget them when the visible page changes.
+            attached_row_keys.clear()
             self._wait_for_oracle_page_stable(settle_ms=600)
 
         unattached = [e for e in receipt_pool if not e.used]
