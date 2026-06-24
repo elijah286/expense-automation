@@ -767,36 +767,16 @@ class ReportSubmitter(TransactionScraper):
         page_attempts: list[dict[str, Any]] = []
         matched_ids: set = set()
         self._last_step2_pagination_issue = ""
-        prev_first_merchant: str | None = None
-        stale_page_count = 0
+        seen_signatures: set[str] = set()
 
         for page_idx in range(max_pages):
             remaining = [t for t in targets if t["target_id"] not in matched_ids]
             if not remaining:
                 break
 
-            # Read snapshot for stale-page detection + status display
-            snapshot = self._step2_pick_best_credit_snapshot()
-            if snapshot:
-                self._step2_credit_card_frame = snapshot[0]
-                snap_data = snapshot[1]
-                snap_rows = snap_data.get("rows") or []
-                first_merchant = (
-                    (snap_rows[0].get("merchant_name") or "").strip().lower()
-                    if snap_rows else None
-                )
-                # Detect stuck pagination — same first row as previous page
-                if first_merchant and first_merchant == prev_first_merchant:
-                    stale_page_count += 1
-                    if stale_page_count >= 2:
-                        self._last_step2_pagination_issue = (
-                            f"pagination stuck (same first row '{first_merchant}') "
-                            f"with {len(matched_ids)}/{len(targets)} matched"
-                        )
-                        break
-                else:
-                    stale_page_count = 0
-                prev_first_merchant = first_merchant
+            # Signature of the page we are about to process (used to confirm a
+            # real page turn before/after pagination).
+            _, current_sig = self._step2_page_signature()
 
             page_range = self.get_step2_credit_table_page_range_in_any_frame()
             if page_range:
@@ -812,7 +792,6 @@ class ReportSubmitter(TransactionScraper):
 
             n, newly_matched = self._select_on_current_page(remaining)
             if n == 0:
-                # Per-page diagnostic: report what the JS sees on this page
                 diag = self._diagnose_selection_mismatch(remaining)
                 self.set_status(
                     f"Step 2: page {page_idx + 1} selected 0/{len(remaining)} "
@@ -820,6 +799,8 @@ class ReportSubmitter(TransactionScraper):
                 )
             total_selected += n
             matched_ids.update(newly_matched)
+            if current_sig:
+                seen_signatures.add(current_sig)
             page_attempts.append({
                 "page_index": page_idx,
                 "page_range": (
@@ -832,55 +813,28 @@ class ReportSubmitter(TransactionScraper):
             if len(matched_ids) >= len(targets):
                 break
 
-            # On last page, don't try to paginate further.
-            # Use actual 'Next N' link visibility instead of pageRange
-            # (pageRange detection is unreliable on Oracle's 46-table DOM).
-            if not self._has_next_n_pagination_link(
-                preferred_frame=self._step2_credit_card_frame
-            ):
+            # Advance robustly: click Next and wait until the table content
+            # actually changes (retrying the click), rather than a fixed sleep.
+            advanced = self._step2_advance_page(current_sig)
+            if not advanced:
                 if len(matched_ids) < len(targets):
                     page_info = (
                         f"{page_range[0]}-{page_range[1]} of {page_range[2]}"
-                        if page_range else f"page {page_idx}"
+                        if page_range else f"page {page_idx + 1}"
                     )
                     self._last_step2_pagination_issue = (
-                        f"reached last page ({page_info}) with "
+                        f"could not advance past {page_info} with "
                         f"{len(matched_ids)}/{len(targets)} matched"
                     )
                 break
 
-            self.set_status("Step 2: advancing to next page…")
-            clicked = self.click_expense_table_pagination_next_in_any_frame(
-                preferred_frame=self._step2_credit_card_frame,
-            )
-            if not clicked:
-                remaining_after = [t for t in targets if t["target_id"] not in matched_ids]
-                if remaining_after:
-                    self.set_status(
-                        "Step 2: could not open next transaction page; retrying…"
-                    )
-                    self.browser_page.wait_for_timeout(1000)
-                    refreshed = self._step2_pick_best_credit_snapshot()
-                    if refreshed:
-                        self._step2_credit_card_frame = refreshed[0]
-                    clicked = self.click_expense_table_pagination_next_in_any_frame(
-                        preferred_frame=self._step2_credit_card_frame,
-                    )
-                if not clicked:
-                    if len(matched_ids) < len(targets):
-                        self._last_step2_pagination_issue = (
-                            f"stopped at page index {page_idx} with "
-                            f"{len(matched_ids)}/{len(targets)} matched"
-                        )
-                    break
-            self.browser_page.wait_for_timeout(900)
-
-            # Safety: verify we're still on Step 2 after pagination.
-            # If a 'Next' click accidentally advanced the wizard, stop.
-            if not self._wizard_any_frame_on_step(2):
+            # Loop guard: if we somehow returned to a page we already
+            # processed, stop instead of cycling forever.
+            _, new_sig = self._step2_page_signature()
+            if new_sig and new_sig in seen_signatures:
                 self._last_step2_pagination_issue = (
-                    f"left Step 2 after pagination click on page index "
-                    f"{page_idx} with {len(matched_ids)}/{len(targets)} matched"
+                    f"revisited an already-processed page with "
+                    f"{len(matched_ids)}/{len(targets)} matched"
                 )
                 break
 
@@ -888,6 +842,85 @@ class ReportSubmitter(TransactionScraper):
         self._last_step2_page_attempts = page_attempts
 
         return total_selected
+
+    def _step2_page_signature(self) -> tuple[Frame | None, str]:
+        """Return ``(frame, signature)`` describing the credit-card table's
+        currently visible page.
+
+        The signature combines the first few rows' merchant + amount so that
+        a genuine page turn can be detected reliably even when Oracle's
+        pagination re-render is slow.  Updates ``_step2_credit_card_frame``.
+        """
+        snapshot = self._step2_pick_best_credit_snapshot()
+        if not snapshot:
+            return None, ""
+        self._step2_credit_card_frame = snapshot[0]
+        rows = snapshot[1].get("rows") or []
+        parts: list[str] = []
+        for r in rows:
+            merchant = str(r.get("merchant_name") or "").strip().lower()
+            if not merchant:
+                continue
+            amount = str(r.get("amount") or "").strip().lower()
+            parts.append(f"{merchant}|{amount}")
+            if len(parts) >= 4:
+                break
+        return snapshot[0], " ;; ".join(parts)
+
+    def _step2_advance_page(
+        self,
+        prev_signature: str,
+        *,
+        max_click_retries: int = 5,
+        change_timeout_s: float = 12.0,
+    ) -> bool:
+        """Advance the credit-card table to the next page and confirm the turn.
+
+        Clicks the 'Next N' pagination link, then polls until the visible
+        page signature differs from *prev_signature* (a real page change),
+        retrying the click if the page does not turn within the timeout.
+
+        Returns True when a new page is shown, False when no further page is
+        reachable (last page) or the wizard left Step 2.
+        """
+        if not self.browser_page:
+            return False
+
+        import time as _time
+
+        for _attempt in range(max_click_retries):
+            if not self._has_next_n_pagination_link(
+                preferred_frame=self._step2_credit_card_frame
+            ):
+                return False
+
+            self.set_status("Step 2: advancing to next page…")
+            clicked = self.click_expense_table_pagination_next_in_any_frame(
+                preferred_frame=self._step2_credit_card_frame,
+            )
+            if not clicked:
+                # Re-pick the frame and try again after a short pause.
+                self.browser_page.wait_for_timeout(700)
+                refreshed = self._step2_pick_best_credit_snapshot()
+                if refreshed:
+                    self._step2_credit_card_frame = refreshed[0]
+                continue
+
+            deadline = _time.monotonic() + change_timeout_s
+            while _time.monotonic() < deadline:
+                self.browser_page.wait_for_timeout(300)
+                # If a stray click advanced the wizard, bail out of Step 2.
+                if not self._wizard_any_frame_on_step(2):
+                    self._last_step2_pagination_issue = (
+                        "pagination click left Step 2"
+                    )
+                    return False
+                _, sig = self._step2_page_signature()
+                if sig and sig != prev_signature:
+                    return True
+            # Page did not turn within the timeout — retry the click.
+
+        return False
 
     _DESELECT_EXTRA_TRANSACTIONS_STEP2_JS = """
 (payload) => {
