@@ -1787,6 +1787,48 @@ class ExpenseService:
                     "error": str(exc),
                 })
             raise
+        finally:
+            # Persist the portal's real expense-type labels if they were
+            # captured during Step 3 (helps future classification/matching).
+            scraped = getattr(submitter, "scraped_expense_type_options", []) or []
+            if scraped:
+                try:
+                    if self._save_portal_expense_types(scraped) and on_status:
+                        on_status(
+                            f"Captured {len(scraped)} expense-type option(s) from your Oracle portal."
+                        )
+                except Exception:
+                    pass
+
+    def _save_portal_expense_types(self, options: list[str]) -> bool:
+        """Persist the portal's actual expense-type option labels to settings.
+
+        These become the source of truth for classification and Step 3
+        matching (``portal_expense_types`` in settings.json).  Returns True
+        when the stored list actually changed.
+        """
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for o in options:
+            s = str(o or "").strip()
+            if not s or re.match(r"(?i)^\s*select", s):
+                continue
+            low = s.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            cleaned.append(s)
+        if len(cleaned) < 2:
+            return False
+        raw = self._load_settings_raw()
+        if raw.get("portal_expense_types") == cleaned:
+            return False
+        raw["portal_expense_types"] = cleaned
+        self._settings_path().parent.mkdir(parents=True, exist_ok=True)
+        self._settings_path().write_text(
+            json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Settings

@@ -118,6 +118,9 @@ class TransactionScraper:
         self._cdp_http_url: str | None = None
         self._scraped_expense_lines: list[dict[str, Any]] = []
         self._step2_credit_card_frame: Frame | None = None
+        # Real expense-type option labels scraped from the Oracle Step 3
+        # dropdowns during a run (empty until captured).
+        self.scraped_expense_type_options: list[str] = []
 
     def set_status(self, msg: str) -> None:
         self._on_status(msg)

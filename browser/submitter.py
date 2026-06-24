@@ -1476,6 +1476,65 @@ class ReportSubmitter(TransactionScraper):
         'Next N' pagination link — same check used on Step 2."""
         return self._credit_card_table_pagination_can_advance()
 
+    _SCRAPE_EXPENSE_TYPE_OPTIONS_JS = """
+() => {
+  const clean = (v) => (v || '').replace(/\\s+/g, ' ').trim();
+  const norm = (v) => clean(v).toLowerCase();
+  let best = [];
+  const tables = Array.from(document.querySelectorAll('table'));
+  for (const table of tables) {
+    const headerRow = table.querySelector('tr');
+    if (!headerRow) continue;
+    const ht = Array.from(headerRow.querySelectorAll('th, td')).map(c => norm(c.textContent || ''));
+    const ei = ht.findIndex(t => t.includes('expense type'));
+    if (ei < 0) continue;
+    const bodyRows = Array.from(table.querySelectorAll('tr')).slice(1);
+    for (const tr of bodyRows) {
+      const cells = Array.from(tr.querySelectorAll('td'));
+      if (ei >= cells.length) continue;
+      const select = cells[ei].querySelector('select');
+      if (!select) continue;
+      const opts = Array.from(select.options)
+        .map(o => clean(o.textContent || ''))
+        .filter(t => t && !/^select\\b/i.test(t) && !/^-+$/.test(t) && !/^please\\s+select/i.test(t));
+      if (opts.length > best.length) best = opts;
+    }
+  }
+  return best;
+}
+"""
+
+    def _scrape_expense_type_options(self) -> list[str]:
+        """Read the actual expense-type option labels from a Step 3 dropdown.
+
+        Every row's expense-type ``<select>`` shares the same option list, so
+        the longest list found across frames is returned.  Returns ``[]`` when
+        no dropdown is present.
+        """
+        if not self.browser_page:
+            return []
+        best: list[str] = []
+        seen_lower: set[str] = set()
+        for frame in self.browser_page.frames:
+            try:
+                opts = frame.evaluate(self._SCRAPE_EXPENSE_TYPE_OPTIONS_JS)
+            except Exception:
+                continue
+            if isinstance(opts, list) and len(opts) > len(best):
+                deduped: list[str] = []
+                seen_lower = set()
+                for o in opts:
+                    s = str(o or "").strip()
+                    if not s:
+                        continue
+                    low = s.lower()
+                    if low in seen_lower:
+                        continue
+                    seen_lower.add(low)
+                    deduped.append(s)
+                best = deduped
+        return best
+
     def _apply_expense_types_step3(
         self,
         lines: list[SubmissionLine],
@@ -1514,6 +1573,19 @@ class ReportSubmitter(TransactionScraper):
         if not frame or not rows:
             self.set_status("Step 3: Business Expenses table not found — skipping type assignment.")
             return 0
+
+        # Capture the portal's real expense-type option labels so future
+        # classification and matching use this Oracle instance's exact
+        # strings rather than the app's generic defaults.
+        try:
+            scraped = self._scrape_expense_type_options()
+            if scraped:
+                self.scraped_expense_type_options = scraped
+                self.set_status(
+                    f"Step 3: captured {len(scraped)} portal expense-type option(s)."
+                )
+        except Exception:
+            pass
 
         total_applied = 0
         max_pages = 80
