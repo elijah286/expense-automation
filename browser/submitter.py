@@ -1201,24 +1201,50 @@ class ReportSubmitter(TransactionScraper):
   const pickOption = (select, label) => {
     const want = normalize(label);
     const opts = Array.from(select.options);
-        if (!want) {
-            return opts.find(o => {
-                const ot = normalize(o.textContent || '');
-                return ot && !/^select/i.test(ot);
-            }) || null;
-        }
+    const valid = opts.filter(o => {
+      const ot = normalize(o.textContent || '');
+      return ot && !/^select/i.test(ot);
+    });
+    if (!want) return valid[0] || null;
+    // 1) exact text match
     let opt = opts.find(o => normalize(o.textContent || '') === want);
     if (opt) return opt;
-    opt = opts.find(o => {
+    // 2) substring match in either direction — handles verbose Oracle labels
+    //    such as 'Entertainment:Non-NI(...)' vs the short 'Entertainment'.
+    opt = valid.find(o => {
       const ot = normalize(o.textContent || '');
-      return ot && !/^select/i.test(ot) && (ot.includes(want) || want.includes(ot));
+      return ot.includes(want) || want.includes(ot);
     });
+    if (opt) return opt;
+    // 3) headword match — compare the leading category word(s) before any
+    //    '(' or ':'. This lets 'Transportation (Gas, Parking, Cabs & Other)'
+    //    still match a differently-worded Oracle transportation option
+    //    instead of falling through to an arbitrary (wrong) choice.
+    const headword = want.split(/[(:]/)[0].trim();
+    if (headword && headword.length >= 4) {
+      opt = valid.find(o => {
+        const oh = normalize(o.textContent || '').split(/[(:]/)[0].trim();
+        return oh && (oh === headword || oh.startsWith(headword) || headword.startsWith(oh));
+      });
+      if (opt) return opt;
+      opt = valid.find(o => normalize(o.textContent || '').includes(headword));
+      if (opt) return opt;
+      // significant single keyword (e.g. 'transportation', 'lodging', 'airfare')
+      const keyword = headword.split(' ').filter(w => w.length >= 5)[0];
+      if (keyword) {
+        opt = valid.find(o => normalize(o.textContent || '').includes(keyword));
         if (opt) return opt;
-        opt = opts.find(o => {
-            const ot = normalize(o.textContent || '');
-            return ot && !/^select/i.test(ot);
-        });
-    return opt || null;
+      }
+    }
+    // 4) Never silently pick the first option (that produced wrong 'Airfare'
+    //    assignments). Prefer a miscellaneous / other catch-all if present.
+    opt = valid.find(o => {
+      const ot = normalize(o.textContent || '');
+      return ot.includes('miscellaneous') || ot.includes('other') || ot.includes('general');
+    });
+    if (opt) return opt;
+    // 5) give up rather than mis-assign an unrelated category.
+    return null;
   };
   const tables = Array.from(document.querySelectorAll('table'));
   for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
