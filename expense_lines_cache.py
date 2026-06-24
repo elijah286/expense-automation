@@ -654,12 +654,18 @@ def soft_delete_report(
     app_dir: Path,
     report_id: str,
     countdown_days: int = 5,
+    *,
+    keep_documents: bool = False,
 ) -> dict[str, Any]:
     """Mark a report and its data for deferred deletion.
 
     Hides the report from normal views immediately but preserves all
     data on disk.  After *countdown_days* the caller can purge via
     ``purge_expired_deletions``.
+
+    When *keep_documents* is True, the report's receipt files (and their
+    analyses) are preserved at purge time — only the transactions are
+    removed.  Use this when receipts may be shared with other expenses.
     """
     reports = load_expense_report_groups(app_dir)
     report = reports.get(report_id)
@@ -696,6 +702,7 @@ def soft_delete_report(
         "report_name": report_name,
         "line_ids": sorted(line_id_set),
         "receipt_files": receipt_files,
+        "keep_documents": bool(keep_documents),
         "marked_at": now,
         "delete_after": delete_after,
         "countdown_days": countdown_days,
@@ -725,6 +732,7 @@ def soft_delete_report(
         "report_name": report_name,
         "line_count": len(line_id_set),
         "receipt_count": len(receipt_files),
+        "documents_kept": bool(keep_documents),
         "delete_after": delete_after,
     }
 
@@ -832,27 +840,30 @@ def purge_expired_deletions(app_dir: Path) -> list[dict[str, Any]]:
             continue
 
         if now >= delete_after:
+            keep_documents = bool(entry.get("keep_documents"))
             receipt_files = entry.get("receipt_files", [])
             deleted_files = 0
-            for sf in receipt_files:
-                p = Path(sf).expanduser()
-                if p.is_file():
-                    try:
-                        p.unlink()
-                        deleted_files += 1
-                    except OSError:
-                        pass
+            if not keep_documents:
+                for sf in receipt_files:
+                    p = Path(sf).expanduser()
+                    if p.is_file():
+                        try:
+                            p.unlink()
+                            deleted_files += 1
+                        except OSError:
+                            pass
 
-            analyses = load_analyses_snapshot(app_dir)
-            receipt_set = set(receipt_files)
-            kept_analyses = [a for a in analyses if str(a.get("source_file", "")).strip() not in receipt_set]
-            if len(kept_analyses) != len(analyses):
-                save_analyses_snapshot(app_dir, kept_analyses)
+                analyses = load_analyses_snapshot(app_dir)
+                receipt_set = set(receipt_files)
+                kept_analyses = [a for a in analyses if str(a.get("source_file", "")).strip() not in receipt_set]
+                if len(kept_analyses) != len(analyses):
+                    save_analyses_snapshot(app_dir, kept_analyses)
 
             purged.append({
                 "report_id": rid,
                 "report_name": entry.get("report_name", ""),
                 "deleted_files": deleted_files,
+                "documents_kept": keep_documents,
             })
         else:
             remaining[rid] = entry

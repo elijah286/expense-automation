@@ -6239,6 +6239,7 @@ def page_submit(request: Request):
             )
 
         def _open_mark_submitted_dialog(report_id: str, report_name: str, n_lines: int):
+            keep_docs = {"value": False}
             with ui.dialog() as dlg, ui.card().style(
                 "min-width:450px;border-radius:16px;padding:28px"
             ):
@@ -6253,15 +6254,40 @@ def page_submit(request: Request):
                         ui.label("What will happen:").classes(
                             "text-xs font-semibold text-amber-800 mb-1"
                         )
-                        ui.label(
-                            f"• {n_lines} transaction(s) will be removed from this view"
-                        ).classes("text-xs text-amber-700")
-                        ui.label("• Attached receipt images / documents will be hidden").classes(
-                            "text-xs text-amber-700"
-                        )
-                        ui.label(
-                            "• All data will be permanently deleted after 5 days"
-                        ).classes("text-xs text-amber-700")
+
+                        @ui.refreshable
+                        def _outcome_bullets():
+                            ui.label(
+                                f"• {n_lines} transaction(s) will be removed from this view"
+                            ).classes("text-xs text-amber-700")
+                            if keep_docs["value"]:
+                                ui.label(
+                                    "• Receipt documents will be KEPT and stay available "
+                                    "for other expenses"
+                                ).classes("text-xs text-amber-700")
+                                ui.label(
+                                    "• Only the transactions are permanently deleted after "
+                                    "5 days (documents preserved)"
+                                ).classes("text-xs text-amber-700")
+                            else:
+                                ui.label("• Attached receipt images / documents will be hidden").classes(
+                                    "text-xs text-amber-700"
+                                )
+                                ui.label(
+                                    "• All data will be permanently deleted after 5 days"
+                                ).classes("text-xs text-amber-700")
+
+                        _outcome_bullets()
+
+                    def _on_keep_toggle(e):
+                        keep_docs["value"] = bool(e.value)
+                        _outcome_bullets.refresh()
+
+                    ui.checkbox(
+                        "Keep receipt documents (some expenses reuse the same receipt)",
+                        on_change=_on_keep_toggle,
+                    ).props("dense").classes("text-sm text-slate-700")
+
                     ui.label(
                         "You can restore the report from Settings before the 5-day window expires."
                     ).classes("text-xs text-slate-500 italic")
@@ -6270,17 +6296,21 @@ def page_submit(request: Request):
                     ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
 
                     def _do_mark():
-                        result = svc.mark_report_submitted(report_id)
+                        result = svc.mark_report_submitted(
+                            report_id, keep_documents=keep_docs["value"]
+                        )
                         dlg.close()
                         if "error" in result:
                             ui.notify(f"Failed: {result['error']}", type="negative")
                         else:
                             n = result.get("line_count", 0)
-                            ui.notify(
+                            msg = (
                                 f"'{report_name}' marked as submitted — {n} transaction(s) "
-                                f"scheduled for deletion in 5 days.",
-                                type="positive",
+                                f"scheduled for deletion in 5 days."
                             )
+                            if result.get("documents_kept"):
+                                msg += " Receipt documents will be kept."
+                            ui.notify(msg, type="positive")
                             ui.navigate.to("/submit")
 
                     ui.button("Mark as Submitted", icon="check_circle", on_click=_do_mark).props(

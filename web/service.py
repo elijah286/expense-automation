@@ -821,9 +821,16 @@ class ExpenseService:
         """
         return delete_report_with_data(self.app_dir, report_id)
 
-    def mark_report_submitted(self, report_id: str) -> dict[str, Any]:
-        """Soft-delete a report: hide from views, schedule permanent deletion in 5 days."""
-        return soft_delete_report(self.app_dir, report_id, countdown_days=5)
+    def mark_report_submitted(self, report_id: str, *, keep_documents: bool = False) -> dict[str, Any]:
+        """Soft-delete a report: hide from views, schedule permanent deletion in 5 days.
+
+        When *keep_documents* is True, the report's receipt files are preserved
+        at purge time (only the transactions are removed) — useful when the same
+        receipt is shared across multiple expenses.
+        """
+        return soft_delete_report(
+            self.app_dir, report_id, countdown_days=5, keep_documents=keep_documents
+        )
 
     def get_pending_deletions(self) -> list[dict[str, Any]]:
         """Return all reports pending permanent deletion, sorted by deletion date."""
