@@ -2387,7 +2387,7 @@ class ReportSubmitter(TransactionScraper):
     # Step 6 — receipt attachments
     # ------------------------------------------------------------------
 
-        _EXTRACT_STEP6_ROWS_JS = """
+    _EXTRACT_STEP6_ROWS_JS = """
 () => {
     const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
     const norm = (v) => clean(v).toLowerCase();
@@ -2399,7 +2399,7 @@ class ReportSubmitter(TransactionScraper):
         if (blob && !blob.includes('+') && (blob.includes('.pdf') || blob.includes('.png') || blob.includes('.jpg') || blob.includes('.jpeg'))) {
             count = 1;
         }
-        const explicitCount = blob.match(/(?:^|\b)(\d+)\s*(?:attachment|file|document|receipt)s?(?:\b|$)/i);
+        const explicitCount = blob.match(/(?:^|\\b)(\\d+)\\s*(?:attachment|file|document|receipt)s?(?:\\b|$)/i);
         if (explicitCount) count = Math.max(count, Number(explicitCount[1]) || 0);
         const numericBadges = Array.from(cell.querySelectorAll('span, div, a, font, b, strong'))
             .map(el => clean(el.innerText || el.textContent || ''))
@@ -2774,69 +2774,116 @@ class ReportSubmitter(TransactionScraper):
             return False
 
         attached = 0
-        for entry in receipt_pool:
-            if entry.used:
-                continue
+
+        def _attach_one_on_current_page() -> str:
+            """Attach the first unused receipt that matches a visible row.
+
+            Returns one of: 'progress' (an attach was attempted — re-scan),
+            'none' (no unused receipt matches a row on this page), or
+            'unavailable' (the table could not be read).
+            """
+            nonlocal attached
 
             target_frame, current_rows = _extract_step6_rows_with_frame(wait_timeout_s=2.0)
             if not target_frame or not current_rows:
+                return "unavailable"
+
+            for entry in receipt_pool:
+                if entry.used:
+                    continue
+                row = _pick_target_row(current_rows, entry)
+                if not row:
+                    continue
+
+                # A matching row exists on this page — attempt exactly one
+                # attach, then let the caller re-scan (the page may re-render
+                # or reset to the first page after Oracle's partial refresh).
+                pre_attach_count = _count_attached_matches(current_rows, entry)
+                staged = self._stage_attachment_file(f"s6_{attached}", entry.path)
+                if not staged:
+                    self.set_status(f"Step 6: failed to stage file for '{entry.merchant}'")
+                    entry.used = True
+                    return "progress"
+
+                try:
+                    self.set_status(f"Step 6: clicking attach for '{entry.merchant}'…")
+                    clicked = target_frame.evaluate(
+                        self._CLICK_ATTACH_PLUS_JS,
+                        [row["tableIndex"], row["bodyRowIndex"]],
+                    )
+                    if not clicked:
+                        self.set_status(f"Step 6: could not click attach icon for '{entry.merchant}'")
+                        entry.used = True
+                        return "progress"
+                    self._wait_for_oracle_page_stable(timeout_s=12.0, settle_ms=600)
+
+                    if not self._wait_for_add_attachment_modal(timeout_s=15.0):
+                        self.set_status(f"Step 6: attach modal did not appear for '{entry.merchant}'")
+                        entry.used = True
+                        return "progress"
+
+                    if self._complete_attachment_upload(staged):
+                        self._wait_for_oracle_page_stable(settle_ms=600)
+                        _, post_rows = _extract_step6_rows_with_frame(wait_timeout_s=2.0)
+                        post_attach_count = _count_attached_matches(post_rows, entry)
+                        if post_attach_count > pre_attach_count or _target_row_is_attached(post_rows, row, entry):
+                            attached += 1
+                            entry.used = True
+                            self.set_status(
+                                f"Step 6: attached receipt for '{entry.merchant}' "
+                                f"({attached}/{len(receipt_pool)})"
+                            )
+                        else:
+                            entry.used = True
+                            self.set_status(
+                                f"Step 6: upload completed but could not verify row for line {entry.line_id}; "
+                                f"before={pre_attach_count}, after={post_attach_count}."
+                            )
+                    else:
+                        entry.used = True
+                        self.set_status(f"Step 6: upload failed for '{entry.merchant}'")
+                except Exception as exc:
+                    entry.used = True
+                    self.set_status(f"Step 6: error attaching '{entry.merchant}': {exc}")
+                return "progress"
+
+            return "none"
+
+        # Rewind to the first page so attachments start from the top, then
+        # work forward through every page of the (possibly paginated) table.
+        try:
+            self._step3_go_to_first_table_page()
+            self._wait_for_oracle_page_stable(settle_ms=500)
+        except Exception:
+            pass
+
+        max_visits = 4 * len(receipt_pool) + 40
+        for _ in range(max_visits):
+            if all(e.used for e in receipt_pool):
+                break
+
+            outcome = _attach_one_on_current_page()
+            if outcome == "progress":
+                continue
+            if outcome == "unavailable":
                 self.set_status("Step 6: table became unavailable while attaching receipts.")
                 break
 
-            row = _pick_target_row(current_rows, entry)
-            if not row:
-                self.set_status(
-                    f"Step 6: no target row found for line {entry.line_id} "
-                    f"('{entry.merchant}', amount {entry.amount or 'n/a'})."
-                )
-                continue
+            # Nothing left to attach on this page — advance if there is one.
+            if not self._has_next_n_pagination_link():
+                break
+            self.set_status("Step 6: advancing to next page of expense lines…")
+            if not self.click_expense_table_pagination_next_in_any_frame():
+                break
+            self._wait_for_oracle_page_stable(settle_ms=600)
 
-            pre_attach_count = _count_attached_matches(current_rows, entry)
-
-            staged = self._stage_attachment_file(f"s6_{attached}", entry.path)
-            if not staged:
-                self.set_status(f"Step 6: failed to stage file for '{entry.merchant}'")
-                continue
-
-            try:
-                self.set_status(f"Step 6: clicking attach for '{entry.merchant}'…")
-                clicked = target_frame.evaluate(
-                    self._CLICK_ATTACH_PLUS_JS,
-                    [row["tableIndex"], row["bodyRowIndex"]],
-                )
-                if not clicked:
-                    self.set_status(f"Step 6: could not click attach icon for '{entry.merchant}'")
-                    continue
-                self._wait_for_oracle_page_stable(timeout_s=12.0, settle_ms=600)
-
-                if not self._wait_for_add_attachment_modal(timeout_s=15.0):
-                    self.set_status(f"Step 6: attach modal did not appear for '{entry.merchant}'")
-                    continue
-
-                if self._complete_attachment_upload(staged):
-                    self._wait_for_oracle_page_stable(settle_ms=600)
-
-                    _, post_rows = _extract_step6_rows_with_frame(wait_timeout_s=2.0)
-                    post_attach_count = _count_attached_matches(post_rows, entry)
-                    if post_attach_count > pre_attach_count or _target_row_is_attached(post_rows, row, entry):
-                        attached += 1
-                        entry.used = True
-                        self.set_status(
-                            f"Step 6: attached receipt for '{entry.merchant}' "
-                            f"({attached}/{len(receipt_pool)})"
-                        )
-                    else:
-                        self.set_status(
-                            f"Step 6: upload completed but could not verify row for line {entry.line_id}; "
-                            f"before={pre_attach_count}, after={post_attach_count}. "
-                            "Continuing with the next receipt."
-                        )
-                        continue
-                else:
-                    self.set_status(f"Step 6: upload failed for '{entry.merchant}'")
-            except Exception as exc:
-                self.set_status(f"Step 6: error attaching '{entry.merchant}': {exc}")
-                continue
+        unattached = [e for e in receipt_pool if not e.used]
+        if unattached:
+            sample = ", ".join(e.merchant for e in unattached[:5])
+            self.set_status(
+                f"Step 6: {len(unattached)} receipt(s) could not be matched to a table row "
+                f"(e.g. {sample}{'…' if len(unattached) > 5 else ''})."
+            )
 
         return attached
 
