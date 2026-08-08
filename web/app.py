@@ -2027,7 +2027,7 @@ _DARK_MODE_JS = """<script>
         }
         var icon = document.getElementById('ea-theme-icon');
         if (icon) {
-            icon.textContent = pref === 'light' ? 'light_mode' : pref === 'dark' ? 'dark_mode' : 'brightness_auto';
+            icon.textContent = pref === 'light' ? 'light_mode' : pref === 'dark' ? 'dark_mode' : 'contrast';
         }
         ['light', 'dark', 'system'].forEach(function (t) {
             var el = document.getElementById('ea-theme-check-' + t);
@@ -2108,7 +2108,7 @@ _THEME_SWITCHER_HTML = """
     class="ea-theme-toggle-btn"
     style="background:transparent;border:none;cursor:pointer;width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;transition:background 0.15s,color 0.15s"
   >
-    <span id="ea-theme-icon" class="material-icons" style="font-size:20px">brightness_auto</span>
+    <span id="ea-theme-icon" class="material-icons" style="font-size:20px">contrast</span>
   </button>
   <div id="ea-theme-menu" class="ea-theme-dropdown" style="display:none;position:absolute;right:0;top:calc(100% + 6px);border-radius:10px;padding:4px;min-width:148px;box-shadow:0 8px 28px rgba(0,0,0,0.15);z-index:9999">
     <div id="ea-theme-item-light"
@@ -2128,7 +2128,7 @@ _THEME_SWITCHER_HTML = """
     <div id="ea-theme-item-system"
       class="ea-theme-menu-item"
       style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;font-size:13.5px;font-family:inherit">
-      <span class="material-icons" style="font-size:16px;color:#94a3b8">brightness_auto</span>
+      <span class="material-icons" style="font-size:16px;color:#94a3b8">contrast</span>
       <span>System</span>
       <span id="ea-theme-check-system" class="material-icons" style="font-size:14px;margin-left:auto;color:#3b82f6;opacity:0">check</span>
     </div>
