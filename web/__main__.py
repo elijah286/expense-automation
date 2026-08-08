@@ -42,26 +42,12 @@ if __name__ == "__main__":
     sys.excepthook = _crash_excepthook
 
     def _install_playwright_chromium() -> None:
-        """Install Playwright Chromium without spawning the frozen executable again."""
-        from playwright.__main__ import main as playwright_main
+        """Install Chromium through the same locked path used by automation."""
+        from browser.runtime import ensure_chromium_executable
+        from playwright.sync_api import sync_playwright
 
-        argv_prev = sys.argv[:]
-        try:
-            sys.argv = [argv_prev[0], "install", "chromium"]
-            # Suppress noisy download progress output (Chromium, FFmpeg, etc.)
-            _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
-            sys.stdout = open(os.devnull, "w")
-            sys.stderr = open(os.devnull, "w")
-            try:
-                playwright_main()
-            except SystemExit:
-                pass  # playwright_main() calls sys.exit(0) on success
-            finally:
-                sys.stdout.close()
-                sys.stderr.close()
-                sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
-        finally:
-            sys.argv = argv_prev
+        with sync_playwright() as playwright_instance:
+            ensure_chromium_executable(playwright_instance.chromium.executable_path)
 
     # --install-chromium: download Chromium and exit (used by installers).
     # Always exit 0: a download hiccup must never fail/roll back the installer.
