@@ -35,6 +35,7 @@ from playwright.sync_api import (
 )
 
 from browser.reliability import RetryPolicy, execute_with_retry
+from browser.runtime import ensure_chromium_executable
 from browser_automation import normalize_currency_code
 from expense_lines_cache import (
     prune_receipt_sidecars_after_step2_scrape,
@@ -286,7 +287,7 @@ class TransactionScraper:
         http_base = f"http://127.0.0.1:{port}"
         if not self.playwright:
             self.playwright = sync_playwright().start()
-        exe = self.playwright.chromium.executable_path
+        exe = ensure_chromium_executable(self.playwright.chromium.executable_path)
         args = [
             exe,
             f"--remote-debugging-port={port}",

@@ -47,6 +47,7 @@ from playwright.sync_api import (
 )
 
 from browser.reliability import RetryPolicy, execute_with_retry, is_transient_error
+from browser.runtime import ensure_chromium_executable
 from browser_automation import (
     analyze_receipts_with_llm,
     build_openai_client,
@@ -4946,7 +4947,7 @@ class ReceiptAutomationUI:
         http_base = f"http://127.0.0.1:{port}"
         if not self.playwright:
             self.playwright = sync_playwright().start()
-        exe = self.playwright.chromium.executable_path
+        exe = ensure_chromium_executable(self.playwright.chromium.executable_path)
         chromium_log = (os.environ.get("AUTOMATED_EXPENSES_CHROMIUM_LOG") or "").strip()
         stderr_dest = subprocess.DEVNULL
         log_fp = None
