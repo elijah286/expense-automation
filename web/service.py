@@ -757,7 +757,10 @@ class ExpenseService:
 
             if best:
                 matched_count += 1
-            if lid in approved:
+                if lid in approved:
+                    approved_count += 1
+            elif is_receipt_missing:
+                matched_count += 1
                 approved_count += 1
             if etype:
                 classified_count += 1

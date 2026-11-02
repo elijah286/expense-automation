@@ -160,6 +160,34 @@ Once you've entered your credentials, the Dashboard unlocks and the workflow is:
 3. **Match & review** — the app suggests which receipt goes with which transaction; you approve or adjust.
 4. **Create & submit the report** — one click fills out the expense report in the portal for you.
 
+In the Matching receipt panel, outlined **Accept** and **Reject** buttons are actions,
+not selected states. Accepting changes the button to **Accepted** and updates approval
+counts without navigating away, advancing selection, or resetting the receipt preview.
+Use **Unapprove** to undo acceptance. Rejecting clears the match and shows **Rejected**
+while keeping the transaction selected. The **A** / **R** shortcuts use the same behavior.
+
+### Cash and mileage drafts (UI preview)
+
+- Use **Cash** in the left sidebar to add, edit, or delete a manual expense with its
+  date, merchant/payee, amount, currency, expense type, and description/business purpose.
+- Use **Mileage** for a trip date, miles (up to three decimal places), and business
+  purpose. The app automatically calculates a USD estimate using the
+  [US IRS business mileage rate](https://www.irs.gov/tax-professionals/standard-mileage-rates)
+  for the trip date, including midyear rate changes. Verified periods currently cover
+  2024-2026; unsupported dates show an error instead of guessing a rate. This is an
+  IRS estimate, **not yet a verified employer/Oracle reimbursement rate**.
+- Either type can be assigned to an existing report or left unassigned. Create a
+  report from Transactions if needed. Drafts persist locally in
+  `~/.expense-automator/manual_expenses.json`, separate from scraped transactions,
+  receipt matching, and credit-card submission data.
+- **Cash and mileage are not yet sent to Oracle.** The Submit screen lists assigned
+  drafts separately and asks for confirmation before submitting credit-card items
+  only. Oracle field mapping will be added after the relevant dialogs are supplied.
+  Drafts remain saved even when their report is removed or marked submitted; use
+  their Cash/Mileage screen to reassign or delete them.
+- Both screens are optional. Skipping them leaves the existing credit-card scraping,
+  matching, and submission workflow unchanged.
+
 ---
 
 ## Troubleshooting

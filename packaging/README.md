@@ -31,7 +31,9 @@ After a full build, you can **iterate on the DMG background only** (regenerates 
 Outputs:
 
 - `dist/Expense Automator.app` — drag to Applications (custom icon in the Dock / Finder)
-- `dist/Expense Automator.dmg` — illustrated “drag to Applications” disk image (Firefox-style night scene + arrow; see `packaging/generate_dmg_background.py`)
+- `dist/Expense.Automator.<VERSION>.dmg` — illustrated “drag to Applications” disk image (Firefox-style night scene + arrow; see `packaging/generate_dmg_background.py`)
+
+`quick_redmg.sh` writes `dist/Expense Automator.dmg` for a quick local rebuild. Published releases include this stable download filename alongside the versioned DMG.
 
 Playwright’s Chromium bundle is copied into `Contents/Resources/ms-playwright` (it is not embedded by PyInstaller; nested browser `.app` bundles break codesign).
 
@@ -43,7 +45,7 @@ If you cannot use `create-dmg`, set **`ALLOW_PLAIN_DMG=1`** to build a minimal D
 
 ### CI: rebuild on every push to `main`
 
-GitHub Actions workflow **`.github/workflows/macos-dmg.yml`** runs `./packaging/build_macos.sh` on each push to `main` and uploads **`Expense Automator.dmg`** as a workflow artifact (Actions → latest run → Artifacts).
+GitHub Actions workflow **`.github/workflows/macos-dmg.yml`** runs `./packaging/build_macos.sh` on each push to `main` and uploads the versioned DMG as a workflow artifact (Actions → latest run → Artifacts).
 
 First launch: macOS may show a security prompt for an unsigned app. Control-click → Open, or allow in **System Settings → Privacy & Security**.
 
@@ -58,7 +60,9 @@ In PowerShell, from the repository root:
 Outputs:
 
 - `dist\ExpenseAutomator\` — folder containing `ExpenseAutomator.exe`, `ms-playwright\`, and dependencies (must be kept together)
-- Run `iscc packaging\ExpenseAutomator.iss` (Inno Setup) to build `dist\ExpenseAutomator_Setup.exe` if you install [Inno Setup](https://jrsoftware.org/isinfo.php)
+- Run `iscc packaging\ExpenseAutomator.iss` (Inno Setup) to build `dist\ExpenseAutomator_Setup_<VERSION>.exe` if you install [Inno Setup](https://jrsoftware.org/isinfo.php)
+
+Published releases include the stable download filename `ExpenseAutomator_Setup.exe` alongside the versioned installer.
 
 Build the Windows artifacts **on a Windows machine** (PyInstaller targets the host OS). macOS cannot produce a Windows `.exe`.
 

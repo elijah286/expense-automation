@@ -21,10 +21,14 @@ jobs:
         run: brew install create-dmg
       - name: Build app and disk image
         run: ./packaging/build_macos.sh
+      - name: Add stable download filename
+        run: cp "dist/Expense.Automator.$(cat VERSION).dmg" "dist/Expense Automator.dmg"
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Expense.Automator.*.dmg
+          files: |
+            dist/Expense.Automator.*.dmg
+            dist/Expense Automator.dmg
           make_latest: true
           body: ${{ github.event.head_commit.message }}
 
@@ -43,9 +47,16 @@ jobs:
         run: choco install innosetup -y --no-progress
       - name: Build installer
         run: iscc packaging\ExpenseAutomator.iss
+      - name: Add stable download filename
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          Copy-Item "dist\ExpenseAutomator_Setup_$version.exe" "dist\ExpenseAutomator_Setup.exe"
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ExpenseAutomator_Setup_*.exe
+          files: |
+            dist/ExpenseAutomator_Setup_*.exe
+            dist/ExpenseAutomator_Setup.exe
           make_latest: true
           body: ${{ github.event.head_commit.message }}

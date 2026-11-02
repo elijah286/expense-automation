@@ -54,8 +54,11 @@ else:
 from web.service import ExpenseService, ExpenseReportGroup, MatchReviewItem, ReceiptDoc, ReportReadiness, TransactionRow
 from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS, get_expense_type_options
 from web.activity_log import activity_log
+from web.manual_expenses import ManualExpenseStore
+from web.manual_expense_ui import manual_expense_screen, report_manual_drafts
 
 svc = ExpenseService()
+manual_expenses = ManualExpenseStore(svc.app_dir)
 
 
 _GLOBAL_FILE_DROP_GUARD_JS = """<script>
@@ -272,7 +275,7 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
 
 
 def _start_auto_match():
-    """Check for unscanned documents before running auto-match; prompt user if any found."""
+    """Offer scan, skip, or cancel before auto-matching unscanned documents."""
     unscanned = [r for r in svc.get_receipts() if not r.analyzed]
     if not unscanned:
         _run_background("Matching", svc.run_full_matching_pipeline, "Matching complete")
@@ -317,6 +320,7 @@ def _start_auto_match():
                     "Scan and matching complete",
                 )
 
+            ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
             ui.button("Skip, match anyway", on_click=_skip).props("flat no-caps")
             ui.button("Scan first, then match", on_click=_scan_first).props(
                 "no-caps unelevated color=primary"
@@ -1659,7 +1663,7 @@ def shared_nav(active: str, report_id: str = ""):
     Returns the drawer element so the header hamburger button can toggle it.
     Quasar's breakpoint prop auto-hides the drawer on narrow viewports.
     """
-    _REPORT_NAV_PAGES = {"documents", "transactions", "matching", "submit"}
+    _REPORT_NAV_PAGES = {"documents", "transactions", "cash", "mileage", "matching", "submit"}
     drawer = ui.left_drawer(value=True, fixed=True, bordered=False).classes(
         ""
     ).props('width=170 :breakpoint=768')
@@ -1673,6 +1677,8 @@ def shared_nav(active: str, report_id: str = ""):
             ("/", "space_dashboard", "Dashboard"),
             ("/documents", "description", "Documents"),
             ("/transactions", "receipt_long", "Transactions"),
+            ("/cash", "payments", "Cash"),
+            ("/mileage", "directions_car", "Mileage"),
             ("/matching", "compare_arrows", "Matching"),
             ("/submit", "send", "Submit"),
         ]
@@ -4834,14 +4840,14 @@ def page_matching(request: Request):
                         ui.notify(f"Approved {count} high-confidence matches", type="positive")
                     else:
                         ui.notify("No new high-confidence matches to approve", type="info")
-                    ui.navigate.to("/matching")
+                    _refresh_approval_state()
 
                 high_count = sum(1 for q in queue if q.transaction.match_status == "high" and not q.transaction.approved)
-                if high_count:
-                    ui.button(
-                        f"Accept All High ({high_count})",
-                        on_click=_do_approve_all,
-                    ).props("color=positive no-caps unelevated size=sm").classes("action-btn")
+                approve_all_btn = ui.button(
+                    f"Accept All High ({high_count})",
+                    on_click=_do_approve_all,
+                ).props("color=positive no-caps unelevated size=sm").classes("action-btn")
+                approve_all_btn.set_visibility(high_count > 0)
 
                 ui.button(
                     "Run Auto-Match",
@@ -4880,8 +4886,7 @@ def page_matching(request: Request):
         n_approved = sum(1 for q in queue if q.transaction.approved)
         n_unmatched = sum(1 for q in queue if q.transaction.match_status == "unmatched")
         n_missing = sum(1 for q in queue if _match_item_missing_receipt(q))
-        reviewed = n_approved
-        progress_pct = int((reviewed / total) * 100) if total else 0
+        approval_updates: dict[str, list[Callable[[bool], None]]] = {}
 
         def _refresh_queue():
             nonlocal queue, total, n_review, n_high, n_approved, n_unmatched, n_missing, all_receipts
@@ -4917,49 +4922,58 @@ def page_matching(request: Request):
                 for q in queue
             )
 
-        with ui.row().classes("items-center gap-4 mb-5"):
-            ui.label(
-                f"{total} transaction{'s' if total != 1 else ''}"
-            ).classes("text-sm font-semibold text-slate-600")
-
-            total_amt = sum(
-                _safe_amount_float(q.transaction.amount) for q in queue
+        @ui.refreshable
+        def _render_summary():
+            high_count = sum(
+                1 for q in queue if q.transaction.match_status == "high" and not q.transaction.approved
             )
-            if total_amt:
-                ui.label(f"·  Total: ${total_amt:,.2f}").classes(
-                    "text-sm text-slate-400"
-                )
+            approve_all_btn.set_text(f"Accept All High ({high_count})")
+            approve_all_btn.set_visibility(high_count > 0)
+            with ui.row().classes("items-center gap-4 mb-5"):
+                ui.label(
+                    f"{total} transaction{'s' if total != 1 else ''}"
+                ).classes("text-sm font-semibold text-slate-600")
 
-            if n_approved:
-                ui.html(
-                    f'<span class="confidence-badge badge-high">'
-                    f'{n_approved} approved</span>'
+                total_amt = sum(
+                    _safe_amount_float(q.transaction.amount) for q in queue
                 )
-            if n_high:
-                ui.html(
-                    f'<span style="display:inline-flex;align-items:center;gap:4px;'
-                    f'padding:2px 8px;border-radius:12px;background:#dbeafe;'
-                    f'color:#1d4ed8;font-size:0.7rem;font-weight:600">'
-                    f'{n_high} high</span>'
-                )
-            if n_review:
-                ui.html(
-                    f'<span class="confidence-badge badge-medium">'
-                    f'{n_review} needs review</span>'
-                )
-            if n_unmatched:
-                ui.html(
-                    f'<span class="confidence-badge badge-unmatched">'
-                    f'{n_unmatched} unmatched</span>'
-                )
+                if total_amt:
+                    ui.label(f"·  Total: ${total_amt:,.2f}").classes(
+                        "text-sm text-slate-400"
+                    )
 
-        # --- Progress bar ---
-        with ui.row().classes("items-center gap-3 w-full mb-4"):
-            ui.html(
-                f'<div class="review-progress" style="flex:1">'
-                f'<div class="review-progress-fill" style="width:{progress_pct}%"></div></div>'
-            )
-            ui.label(f"{reviewed}/{total} approved").classes("text-sm font-medium text-slate-500")
+                if n_approved:
+                    ui.html(
+                        f'<span class="confidence-badge badge-high">'
+                        f'{n_approved} approved</span>'
+                    )
+                if n_high:
+                    ui.html(
+                        f'<span style="display:inline-flex;align-items:center;gap:4px;'
+                        f'padding:2px 8px;border-radius:12px;background:#dbeafe;'
+                        f'color:#1d4ed8;font-size:0.7rem;font-weight:600">'
+                        f'{n_high} high</span>'
+                    )
+                if n_review:
+                    ui.html(
+                        f'<span class="confidence-badge badge-medium">'
+                        f'{n_review} needs review</span>'
+                    )
+                if n_unmatched:
+                    ui.html(
+                        f'<span class="confidence-badge badge-unmatched">'
+                        f'{n_unmatched} unmatched</span>'
+                    )
+
+            progress_pct = int((n_approved / total) * 100) if total else 0
+            with ui.row().classes("items-center gap-3 w-full mb-4"):
+                ui.html(
+                    f'<div class="review-progress" style="flex:1">'
+                    f'<div class="review-progress-fill" style="width:{progress_pct}%"></div></div>'
+                )
+                ui.label(f"{n_approved}/{total} approved").classes("text-sm font-medium text-slate-500")
+
+        _render_summary()
 
         # --- Filter chips ---
         filter_chips_container = ui.row().classes("items-center gap-2 mb-5")
@@ -5025,6 +5039,8 @@ def page_matching(request: Request):
 
         def _render_all():
             state["_queue_sig"] = _match_queue_sig()
+            approval_updates.clear()
+            _render_summary.refresh()
             _render_filter_chips()
             layout_container.clear()
             with layout_container:
@@ -5035,6 +5051,31 @@ def page_matching(request: Request):
                 _render_detail()
             show = bool(state.get("selected_lid")) or len(state.get("selected_lids", set())) > 1
             match_detail_drawer.set_value(show)
+
+        def _refresh_approval_state():
+            _refresh_queue()
+            for q in queue:
+                for update in approval_updates.get(q.transaction.line_id, []):
+                    update(q.transaction.approved)
+            _render_summary.refresh()
+            _render_filter_chips()
+            # Acknowledge the saved state so the polling timer doesn't rebuild the preview.
+            state["_queue_sig"] = _match_queue_sig()
+
+        def _accept_match(lid: str):
+            svc.approve_match(lid)
+            _refresh_approval_state()
+            if any(q.transaction.line_id == lid and q.transaction.approved for q in queue):
+                ui.notify("Match accepted", type="positive")
+            else:
+                _render_all()
+                ui.notify("Could not accept match: no matched receipt is available", type="negative")
+
+        def _reject_match(lid: str):
+            svc.reject_match(lid)
+            _refresh_queue()
+            _render_all()
+            ui.notify("Match rejected", type="warning")
 
         def _live_match_update():
             old_sig = state.get("_queue_sig")
@@ -5172,8 +5213,7 @@ def page_matching(request: Request):
                 ui.notify(f"Approved {count} selected match{'es' if count != 1 else ''}", type="positive")
             else:
                 ui.notify("No selected items have a receipt to approve", type="info")
-            _refresh_queue()
-            _render_all()
+            _refresh_approval_state()
 
         def _do_bulk_unapprove_selected():
             sel = list(state["selected_lids"])
@@ -5185,8 +5225,7 @@ def page_matching(request: Request):
                 ui.notify(f"Unapproved {count} selected item{'s' if count != 1 else ''}", type="positive")
             else:
                 ui.notify("No selected items were approved", type="info")
-            _refresh_queue()
-            _render_all()
+            _refresh_approval_state()
 
         def _do_bulk_reject_selected():
             sel = list(state["selected_lids"])
@@ -5383,11 +5422,12 @@ def page_matching(request: Request):
                             "color:var(--text-muted);font-size:0.78rem"
                         ):
                             if item.receipt:
-                                if t.approved:
-                                    ui.html(
-                                        '<span class="material-icons" style="font-size:0.9rem;color:#16a34a;'
-                                        'vertical-align:middle;margin-right:3px">verified</span>'
-                                    )
+                                approved_icon = ui.icon("verified").style(
+                                    "font-size:0.9rem;color:#16a34a;"
+                                    "vertical-align:middle;margin-right:3px"
+                                ).tooltip("Accepted")
+                                approved_icon.set_visibility(t.approved)
+                                approval_updates.setdefault(t.line_id, []).append(approved_icon.set_visibility)
                                 ui.label(item.receipt.vendor or item.receipt.filename)
                             else:
                                 ui.label("\u2014").classes("text-slate-300")
@@ -5521,13 +5561,9 @@ def page_matching(request: Request):
                         ui.label(t.date).classes("text-sm text-slate-500")
                     with ui.row().classes("items-center gap-2 mt-3"):
                         ui.html(_badge_html(t.match_status, t.match_confidence))
-                        if t.approved:
-                            ui.html(
-                                '<span style="display:inline-flex;align-items:center;gap:3px;'
-                                'color:#15803d;font-size:0.75rem;font-weight:600">'
-                                '<span class="material-icons" style="font-size:0.95rem">verified</span>'
-                                'Approved</span>'
-                            )
+                        approval_status = ui.label().classes("text-xs font-semibold").props(
+                            'role=status aria-live=polite'
+                        )
                         if t.expense_type:
                             ui.html(
                                 f'<span class="confidence-badge" style="background:#f0f9ff;color:#0369a1">'
@@ -5625,19 +5661,11 @@ def page_matching(request: Request):
                 with ui.element("div").classes("detail-panel-actions"):
                     lid = t.line_id
 
-                    def _accept(lid=lid):
-                        svc.approve_match(lid)
-                        ui.notify("Match approved", type="positive")
-                        _advance_selection(lid)
-
-                    def _reject(lid=lid):
-                        svc.reject_match(lid)
-                        ui.notify("Match rejected", type="warning")
-                        url = f"/matching?report={report_filter_id}" if report_filter_id else "/matching"
-                        ui.navigate.to(url)
-
                     def _manual_pick(lid=lid):
-                        _open_manual_pick_dialog(lid, all_receipts, lambda: ui.navigate.to("/matching"))
+                        def _on_picked():
+                            _refresh_queue()
+                            _render_all()
+                        _open_manual_pick_dialog(lid, all_receipts, _on_picked)
 
                     def _rescan_single(lid=lid):
                         _run_background(
@@ -5659,12 +5687,36 @@ def page_matching(request: Request):
 
                     with ui.row().classes("items-center gap-2 flex-wrap"):
                         if item.receipt:
-                            ui.button("Accept", icon="check", on_click=_accept).props(
-                                "color=positive no-caps unelevated size=sm"
+                            accept_btn = ui.button(
+                                "Accept", icon="check", on_click=lambda: _accept_match(lid),
+                            ).props(
+                                "color=positive no-caps outline size=sm"
                             ).classes("action-btn")
-                            ui.button("Reject", icon="close", on_click=_reject).props(
-                                "color=negative no-caps unelevated size=sm"
+                            ui.button(
+                                "Reject", icon="close", on_click=lambda: _reject_match(lid),
+                            ).props(
+                                "color=negative no-caps outline size=sm"
                             ).classes("action-btn")
+
+                            def _update_approval(approved: bool):
+                                accept_btn.set_text("Accepted" if approved else "Accept")
+                                accept_btn.props(remove="outline unelevated")
+                                accept_btn.props("unelevated" if approved else "outline")
+                                accept_btn.props(f'aria-pressed={str(approved).lower()}')
+                                accept_btn.set_enabled(not approved)
+                                approval_status.set_text("Accepted" if approved else "Not yet accepted")
+                                approval_status.style(
+                                    "color:var(--q-positive)" if approved else "color:var(--text-muted)"
+                                )
+
+                            _update_approval(t.approved)
+                            approval_updates.setdefault(lid, []).append(_update_approval)
+                        elif t.match_reason == "Rejected by user.":
+                            approval_status.set_text("Rejected")
+                            approval_status.style("color:var(--q-negative)")
+                            ui.button("Rejected", icon="close").props(
+                                'color=negative no-caps unelevated size=sm aria-pressed=true'
+                            ).classes("action-btn").disable()
 
                         if not item.receipt and not is_missing:
                             ui.button(
@@ -5702,19 +5754,6 @@ def page_matching(request: Request):
 
         match_detail_drawer.on_value_change(_on_match_drawer_value)
 
-        def _advance_selection(current_lid: str):
-            """After approving, move selection to next unreviewed item."""
-            items = _filtered_queue()
-            current_idx = None
-            for i, q in enumerate(items):
-                if q.transaction.line_id == current_lid:
-                    current_idx = i
-                    break
-            if current_idx is not None and current_idx + 1 < len(items):
-                state["selected_lid"] = items[current_idx + 1].transaction.line_id
-            url = f"/matching?report={report_filter_id}" if report_filter_id else "/matching"
-            ui.navigate.to(url)
-
         _render_all()
         ui.timer(1.0, _live_match_update)
 
@@ -5735,14 +5774,10 @@ def page_matching(request: Request):
                 return
 
             if key == "a" and item.receipt:
-                svc.approve_match(item.transaction.line_id)
-                ui.notify("Match approved", type="positive")
-                _advance_selection(item.transaction.line_id)
-            elif key == "r":
-                svc.reject_match(item.transaction.line_id)
-                ui.notify("Match rejected", type="warning")
-                url = f"/matching?report={report_filter_id}" if report_filter_id else "/matching"
-                ui.navigate.to(url)
+                if not item.transaction.approved:
+                    _accept_match(item.transaction.line_id)
+            elif key == "r" and item.receipt:
+                _reject_match(item.transaction.line_id)
             elif e.key.arrow_down or key == "j":
                 items = _filtered_queue()
                 for i, q in enumerate(items):
@@ -5939,6 +5974,20 @@ def _matching_missing_url(report_id: str, line_id: str = "") -> str:
     return url
 
 
+@ui.page("/cash")
+def page_cash(request: Request):
+    report_id = (request.query_params.get("report") or "").strip()
+    page_frame("Cash", report_id)
+    manual_expense_screen("cash", report_id, svc, manual_expenses)
+
+
+@ui.page("/mileage")
+def page_mileage(request: Request):
+    report_id = (request.query_params.get("report") or "").strip()
+    page_frame("Mileage", report_id)
+    manual_expense_screen("mileage", report_id, svc, manual_expenses)
+
+
 @ui.page("/submit")
 def page_submit(request: Request):
     svc.purge_expired()
@@ -5980,6 +6029,7 @@ def page_submit(request: Request):
         r = svc.get_report_readiness(g.id)
         created = g.created_at[:10] if len(g.created_at) >= 10 else g.created_at
         pending_sub = svc.get_pending_submission(g.id)
+        report_manual_drafts(manual_expenses, g.id)
 
         # ---- Incomplete submission banner ----
         if pending_sub:
@@ -6192,7 +6242,32 @@ def page_submit(request: Request):
                     "and permanently deleted after 5 days."
                 ).classes("text-xs text-slate-400").style("max-width:340px")
 
-        def _do_submit(report_id: str, report_name: str):
+        def _do_submit(report_id: str, report_name: str, *, manual_acknowledged: bool = False):
+            if not manual_acknowledged:
+                try:
+                    has_manual = any(row.report_id == report_id for row in manual_expenses.list())
+                except (ValueError, OSError) as exc:
+                    ui.notify(f"Manual drafts could not be checked: {exc}", type="negative")
+                    has_manual = True
+                if has_manual:
+                    with ui.dialog() as dlg, ui.card().style("max-width:500px"):
+                        ui.label("Manual drafts will not be submitted").classes("text-lg font-semibold")
+                        ui.label(
+                            "Only credit-card items can be sent to Oracle at this stage. "
+                            "Cash and mileage drafts remain saved locally, even if the report is marked submitted."
+                        )
+
+                        def _credit_cards_only():
+                            dlg.close()
+                            _do_submit(report_id, report_name, manual_acknowledged=True)
+
+                        with ui.row().classes("justify-end w-full"):
+                            ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
+                            ui.button("Submit credit-card items only", on_click=_credit_cards_only).props(
+                                "unelevated no-caps"
+                            )
+                    dlg.open()
+                    return
             result = svc.prepare_report_for_submission(report_id)
             if "error" in result:
                 ui.notify(result["error"], type="negative")
