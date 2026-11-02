@@ -22,13 +22,13 @@ jobs:
       - name: Build app and disk image
         run: ./packaging/build_macos.sh
       - name: Add stable download filename
-        run: cp "dist/Expense.Automator.$(cat VERSION).dmg" "dist/Expense Automator.dmg"
+        run: cp "dist/Expense.Automator.$(cat VERSION).dmg" "dist/Expense.Automator.dmg"
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/Expense.Automator.*.dmg
-            dist/Expense Automator.dmg
+            dist/Expense.Automator.dmg
           make_latest: true
           body: ${{ github.event.head_commit.message }}
 

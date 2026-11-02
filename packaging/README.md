@@ -33,7 +33,7 @@ Outputs:
 - `dist/Expense Automator.app` — drag to Applications (custom icon in the Dock / Finder)
 - `dist/Expense.Automator.<VERSION>.dmg` — illustrated “drag to Applications” disk image (Firefox-style night scene + arrow; see `packaging/generate_dmg_background.py`)
 
-`quick_redmg.sh` writes `dist/Expense Automator.dmg` for a quick local rebuild. Published releases include this stable download filename alongside the versioned DMG.
+`quick_redmg.sh` writes `dist/Expense Automator.dmg` for a quick local rebuild. Published releases include the stable asset name `Expense.Automator.dmg` alongside the versioned DMG.
 
 Playwright’s Chromium bundle is copied into `Contents/Resources/ms-playwright` (it is not embedded by PyInstaller; nested browser `.app` bundles break codesign).
 

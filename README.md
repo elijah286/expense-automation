@@ -6,8 +6,8 @@ Automates expense-report entry by driving a real browser against the legacy expe
 
 | Platform | Installer |
 |----------|-----------|
-| **macOS** | [Expense Automator.dmg](https://github.com/elijah286/oracle-expense-automation/releases/latest/download/Expense%20Automator.dmg) |
-| **Windows** | [ExpenseAutomator_Setup.exe](https://github.com/elijah286/oracle-expense-automation/releases/latest/download/ExpenseAutomator_Setup.exe) |
+| **macOS** | [Expense Automator.dmg](https://github.com/elijah286/expense-automation/releases/latest/download/Expense.Automator.dmg) |
+| **Windows** | [ExpenseAutomator_Setup.exe](https://github.com/elijah286/expense-automation/releases/latest/download/ExpenseAutomator_Setup.exe) |
 
 ---
 
@@ -78,8 +78,8 @@ You need two things installed before you begin:
 Open a terminal (Mac: **Terminal**, Windows: **PowerShell**) and run:
 
 ```bash
-git clone https://github.com/elijah286/oracle-expense-automation.git
-cd oracle-expense-automation
+git clone https://github.com/elijah286/expense-automation.git
+cd expense-automation
 ```
 
 ---
@@ -137,14 +137,14 @@ When you run from source (`python -m web`), the UI opens in your **default brows
 >
 > Mac:
 > ```bash
-> cd oracle-expense-automation
+> cd expense-automation
 > source .venv-rpa/bin/activate
 > python -m web
 > ```
 >
 > Windows:
 > ```powershell
-> cd oracle-expense-automation
+> cd expense-automation
 > .venv-rpa\Scripts\Activate.ps1
 > python -m web
 > ```
