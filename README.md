@@ -16,10 +16,26 @@ Automates expense-report entry by driving a real browser against the legacy expe
 This app does **exactly what you would do by hand** — it opens a real browser window, logs into Oracle with your credentials, reads your credit-card transactions, and types values into the expense-report form. You can watch every step happen live on screen.
 
 - **Passwords are stored in your system keychain** (macOS Keychain / Windows Credential Manager) — the same secure vault your OS uses for Wi-Fi passwords and website logins. They are **never** written to plain-text files, logs, or sent anywhere other than the Oracle login page itself.
-- **Nothing is sent to a remote server.** The app runs 100% locally on your machine. The only external calls are (1) logging into Oracle (the same site you'd open in a normal browser) and (2) sending receipt images to the OpenAI API for amount/date extraction, if you enable that option.
+- **The app runs locally on your machine.** External calls include logging into Oracle (the same site you'd open in a normal browser) and using the OpenAI API for enabled AI features, such as receipt extraction, matching, and merchant expense-type selection.
 - **The code is open-source** — you (or anyone you trust) can read every line to verify there is no data collection, telemetry, or hidden network calls.
 
 ---
+
+## Vendor classification
+
+In **Classification**, click **AI pick** beside a merchant's expense-type dropdown
+to choose and save the best available option, even if a type is already assigned.
+This sends only the merchant name and available dropdown options to OpenAI, using
+the API key, model, and TLS configuration in Settings. The button shows a loading
+indicator while working. If the request fails or returns an unavailable type,
+the existing selection is kept and an error is shown. You can always override
+the result manually with the dropdown. Saved choices apply to that exact merchant.
+
+Use **AI pick all** at the top to classify every merchant, including existing
+selections and merchants hidden by search. Progress and a final updated/failed
+count are shown. Merchants are processed one at a time; failed picks keep their
+previous types while the remaining merchants continue. Error details appear in
+Terminal. Dropdowns and AI buttons are disabled during the bulk run.
 
 ## Quick Start — get the app running in ~5 minutes
 

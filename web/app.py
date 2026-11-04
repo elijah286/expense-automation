@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from nicegui import app, ui
+from nicegui import app, run, ui
 
 import keychain_credentials
 from persistence.atomic_json import atomic_write_json, load_json_or_quarantine
@@ -5884,7 +5884,8 @@ def page_classification():
         ui.html(
             '<div class="section-subtitle">'
             "Define the Expense Type to use whenever a merchant name matches exactly. "
-            "New merchants are added automatically and classified by the LLM."
+            "Use AI pick to choose and save the best dropdown option for a merchant, "
+            "or select an expense type manually."
             "</div>"
         )
 
@@ -5895,17 +5896,89 @@ def page_classification():
 
         sort_state = {"col": "merchant_key", "asc": True}
         search_state = {"term": ""}
+        pending: set[str] = set()
+        bulk_running = False
 
         def _on_search(e):
             search_state["term"] = e.value or ""
             _build_table()
 
-        ui.input(
-            placeholder="Search merchants or expense types...",
-            on_change=_on_search,
-        ).props("dense outlined clearable").classes("classify-search").style("width:100%;max-width:480px")
+        with ui.row().classes("items-center gap-3 w-full classify-search"):
+            ui.input(
+                placeholder="Search merchants or expense types...",
+                on_change=_on_search,
+            ).props("dense outlined clearable").style("width:100%;max-width:480px")
+            bulk_button = ui.button(
+                "AI pick all", icon="auto_awesome", on_click=lambda: _choose_all_with_ai(),
+            ).props("no-caps unelevated")
+            bulk_button.tooltip(
+                "Choose and save an expense type for every merchant, including existing "
+                "selections and merchants hidden by search."
+            )
+        bulk_progress = ui.label().classes("text-sm text-slate-500 mb-3")
 
         table_container = ui.element("div")
+        client = ui.context.client
+
+        async def _choose_with_ai(merchant_key: str, *, notify_result: bool = True) -> bool:
+            if merchant_key in pending or (bulk_running and notify_result):
+                return False
+            pending.add(merchant_key)
+            with client:
+                _build_table()
+                try:
+                    choice = await run.io_bound(svc.suggest_vendor_classification, merchant_key)
+                    if choice not in get_expense_type_options():
+                        raise ValueError("Expense type options changed. No expense type was changed; try again.")
+                    svc.set_vendor_classification(merchant_key, choice)
+                    activity_log.emit("success", f"AI pick: {merchant_key} -> {choice}")
+                    if notify_result:
+                        ui.notify(f"AI picked {choice} for {merchant_key}", type="positive")
+                    return True
+                except Exception as exc:
+                    activity_log.emit("error", f"AI pick failed for {merchant_key}: {exc}")
+                    if notify_result:
+                        ui.notify(f"AI pick failed: {exc}", type="negative")
+                        if _is_llm_connection_error(exc):
+                            _open_llm_connection_dialog(str(exc))
+                    return False
+                finally:
+                    pending.discard(merchant_key)
+                    _build_table()
+
+        async def _choose_all_with_ai():
+            nonlocal bulk_running
+            if bulk_running or pending:
+                return
+            targets = svc.get_vendor_classifications()
+            bulk_running = True
+            updated = 0
+            failed = 0
+            with client:
+                try:
+                    _build_table()
+                    for index, vendor in enumerate(targets, start=1):
+                        merchant_key = vendor["merchant_key"]
+                        bulk_progress.set_text(
+                            f"AI pick all: {index}/{len(targets)} - {merchant_key}"
+                        )
+                        if await _choose_with_ai(merchant_key, notify_result=False):
+                            updated += 1
+                        else:
+                            failed += 1
+                    summary = (
+                        f"AI pick all: {len(targets)}/{len(targets)} processed; "
+                        f"{updated} updated, {failed} failed."
+                    )
+                    bulk_progress.set_text(summary)
+                    activity_log.emit("warning" if failed else "success", summary)
+                    ui.notify(
+                        summary + (" Failed merchants kept their previous types; see Terminal for details." if failed else ""),
+                        type="warning" if failed else "positive",
+                    )
+                finally:
+                    bulk_running = False
+                    _build_table()
 
         def _filtered_sorted() -> list[dict[str, str]]:
             fresh = svc.get_vendor_classifications()
@@ -5921,6 +5994,14 @@ def page_classification():
             return fresh
 
         def _build_table():
+            if bulk_running or pending:
+                bulk_button.disable()
+            else:
+                bulk_button.enable()
+            if bulk_running:
+                bulk_button.props("loading")
+            else:
+                bulk_button.props(remove="loading")
             table_container.clear()
             rows = _filtered_sorted()
             col = sort_state["col"]
@@ -5944,14 +6025,28 @@ def page_classification():
                         opts = get_expense_type_options()
                         with ui.element("div").classes("classify-row"):
                             ui.label(mk).classes("classify-merchant")
-                            ui.select(
-                                options=opts,
-                                value=current_type if current_type in opts else None,
-                                on_change=lambda e, key=mk: (
-                                    svc.set_vendor_classification(key, e.value),
-                                    ui.notify(f"Set {key} \u2192 {e.value}", type="positive"),
-                                ),
-                            ).props("dense outlined hide-bottom-space").style("width:100%")
+                            with ui.row().classes("items-center no-wrap gap-2").style("min-width:0"):
+                                select = ui.select(
+                                    options=opts,
+                                    value=current_type if current_type in opts else None,
+                                    on_change=lambda e, key=mk: (
+                                        svc.set_vendor_classification(key, e.value),
+                                        ui.notify(f"Set {key} \u2192 {e.value}", type="positive"),
+                                    ),
+                                ).props("dense outlined hide-bottom-space").style("flex:1;min-width:0")
+                                button = ui.button(
+                                    "AI pick", icon="auto_awesome",
+                                    on_click=lambda key=mk: _choose_with_ai(key),
+                                ).props("dense flat no-caps").style("flex-shrink:0")
+                                button.tooltip(
+                                    "Send this merchant name and dropdown options to OpenAI, "
+                                    "then save the best expense type."
+                                )
+                                if bulk_running or mk in pending:
+                                    select.disable()
+                                    button.disable()
+                                if mk in pending:
+                                    button.props("loading")
 
         def _toggle_sort(col: str):
             if sort_state["col"] == col:

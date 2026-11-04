@@ -40,7 +40,7 @@ from expense_lines_cache import (
     soft_delete_report,
 )
 import keychain_credentials
-from classification.service import classify_transactions
+from classification.service import choose_expense_type_with_ai, classify_transactions
 from persistence.atomic_json import atomic_write_json
 from portal_expense_types import get_expense_type_options
 
@@ -575,15 +575,25 @@ class ExpenseService:
         vendor_path = self.app_dir / "vendor_expense_types.json"
         data: dict[str, Any] = {}
         if vendor_path.exists():
-            try:
-                data = json.loads(vendor_path.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
+            data = json.loads(vendor_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Vendor classifications must be a JSON object; existing data was not changed.")
         vendors = data.get("vendors", data)
         if not isinstance(vendors, dict):
-            vendors = {}
+            raise ValueError("Invalid vendor classifications; existing data was not changed.")
         vendors[merchant_key] = expense_type
-        vendor_path.write_text(json.dumps({"vendors": vendors}, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(vendor_path, {"vendors": vendors})
+
+    def suggest_vendor_classification(self, merchant_key: str) -> str:
+        """Use the configured AI model without treating the existing mapping as an override."""
+        raw = self._load_settings_raw()
+        return choose_expense_type_with_ai(
+            merchant_key,
+            get_expense_type_options(),
+            api_key=self._get_openai_key(),
+            model=raw.get("openai_model") or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+            http_verify_preferred=raw.get("openai_http_verify"),
+        )
 
     def get_vendor_classifications(self) -> list[dict[str, str]]:
         """Unique merchant -> expense type mappings from vendor cache + transactions."""

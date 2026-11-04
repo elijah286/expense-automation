@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -14,6 +15,50 @@ DEFAULT_RULES: list[tuple[re.Pattern[str], str]] = [
 
 def _norm_merchant(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def choose_expense_type_with_ai(
+    merchant_name: str,
+    options: list[str],
+    *,
+    api_key: str,
+    model: str,
+    http_verify_preferred: str | None = None,
+) -> str:
+    """Ask AI for an exact dropdown option; never substitute a fallback on failure."""
+    from browser_automation import build_openai_client, openai_tls_troubleshooting_hint
+    from llm_query_cache import expense_type_prompt
+
+    if not merchant_name.strip():
+        raise ValueError("A merchant name is required.")
+    if not options:
+        raise ValueError("Configure expense types in Settings before using AI pick.")
+    if not api_key.strip():
+        raise ValueError("Add an OpenAI API key in Settings before using AI pick.")
+
+    with build_openai_client(api_key, http_verify_preferred=http_verify_preferred) as client:
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[{"role": "user", "content": [
+                    {"type": "input_text", "text": expense_type_prompt(merchant_name, options)},
+                ]}],
+            )
+        except Exception as exc:
+            hint = openai_tls_troubleshooting_hint(exc)
+            raise RuntimeError(f"OpenAI expense type request failed: {exc}{hint}") from exc
+
+    raw = (response.output_text or "").strip()
+    if raw.startswith("```") and raw.endswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("AI returned an invalid response. No expense type was changed; try again.") from exc
+    choice = parsed.get("expense_type") if isinstance(parsed, dict) else None
+    if not isinstance(choice, str) or choice not in options:
+        raise ValueError("AI did not return an available expense type. No expense type was changed; try again.")
+    return choice
 
 
 def classify_transactions(
