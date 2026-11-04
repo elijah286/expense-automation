@@ -56,6 +56,7 @@ from portal_expense_types import PORTAL_EXPENSE_TYPE_OPTIONS, get_expense_type_o
 from web.activity_log import activity_log
 from web.manual_expenses import ManualExpenseStore
 from web.manual_expense_ui import manual_expense_screen, report_manual_drafts
+from web.history_ui import history_screen
 
 svc = ExpenseService()
 manual_expenses = ManualExpenseStore(svc.app_dir)
@@ -1695,6 +1696,7 @@ def shared_nav(active: str, report_id: str = ""):
             ("/mileage", "directions_car", "Mileage"),
             ("/matching", "compare_arrows", "Matching"),
             ("/submit", "send", "Submit"),
+            ("/history", "history", "History"),
         ]
         for href, icon, label in items:
             is_active = label.lower() == active.lower()
@@ -2168,7 +2170,7 @@ def page_frame(active: str, report_id: str = ""):
     _build_terminal()
     if active in _REPORT_PAGES:
         report_header_bar(active.lower(), report_id)
-    if active != "Settings" and not svc.credentials_ready():
+    if active not in {"Settings", "History"} and not svc.credentials_ready():
         ui.navigate.to("/settings")
     _launch_splash()
 
@@ -6083,6 +6085,20 @@ def _matching_missing_url(report_id: str, line_id: str = "") -> str:
     return url
 
 
+@ui.page("/history")
+def page_history(request: Request):
+    page_frame("History")
+    try:
+        svc.preserve_pending_history()
+    except (ValueError, OSError) as exc:
+        ui.label(f"Could not recover report history: {exc}").classes("text-red-600")
+        return
+    history_screen(
+        svc.history, (request.query_params.get("submission") or "").strip(),
+        _open_receipt_viewer,
+    )
+
+
 @ui.page("/cash")
 def page_cash(request: Request):
     report_id = (request.query_params.get("report") or "").strip()
@@ -6481,6 +6497,10 @@ def page_submit(request: Request):
                         @ui.refreshable
                         def _outcome_bullets():
                             ui.label(
+                                "• A permanent read-only copy of expenses and receipts "
+                                "will be saved in History"
+                            ).classes("text-xs text-amber-700")
+                            ui.label(
                                 f"• {n_lines} transaction(s) will be removed from this view"
                             ).classes("text-xs text-amber-700")
                             if keep_docs["value"]:
@@ -6489,15 +6509,16 @@ def page_submit(request: Request):
                                     "for other expenses"
                                 ).classes("text-xs text-amber-700")
                                 ui.label(
-                                    "• Only the transactions are permanently deleted after "
-                                    "5 days (documents preserved)"
+                                    "• Active transactions are cleaned up after 5 days; "
+                                    "History and receipt documents are preserved"
                                 ).classes("text-xs text-amber-700")
                             else:
                                 ui.label("• Attached receipt images / documents will be hidden").classes(
                                     "text-xs text-amber-700"
                                 )
                                 ui.label(
-                                    "• All data will be permanently deleted after 5 days"
+                                    "• Active data is cleaned up after 5 days; "
+                                    "the History copy is preserved"
                                 ).classes("text-xs text-amber-700")
 
                         _outcome_bullets()
@@ -6519,9 +6540,13 @@ def page_submit(request: Request):
                     ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
 
                     def _do_mark():
-                        result = svc.mark_report_submitted(
-                            report_id, keep_documents=keep_docs["value"]
-                        )
+                        try:
+                            result = svc.mark_report_submitted(
+                                report_id, keep_documents=keep_docs["value"]
+                            )
+                        except (ValueError, OSError) as exc:
+                            ui.notify(f"Could not preserve report history: {exc}", type="negative")
+                            return
                         dlg.close()
                         if "error" in result:
                             ui.notify(f"Failed: {result['error']}", type="negative")
@@ -6529,7 +6554,7 @@ def page_submit(request: Request):
                             n = result.get("line_count", 0)
                             msg = (
                                 f"'{report_name}' marked as submitted — {n} transaction(s) "
-                                f"scheduled for deletion in 5 days."
+                                f"saved in History. Active data will be cleaned up in 5 days."
                             )
                             if result.get("documents_kept"):
                                 msg += " Receipt documents will be kept."
@@ -6803,8 +6828,9 @@ def page_settings():
             else:
                 ui.label(
                     "These reports have been marked as submitted. They will be "
-                    "permanently deleted when the countdown expires. You can "
-                    "restore them before that."
+                    "removed from active storage when the countdown expires; "
+                    "read-only History copies are retained. You can restore the "
+                    "active reports before that without changing History."
                 ).classes("text-xs text-slate-500 mb-4")
 
                 pending_container = ui.column().classes("w-full gap-3")

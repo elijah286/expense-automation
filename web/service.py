@@ -37,11 +37,13 @@ from expense_lines_cache import (
     save_expense_report_groups,
     save_receipt_line_matches,
     save_analyses_snapshot,
+    save_pending_deletions,
     soft_delete_report,
 )
 import keychain_credentials
 from classification.service import choose_expense_type_with_ai, classify_transactions
 from persistence.atomic_json import atomic_write_json
+from persistence.report_history import ReportHistoryStore
 from portal_expense_types import get_expense_type_options
 
 APP_DIR = Path.home() / ".expense-automator"
@@ -210,6 +212,7 @@ class ExpenseService:
     def __init__(self, app_dir: Path | None = None):
         self.app_dir = app_dir or APP_DIR
         self._state_lock = threading.Lock()
+        self.history = ReportHistoryStore(self.app_dir)
 
     def _update_state_json(self, updater: Callable[[dict], None]) -> None:
         """Thread-safe read-modify-write of state.json using atomic writes."""
@@ -835,15 +838,118 @@ class ExpenseService:
         return delete_report_with_data(self.app_dir, report_id)
 
     def mark_report_submitted(self, report_id: str, *, keep_documents: bool = False) -> dict[str, Any]:
-        """Soft-delete a report: hide from views, schedule permanent deletion in 5 days.
+        """Preserve a read-only snapshot before hiding the active report."""
+        with self._state_lock:
+            report = load_expense_report_groups(self.app_dir).get(report_id)
+            if not report:
+                return {"error": "Report not found", "report_id": report_id}
+            lines, _ = load_expense_lines_cache(self.app_dir)
+            submission_id = self._archive_report(
+                report_id, report, lines,
+                load_receipt_line_matches(self.app_dir),
+                load_approved_matches(self.app_dir),
+            )
+            result = soft_delete_report(
+                self.app_dir, report_id, countdown_days=5, keep_documents=keep_documents
+            )
+            pending = load_pending_deletions(self.app_dir)
+            pending[report_id]["history_id"] = submission_id
+            save_pending_deletions(self.app_dir, pending)
+            result["history_id"] = submission_id
+            return result
 
-        When *keep_documents* is True, the report's receipt files are preserved
-        at purge time (only the transactions are removed) — useful when the same
-        receipt is shared across multiple expenses.
-        """
-        return soft_delete_report(
-            self.app_dir, report_id, countdown_days=5, keep_documents=keep_documents
+    def _archive_report(
+        self, report_id: str, report: dict[str, Any],
+        lines: list[dict[str, Any]], matches: dict[str, Any],
+        approved: dict[str, Any], *, recovered: bool = False,
+    ) -> str:
+        line_ids = {str(lid) for lid in report.get("line_ids", [])}
+        vendor_types = load_vendor_expense_types_flat(self.app_dir)
+        receipt_lines: dict[str, list[str]] = {}
+        expenses = []
+        for line in lines:
+            lid = str(line.get("line_id", "")).strip()
+            if lid not in line_ids:
+                continue
+            match = matches.get(lid, {})
+            approval = approved.get(lid, {})
+            sources = list(dict.fromkeys(
+                str(source).strip() for source in (
+                    approval.get("source_file"), match.get("best_receipt"),
+                ) if source and str(source).strip()
+            ))
+            for source in sources:
+                receipt_lines.setdefault(source, []).append(lid)
+            merchant = str(line.get("merchant_name", "")).strip()
+            merchant_key = re.sub(r"\s+", " ", merchant).lower()
+            expenses.append({
+                "id": lid, "kind": "credit_card", "merchant": merchant,
+                "date": str(line.get("transaction_date", "")),
+                "amount": str(line.get("amount", "")),
+                "currency": str(line.get("currency") or "USD"),
+                "expense_type": vendor_types.get(merchant_key, "") or line.get("cached_expense_type", ""),
+                "description": str(line.get("description") or line.get("justification") or ""),
+                "receipt_sources": sources, "raw_line": line,
+                "match": match, "approval": approval,
+            })
+        for source, assigned_report in self.get_receipt_report_assignments().items():
+            if assigned_report == report_id:
+                receipt_lines.setdefault(source, [])
+        for source in report.get("receipt_files", []):
+            receipt_lines.setdefault(source, [])
+        for source, record in load_submitted_receipts(self.app_dir).items():
+            lid = str(record.get("line_id", ""))
+            if lid in line_ids:
+                receipt_lines.setdefault(source, [])
+                if lid not in receipt_lines[source]:
+                    receipt_lines[source].append(lid)
+        analyses = {
+            str(a.get("source_file", "")): a for a in load_analyses_snapshot(self.app_dir)
+        }
+        receipts = [
+            {"source_file": source, "line_ids": ids, "analysis": analyses.get(source, {})}
+            for source, ids in receipt_lines.items()
+        ]
+        state = self._load_submission_state()
+        submission_result = (
+            state.get("result", {}) if state and state.get("report_id") == report_id
+            and state.get("completed") else {}
         )
+        manual_result = submission_result.get("manual_expenses", {})
+        entered = set(manual_result.get("entered", []))
+        if entered:
+            from dataclasses import asdict
+            from web.manual_expenses import ManualExpenseStore
+
+            for entry in ManualExpenseStore(self.app_dir).list():
+                if entry.report_id == report_id and entry.id in entered:
+                    expense = asdict(entry)
+                    expense["oracle_amount"] = manual_result.get("oracle_amounts", {}).get(entry.id, "")
+                    expense["receipt_sources"] = []
+                    expenses.append(expense)
+        return self.history.create({
+            "report_id": report_id,
+            "report_name": report.get("name") or report.get("report_name") or "Untitled",
+            "submitted_at": report.get("marked_at") or datetime.now(timezone.utc).isoformat(),
+            "created_at": report.get("created_at", ""),
+            "recovered": recovered,
+            "expenses": expenses, "receipts": receipts,
+            "submission_result": submission_result,
+        }, allow_missing=recovered)
+
+    def preserve_pending_history(self) -> None:
+        """Recover pre-History reports before the old cleanup can destroy them."""
+        with self._state_lock:
+            pending = load_pending_deletions(self.app_dir)
+            for report_id, entry in pending.items():
+                if entry.get("history_id"):
+                    continue
+                entry["history_id"] = self._archive_report(
+                    report_id, entry, entry.get("cached_lines", []),
+                    entry.get("cached_matches", {}), entry.get("cached_approved", {}),
+                    recovered=True,
+                )
+                save_pending_deletions(self.app_dir, pending)
 
     def get_pending_deletions(self) -> list[dict[str, Any]]:
         """Return all reports pending permanent deletion, sorted by deletion date."""
@@ -857,7 +963,8 @@ class ExpenseService:
         return restore_pending_deletion(self.app_dir, report_id)
 
     def purge_expired(self) -> list[dict[str, Any]]:
-        """Permanently delete reports whose countdown has expired."""
+        """Clean up active data without deleting permanent history snapshots."""
+        self.preserve_pending_history()
         return purge_expired_deletions(self.app_dir)
 
     def prepare_report_for_submission(self, report_id: str) -> dict[str, Any]:

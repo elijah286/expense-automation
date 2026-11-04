@@ -37,6 +37,32 @@ count are shown. Merchants are processed one at a time; failed picks keep their
 previous types while the remaining merchants continue. Error details appear in
 Terminal. Dropdowns and AI buttons are disabled during the bulk run.
 
+## Submission history
+
+After submitting a report in Oracle, choose **Mark as Submitted** in the app.
+This saves a permanent, read-only snapshot in **History**, including the report's
+expenses, classifications, matching data, automation results, and independent
+copies of attached receipts. Cash and mileage entries confirmed by automation
+are included; unsubmitted local drafts are not.
+
+- Search the submissions table by report name, submission date, expense, or receipt.
+- Open a report to search its expenses and extracted receipt metadata, view expense
+  details, and open receipt images (with zoom) or full, multi-page PDFs.
+- History remains unchanged if you edit, restore, or delete active reports or
+  original receipts. Restoring and re-submitting a report creates another snapshot.
+- The existing five-day restore window in Settings still applies to **active**
+  data cleanup, not History. **Keep receipt documents** keeps originals available
+  for reuse; History always keeps its own copies.
+- Reports still in the old restore window are recovered automatically before
+  cleanup. Previously purged reports cannot be recovered; missing receipts in
+  recovered reports are flagged explicitly.
+
+History is stored locally under `~/.expense-automator/submission_history/` with no
+automatic expiry. Include this folder in your backups. **Reset to Defaults**
+deletes History along with all other app data.
+
+---
+
 ## Quick Start — get the app running in ~5 minutes
 
 ### Prerequisites
