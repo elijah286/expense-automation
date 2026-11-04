@@ -1685,6 +1685,8 @@ class ExpenseService:
         report_id: str,
         *,
         on_status: Callable[[str], None] | None = None,
+        include_cash: bool = False,
+        include_mileage: bool = False,
     ) -> dict[str, Any]:
         """Launch Chromium, navigate the Oracle wizard, and submit the report.
 
@@ -1695,6 +1697,8 @@ class ExpenseService:
         restarts from scratch.
         """
         from browser.submitter import ReportSubmitter, SubmissionLine, SubmissionPayload
+        from browser.manual_entry import ManualSubmissionLine
+        from web.manual_expenses import ManualExpenseStore
 
         raw = self._load_settings_raw()
         portal_url = (raw.get("legacy_url") or "").strip()
@@ -1770,6 +1774,26 @@ class ExpenseService:
             approver=approver,
             lines=submission_lines,
         )
+        manual_warnings: list[str] = []
+        if include_cash or include_mileage:
+            try:
+                entries = ManualExpenseStore(self.app_dir).list()
+            except (ValueError, OSError) as exc:
+                warning = f"Optional cash/mileage drafts could not be loaded and were omitted: {exc}"
+                manual_warnings.append(warning)
+                if on_status:
+                    on_status(warning)
+            else:
+                payload.manual_lines = [
+                    ManualSubmissionLine(
+                        id=row.id, kind=row.kind, date=row.date,
+                        description=row.description, amount=row.amount, currency=row.currency,
+                        merchant=row.merchant, expense_type=row.expense_type, miles=row.miles,
+                        exchange_rate=row.exchange_rate,
+                    )
+                    for row in entries if row.report_id == report_id
+                    and ((include_cash and row.kind == "cash") or (include_mileage and row.kind == "mileage"))
+                ]
 
         pending = self.get_pending_submission(report_id)
         resume_cdp_url = pending.get("cdp_url") if pending else None
@@ -1781,10 +1805,13 @@ class ExpenseService:
                 payload,
                 resume_cdp_url=resume_cdp_url,
             )
+            result.setdefault("manual_expenses", {"entered": [], "warnings": [], "oracle_amounts": {}})
+            result["manual_expenses"]["warnings"].extend(manual_warnings)
             self._save_submission_state({
                 "report_id": report_id,
                 "cdp_url": submitter._cdp_http_url,
                 "completed": True,
+                "result": result,
             })
             return result
         except Exception as exc:
@@ -1847,10 +1874,16 @@ class ExpenseService:
     def _settings_path(self) -> Path:
         return self.app_dir / "settings.json"
 
-    def get_settings(self) -> dict[str, str]:
+    def get_settings(self) -> dict[str, Any]:
         """Return user-facing settings (secrets are masked)."""
         raw = self._load_settings_raw()
         openai_key = self._get_openai_key()
+        oracle_error = ""
+        try:
+            oracle = keychain_credentials.get_oracle_credentials()
+        except RuntimeError as exc:
+            oracle = {}
+            oracle_error = str(exc)
         return {
             "oracle_url": raw.get("legacy_url", ""),
             "approver": raw.get("approver", ""),
@@ -1858,6 +1891,10 @@ class ExpenseService:
             "openai_key_hint": f"...{openai_key[-4:]}" if len(openai_key) >= 4 else "",
             "openai_model": raw.get("openai_model", "gpt-4.1-mini"),
             "nav_menu_label": raw.get("nav_menu_label", ""),
+            "oracle_username": oracle.get("username", ""),
+            "oracle_login_saved": bool(oracle.get("password")),
+            "oracle_login_rejected": oracle.get("rejected") == "true",
+            "oracle_login_error": oracle_error,
         }
 
     def credentials_ready(self) -> bool:
@@ -1888,10 +1925,22 @@ class ExpenseService:
         openai_key: str | None = None,
         openai_model: str | None = None,
         nav_menu_label: str | None = None,
+        oracle_username: str | None = None,
+        oracle_password: str | None = None,
     ) -> list[str]:
         """Persist settings. Returns list of warnings (empty = all good)."""
         warnings: list[str] = []
         raw = self._load_settings_raw()
+        if oracle_username is not None and (oracle_username.strip() or oracle_password):
+            try:
+                error = keychain_credentials.save_oracle_credentials(
+                    oracle_url if oracle_url is not None else raw.get("legacy_url", ""),
+                    oracle_username, oracle_password,
+                )
+                if error:
+                    warnings.append(error)
+            except (ValueError, RuntimeError) as exc:
+                warnings.append(str(exc))
 
         if oracle_url is not None:
             raw["legacy_url"] = oracle_url.strip()
@@ -1902,6 +1951,7 @@ class ExpenseService:
         if nav_menu_label is not None:
             raw["nav_menu_label"] = nav_menu_label.strip()
         raw.pop("expense_username", None)
+        raw.pop("expense_portal_password", None)
 
         self._settings_path().parent.mkdir(parents=True, exist_ok=True)
         self._settings_path().write_text(
@@ -1963,6 +2013,9 @@ class ExpenseService:
         keychain credentials so the app behaves as a fresh install.
         """
         # Clear keychain secrets
+        oracle_error = keychain_credentials.delete_oracle_credentials()
+        if oracle_error:
+            raise RuntimeError(oracle_error)
         try:
             keychain_credentials.delete_keychain_openai_key()
         except Exception:

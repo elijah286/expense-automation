@@ -223,7 +223,10 @@ def _run_background(task_name: str, fn, on_done_msg: str, on_done: Callable | No
 
     def _on_status(msg: str):
         status_lines.append(msg)
-        activity_log.emit("info", msg)
+        activity_log.emit(
+            "warning" if "[CREDENTIALS_REJECTED]" in msg or msg.startswith("REVIEW REQUIRED:") else "info",
+            msg,
+        )
         with _task_lock:
             task = _running_tasks.get(task_name)
             if task:
@@ -329,7 +332,10 @@ def _start_auto_match():
 
 
 def _open_oracle_manual_login_dialog(on_continue: Callable[[], None]) -> None:
-    """Explain that Oracle credentials are entered only in the browser; then run *on_continue*."""
+    """Skip the manual-login notice when saved sign-in is available."""
+    if svc.get_settings()["oracle_login_saved"]:
+        on_continue()
+        return
     with ui.dialog() as dlg, ui.card().style(
         "min-width:420px;max-width:520px;border-radius:16px;padding:28px"
     ):
@@ -338,7 +344,8 @@ def _open_oracle_manual_login_dialog(on_continue: Callable[[], None]) -> None:
             """
             <div style="font-size:0.9rem;line-height:1.55;color:#475569">
               <p style="margin:0 0 12px 0">
-                For privacy, <b>your Oracle username and password are not stored</b> in this app.
+                No Oracle sign-in is saved. You can optionally save it in <b>Settings</b>
+                using your system keychain.
                 Chromium will open to your portal URL.
               </p>
               <p style="margin:0 0 12px 0">
@@ -406,7 +413,7 @@ def _show_keychain_secure_storage_dialog(client_id: str) -> None:
             """
             <div style="font-size:0.9rem;line-height:1.55;color:#475569">
               <p style="margin:0 0 12px 0">
-                This app stores your <b>OpenAI API key</b> in your system's secure vault
+                This app stores your <b>OpenAI API key and optional Oracle sign-in</b> in your system's secure vault
                 (macOS Keychain, Windows Credential Manager, or similar), not as plain text in a file.
               </p>
               <p style="margin:0 0 12px 0">
@@ -656,6 +663,13 @@ def _build_terminal():
         js: list[str] = []
 
         if new_entries:
+            for entry in new_entries:
+                if "[CREDENTIALS_REJECTED]" in entry.message:
+                    ui.notify(
+                        "Oracle rejected your saved sign-in. Update your password in Settings, "
+                        "or sign in manually in the browser to continue.",
+                        type="warning", timeout=0, close_button=True,
+                    )
             html_str = _format_terminal_entries(new_entries)
             js.append(
                 'if(window.__termAppend){window.__termAppend(' + json.dumps(html_str) + ');}'
@@ -1993,7 +2007,7 @@ def _setup_required_overlay():
                     line-height:1.5;width:100%;margin:12px 0 16px 0">
                   <ul style="margin:0;padding-left:1.2rem">
                     <li style="margin:0 0 6px 0">Matches receipts to lines and fills your Oracle report using your browser.</li>
-                    <li style="margin:0 0 6px 0">Oracle username and password are <b>not</b> stored—you sign in in the browser when needed.</li>
+                    <li style="margin:0 0 6px 0">Optionally save Oracle sign-in in your <b>system keychain</b> in Settings. MFA still happens in the browser.</li>
                     <li style="margin:0 0 6px 0">Your data stays on this computer.</li>
                     <li style="margin:0">OpenAI reads receipt images for matching—do <b>not</b> use with receipts you cannot send to OpenAI.</li>
                   </ul>
@@ -6242,7 +6256,10 @@ def page_submit(request: Request):
                     "and permanently deleted after 5 days."
                 ).classes("text-xs text-slate-400").style("max-width:340px")
 
-        def _do_submit(report_id: str, report_name: str, *, manual_acknowledged: bool = False):
+        def _do_submit(
+            report_id: str, report_name: str, *, manual_acknowledged: bool = False,
+            include_cash: bool = False, include_mileage: bool = False,
+        ):
             if not manual_acknowledged:
                 try:
                     has_manual = any(row.report_id == report_id for row in manual_expenses.list())
@@ -6251,19 +6268,33 @@ def page_submit(request: Request):
                     has_manual = True
                 if has_manual:
                     with ui.dialog() as dlg, ui.card().style("max-width:500px"):
-                        ui.label("Manual drafts will not be submitted").classes("text-lg font-semibold")
+                        ui.label("Include cash or mileage?").classes("text-lg font-semibold")
                         ui.label(
-                            "Only credit-card items can be sent to Oracle at this stage. "
-                            "Cash and mileage drafts remain saved locally, even if the report is marked submitted."
+                            "Optional: add this report's assigned drafts at Oracle Step 4. "
+                            "Unchecked types are not added. Oracle calculates mileage reimbursement. "
+                            "Failed optional entries are removed where cleanup can be verified; "
+                            "credit-card processing continues. Always review the open Oracle report."
                         )
+                        cash_option = ui.checkbox("Include cash expenses", value=False)
+                        mileage_option = ui.checkbox("Include mileage expenses", value=False)
 
                         def _credit_cards_only():
                             dlg.close()
                             _do_submit(report_id, report_name, manual_acknowledged=True)
 
+                        def _include_selected():
+                            dlg.close()
+                            _do_submit(
+                                report_id, report_name, manual_acknowledged=True,
+                                include_cash=cash_option.value, include_mileage=mileage_option.value,
+                            )
+
                         with ui.row().classes("justify-end w-full"):
                             ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
                             ui.button("Submit credit-card items only", on_click=_credit_cards_only).props(
+                                "unelevated no-caps"
+                            )
+                            ui.button("Include selected expenses", on_click=_include_selected).props(
                                 "unelevated no-caps"
                             )
                     dlg.open()
@@ -6291,11 +6322,16 @@ def page_submit(request: Request):
                     type="positive",
                     timeout=6000,
                 )
-                _trigger_submission_automation(report_id, report_name)
+                _trigger_submission_automation(
+                    report_id, report_name, include_cash=include_cash, include_mileage=include_mileage,
+                )
 
             _open_oracle_manual_login_dialog(_continue_submit)
 
-        def _trigger_submission_automation(report_id: str, report_name: str):
+        def _trigger_submission_automation(
+            report_id: str, report_name: str, *, include_cash: bool = False,
+            include_mileage: bool = False,
+        ):
             activity_log.emit("step", f"Submitting report: {report_name}")
             ui.notify(
                 "Browser automation triggered. The Chromium browser will open and "
@@ -6305,12 +6341,29 @@ def page_submit(request: Request):
             )
 
             def _do_submission(on_status):
-                return svc.run_submission(report_id, on_status=on_status)
+                result = svc.run_submission(
+                    report_id, on_status=on_status,
+                    include_cash=include_cash, include_mileage=include_mileage,
+                )
+                manual = result.get("manual_expenses", {})
+                for warning in manual.get("warnings", []):
+                    on_status(f"REVIEW REQUIRED: {warning}")
+                return result
+
+            def _submission_done(result):
+                warnings = result.get("manual_expenses", {}).get("warnings", [])
+                if warnings:
+                    ui.notify(
+                        f"Review required: {len(warnings)} cash/mileage warning(s). "
+                        "See the activity log and review Oracle before submitting. Local drafts are retained.",
+                        type="warning", timeout=15000,
+                    )
 
             _run_background(
                 "Report Submission",
                 _do_submission,
-                f"Report '{report_name}' submission complete.",
+                f"Report '{report_name}' prepared in Oracle. Review and submit it there.",
+                on_done=_submission_done,
             )
 
         def _open_mark_submitted_dialog(report_id: str, report_name: str, n_lines: int):
@@ -6511,9 +6564,44 @@ def page_settings():
             nav_label_input.style("pointer-events:auto")
 
             ui.label(
-                "Oracle username and password are never saved. You sign in manually in the "
-                "browser whenever scraping or submission opens Chromium."
+                "Optional saved sign-in: stored only in your system keychain, never in settings files. "
+                "Used once per browser launch on the saved HTTPS portal only. "
+                "Complete MFA or redirected SSO manually in the browser."
             ).classes("text-xs text-slate-500 mt-2")
+            if keychain_credentials.is_keychain_access_gated():
+                ui.button(
+                    "Enable secure storage", icon="vpn_key",
+                    on_click=lambda: _show_keychain_secure_storage_dialog(str(ui.context.client.id)),
+                ).props("flat no-caps")
+            if current["oracle_login_error"]:
+                ui.label(current["oracle_login_error"]).classes("text-sm text-red-600")
+            if current["oracle_login_rejected"]:
+                ui.label(
+                    "Oracle rejected the saved sign-in. Enter your current password below "
+                    "to re-enable automatic login."
+                ).classes("text-sm text-red-600")
+            elif current["oracle_login_saved"]:
+                ui.label("Oracle sign-in saved in the system keychain.").classes("text-sm text-green-700")
+            oracle_username_input = ui.input(
+                label="Oracle username (optional)", value=current["oracle_username"],
+            ).classes("w-full mt-3").props("outlined dense")
+            oracle_password_input = ui.input(
+                label="Replace Oracle password" if current["oracle_login_saved"] else "Oracle password",
+                password=True, password_toggle_button=True,
+                placeholder="Leave blank to keep saved password" if current["oracle_login_saved"] else "",
+            ).classes("w-full mt-3").props('outlined dense autocomplete="new-password"')
+
+            def _forget_oracle():
+                error = keychain_credentials.delete_oracle_credentials()
+                if error:
+                    ui.notify(error, type="negative", timeout=8000)
+                    return
+                oracle_password_input.value = ""
+                ui.notify("Saved Oracle sign-in removed", type="positive")
+                ui.navigate.to("/settings")
+
+            if current["oracle_login_saved"]:
+                ui.button("Forget saved sign-in", on_click=_forget_oracle).props("flat no-caps color=negative")
 
         def _save():
             warnings = svc.save_settings(
@@ -6522,11 +6610,15 @@ def page_settings():
                 openai_key=openai_key_input.value or None,
                 openai_model=openai_model_input.value,
                 nav_menu_label=nav_label_input.value,
+                oracle_username=oracle_username_input.value or "",
+                oracle_password=oracle_password_input.value or None,
             )
+            oracle_password_input.value = ""
             if warnings:
                 for w in warnings:
                     ui.notify(w, type="warning", timeout=8000)
-            ui.notify("Settings saved", type="positive")
+            else:
+                ui.notify("Settings saved", type="positive")
             # Reload the settings page so the API key status indicator updates
             ui.timer(0.5, lambda: ui.navigate.to("/settings"), once=True)
 
@@ -6545,7 +6637,7 @@ def page_settings():
                 )
             ui.label(
                 "Delete all documents, transactions, matches, settings, and "
-                "cached data. Your OpenAI API key will also be removed from "
+                "cached data. Your OpenAI API key and saved Oracle sign-in will also be removed from "
                 "the system keychain. This cannot be undone."
             ).classes("text-xs text-slate-500 mb-4")
 

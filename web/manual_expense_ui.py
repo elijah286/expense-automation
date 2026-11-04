@@ -46,7 +46,7 @@ def manual_expense_screen(
             description = ui.textarea(
                 "Description / business purpose", value=entry.description if entry else "",
             ).props("outlined autogrow").classes("w-full")
-            merchant = category = currency = amount = distance = None
+            merchant = category = currency = amount = distance = exchange = None
             if kind == "cash":
                 merchant = ui.input("Merchant / payee", value=entry.merchant if entry else "").props(
                     "outlined dense"
@@ -65,6 +65,14 @@ def manual_expense_screen(
                     currency = ui.input("Currency", value=entry.currency if entry else "USD").props(
                         "outlined dense maxlength=3"
                     ).style("width:110px")
+                exchange = ui.input(
+                    "Exchange rate (USD per 1 receipt currency)",
+                    value=entry.exchange_rate if entry else "",
+                ).props("outlined dense inputmode=decimal").classes("w-full")
+                ui.label(
+                    "Required for non-USD cash expenses. Use your actual conversion rate; "
+                    "the app never guesses a rate. Leave blank for USD."
+                ).classes("text-sm text-slate-500")
             else:
                 distance = ui.input("Miles", value=entry.miles if entry else "").props(
                     "outlined dense inputmode=decimal"
@@ -102,6 +110,7 @@ def manual_expense_screen(
                         currency=currency.value or "" if currency else "USD",
                         miles=distance.value or "" if distance else "",
                         entry_id=entry.id if entry else "",
+                        exchange_rate=exchange.value or "" if exchange else "",
                     )
                 except (ValueError, OSError) as exc:
                     show_error(exc)
@@ -139,7 +148,8 @@ def manual_expense_screen(
         ui.label(f"{title} transactions").classes("section-title")
         ui.label(
             "Optional manual drafts. These are saved locally and can be assigned to a report. "
-            "Oracle entry is not implemented yet; they are NOT included in automated submission."
+            "Choose whether to include cash and mileage when submitting that report. "
+            "They are excluded by default."
         ).classes("section-subtitle")
         with ui.row().classes("items-center w-full justify-between mb-4"):
             scope = ui.select(
@@ -202,12 +212,13 @@ def report_manual_drafts(
         return None
     if entries:
         with ui.card().classes("w-full mb-4"):
-            ui.label(f"{len(entries)} manual draft(s) - NOT included in Oracle submission").classes(
+            ui.label(f"{len(entries)} manual draft(s) - optional Oracle entry").classes(
                 "font-semibold text-amber-700"
             )
             ui.label(
-                "Cash and mileage automation is awaiting Oracle field mapping. "
-                "Submitting below sends credit-card transactions only. Manual drafts remain saved locally."
+                "Submitting below lets you opt into cash and/or mileage entry at Step 4. "
+                "Both are excluded by default. Local drafts are retained; review the Oracle report "
+                "and automation warnings before clicking Submit in Oracle."
             ).classes("text-sm")
             for entry in entries:
                 ui.label(

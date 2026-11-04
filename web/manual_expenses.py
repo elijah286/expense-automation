@@ -72,6 +72,7 @@ class ManualExpense:
     miles: str = ""
     rate: str = ""
     rate_source: str = ""
+    exchange_rate: str = ""
 
 
 class ManualExpenseStore:
@@ -102,6 +103,7 @@ class ManualExpenseStore:
         amount: str = "", currency: str = "USD", merchant: str = "",
         expense_type: str = "", report_id: str = "", miles: str = "",
         entry_id: str = "",
+        exchange_rate: str = "",
     ) -> ManualExpense:
         if kind not in ("cash", "mileage"):
             raise ValueError("Choose cash or mileage.")
@@ -123,12 +125,23 @@ class ManualExpenseStore:
         currency = currency.strip().upper()
         if not re.fullmatch(r"[A-Z]{3}", currency):
             raise ValueError("Enter a three-letter currency code, for example USD.")
+        if kind == "cash" and currency != "USD":
+            if not exchange_rate.strip():
+                raise ValueError("Enter an exchange rate in USD per 1 receipt currency.")
+            exchange_rate = format(positive_decimal(exchange_rate, "Exchange rate", 10), "f")
+        else:
+            if kind == "cash" and exchange_rate.strip() and positive_decimal(
+                exchange_rate, "Exchange rate", 10,
+            ) != Decimal("1"):
+                raise ValueError("USD cash expenses must use an exchange rate of 1 or leave it blank.")
+            exchange_rate = ""
         entry = ManualExpense(
             id=entry_id or str(uuid.uuid4()), kind=kind, date=day,
             description=description.strip(), amount=amount, currency=currency,
             merchant=merchant.strip(), expense_type=expense_type.strip(),
             report_id=report_id, miles=miles, rate=rate,
             rate_source=MILEAGE_RATE_SOURCE if kind == "mileage" else "",
+            exchange_rate=exchange_rate,
         )
         with self._lock:
             entries = self._read()

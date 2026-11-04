@@ -136,10 +136,29 @@ class ManualExpenseStoreTests(unittest.TestCase):
         self.assertEqual(
             set(json.loads(self.store.path.read_text())[0]),
             {"id", "kind", "date", "description", "amount", "currency", "merchant",
-             "expense_type", "report_id", "miles", "rate", "rate_source"},
+             "expense_type", "report_id", "miles", "rate", "rate_source", "exchange_rate"},
         )
         service.delete_expense_report_group(group.id)
         self.assertEqual(len(self.store.list()), 2)
+
+    def test_foreign_cash_requires_and_persists_actual_exchange_rate(self):
+        with self.assertRaisesRegex(ValueError, "Enter an exchange rate"):
+            self.cash(currency="EUR")
+        for rate in ("0", "-1", "NaN", "1.12345678901"):
+            with self.subTest(rate=rate), self.assertRaises(ValueError):
+                self.cash(currency="EUR", exchange_rate=rate)
+        entry = self.cash(currency="EUR", exchange_rate="1.25")
+        self.assertEqual(entry.exchange_rate, "1.25")
+        self.assertEqual(ManualExpenseStore(self.root).list(), [entry])
+        with self.assertRaisesRegex(ValueError, "USD cash expenses"):
+            self.cash(exchange_rate="2")
+
+    def test_old_drafts_without_exchange_rate_still_load(self):
+        entry = self.cash()
+        content = json.loads(self.store.path.read_text())
+        content[0].pop("exchange_rate")
+        self.store.path.write_text(json.dumps(content))
+        self.assertEqual(self.store.list(), [entry])
 
     def test_ready_credit_card_report_stays_submittable(self):
         service = ExpenseService(self.root)

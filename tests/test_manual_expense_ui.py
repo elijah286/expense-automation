@@ -34,7 +34,17 @@ module.svc.get_report_readiness = lambda rid: ReportReadiness(
 module.svc.prepare_report_for_submission = lambda rid: {"approved": 1, "total": 1}
 module._schedule_keychain_consent_if_needed = lambda: None
 module._launch_splash = lambda: None
-module._open_oracle_manual_login_dialog = lambda callback: module.ui.notify("Credit-card path reached")
+def fake_submission(rid, **kwargs):
+    module.ui.notify(
+        f"Submission options: cash={kwargs.get('include_cash', False)}, mileage={kwargs.get('include_mileage', False)}"
+    )
+    return {"manual_expenses": {"entered": [], "warnings": []}}
+module.svc.run_submission = fake_submission
+def fake_login(callback):
+    module.ui.notify("Credit-card path reached")
+    callback()
+module._open_oracle_manual_login_dialog = fake_login
+module._run_background = lambda name, fn, msg, **kwargs: fn(on_status=lambda msg: None)
 module.ui.run(host="127.0.0.1", port=int(sys.argv[2]), show=False, reload=False)
 """
 
@@ -78,7 +88,7 @@ class ManualExpenseBrowserTests(unittest.TestCase):
                         page.goto(base + "/submit")
                         page.get_by_role("button", name="Submit Report", exact=True).click()
                         expect(page.get_by_text("Credit-card path reached", exact=True)).to_be_visible()
-                        expect(page.get_by_text("Manual drafts will not be submitted", exact=True)).to_have_count(0)
+                        expect(page.get_by_text("Include cash or mileage?", exact=True)).to_have_count(0)
 
                         page.goto(base + "/cash")
                         expect(page.locator('a[href="/mileage"]')).to_be_visible()
@@ -102,6 +112,15 @@ class ManualExpenseBrowserTests(unittest.TestCase):
                         dialog.get_by_label("Amount", exact=True).fill("15")
                         dialog.get_by_role("button", name="Save draft").click()
                         expect(page.get_by_text("USD 15.00", exact=False)).to_be_visible()
+                        page.get_by_role("button", name="Edit", exact=True).click()
+                        dialog.get_by_label("Currency", exact=True).fill("EUR")
+                        dialog.get_by_role("button", name="Save draft").click()
+                        expect(page.get_by_text(
+                            "Enter an exchange rate in USD per 1 receipt currency.", exact=True,
+                        )).to_be_visible()
+                        dialog.get_by_label("Exchange rate (USD per 1 receipt currency)", exact=True).fill("1.25")
+                        dialog.get_by_role("button", name="Save draft").click()
+                        expect(page.get_by_text("EUR 15.00", exact=False)).to_be_visible()
 
                         page.locator('a[href="/mileage"]').click()
                         page.get_by_role("button", name="Add mileage transaction").click()
@@ -115,13 +134,31 @@ class ManualExpenseBrowserTests(unittest.TestCase):
                         expect(page.get_by_text("10 miles x USD 0.76 / mile (IRS estimate)", exact=True)).to_be_visible()
 
                         page.goto(base + "/submit")
-                        expect(page.get_by_text("1 manual draft(s) - NOT included in Oracle submission", exact=True)).to_be_visible()
+                        expect(page.get_by_text("1 manual draft(s) - optional Oracle entry", exact=True)).to_be_visible()
                         page.get_by_role("button", name="Submit Report", exact=True).click()
-                        expect(dialog.get_by_text("Manual drafts will not be submitted", exact=True)).to_be_visible()
+                        expect(dialog.get_by_text("Include cash or mileage?", exact=True)).to_be_visible()
+                        expect(dialog.get_by_role("checkbox", name="Include cash expenses", exact=True)).not_to_be_checked()
+                        expect(dialog.get_by_role("checkbox", name="Include mileage expenses", exact=True)).not_to_be_checked()
                         dialog.get_by_role("button", name="Cancel", exact=True).click()
                         page.get_by_role("button", name="Submit Report", exact=True).click()
                         dialog.get_by_role("button", name="Submit credit-card items only", exact=True).click()
                         expect(page.get_by_text("Credit-card path reached", exact=True)).to_be_visible()
+                        expect(page.get_by_text("Submission options: cash=False, mileage=False", exact=True)).to_be_visible()
+
+                        for cash, mileage in ((True, False), (False, True), (True, True)):
+                            page.goto(base + "/submit")
+                            page.get_by_role("button", name="Submit Report", exact=True).click()
+                            for name, enabled in (("Include cash expenses", cash), ("Include mileage expenses", mileage)):
+                                checkbox = dialog.get_by_role("checkbox", name=name, exact=True)
+                                if enabled:
+                                    checkbox.click()
+                                    expect(checkbox).to_be_checked()
+                                else:
+                                    expect(checkbox).not_to_be_checked()
+                            dialog.get_by_role("button", name="Include selected expenses", exact=True).click()
+                            expect(page.get_by_text(
+                                f"Submission options: cash={cash}, mileage={mileage}", exact=True,
+                            )).to_be_visible()
 
                         page.goto(base + "/mileage")
                         page.get_by_role("button", name="Delete", exact=True).click()

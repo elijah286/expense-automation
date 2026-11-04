@@ -483,8 +483,10 @@ class TransactionScraper:
             return True
         return False
 
-    def wait_for_manual_oracle_login(self, *, timeout_s: float | None = None) -> None:
-        """Block until the user signs in manually in Chromium (detects post-login Oracle UI)."""
+    def wait_for_oracle_login(self, portal_url: str, *, timeout_s: float | None = None) -> None:
+        """Try saved sign-in once, then wait for the authenticated shell (including MFA)."""
+        from browser.oracle_login import SavedOracleLogin
+
         if not self.browser_page:
             raise RuntimeError("Browser page not available.")
         raw = (os.environ.get("AUTOMATED_EXPENSES_MANUAL_LOGIN_TIMEOUT_S") or "").strip()
@@ -496,104 +498,21 @@ class TransactionScraper:
         timeout_s = max(60.0, float(timeout_s))
 
         self.set_status(
-            "Waiting for you to sign in to Oracle in the browser (including 2FA if prompted)…"
+            "Waiting for Oracle sign-in (complete MFA in the browser if prompted)…"
         )
+        login = SavedOracleLogin(portal_url, self.set_status)
         deadline = time.monotonic() + timeout_s
-        last_url_report = 0.0
         while time.monotonic() < deadline:
             if self._oracle_shell_ready():
                 self._wait_for_oracle_page_stable(settle_ms=500)
                 self.set_status("Oracle session detected — continuing automation…")
                 return
-            # Periodic status with current URL so user can diagnose issues
-            now = time.monotonic()
-            if now - last_url_report > 10.0:
-                try:
-                    cur_url = self.browser_page.url or "(unknown)"
-                except Exception:
-                    cur_url = "(error reading URL)"
-                self.set_status(f"Still waiting for Oracle login… (page: {cur_url})")
-                last_url_report = now
+            login.poll(self.browser_page)
             self.browser_page.wait_for_timeout(400)
 
         raise RuntimeError(
             "Timed out waiting for Oracle login. Sign in in the Chromium window, then try again."
         )
-
-    def try_auto_login(self, username: str, password: str) -> bool:
-        if not self.browser_page:
-            return False
-        try:
-            self.browser_page.wait_for_load_state("domcontentloaded", timeout=8000)
-        except Exception:
-            pass
-        self.browser_page.wait_for_timeout(250)
-        deadline = time.monotonic() + 45.0
-        while time.monotonic() < deadline:
-            for frame in self.browser_page.frames:
-                if self._fill_and_submit_login(frame, username, password):
-                    return True
-            self.browser_page.wait_for_timeout(200)
-        return False
-
-    @staticmethod
-    def _fill_and_submit_login(frame: Frame, username: str, password: str) -> bool:
-        try:
-            pass_loc = frame.locator(
-                'input[name="passwordField"], input[name="password"][type="password"], '
-                'input[type="password"]'
-            )
-            n_pw = pass_loc.count()
-            if n_pw == 0:
-                return False
-            p = None
-            for i in range(min(n_pw, 24)):
-                cand = pass_loc.nth(i)
-                try:
-                    cand.wait_for(state="visible", timeout=150)
-                    p = cand
-                    break
-                except Exception:
-                    continue
-            if p is None:
-                return False
-
-            user_loc = frame.locator(
-                'input[name="usernameField"], input[name="userid"], '
-                'input#usernameField, input[id*="Username" i][type="text"]'
-            )
-            for j in range(min(user_loc.count(), 12)):
-                u = user_loc.nth(j)
-                try:
-                    u.wait_for(state="visible", timeout=150)
-                    u.click(timeout=4000)
-                    u.fill(username, timeout=4000)
-                    break
-                except Exception:
-                    continue
-
-            p.click(timeout=4000)
-            p.fill(password, timeout=4000)
-
-            for btn in [
-                frame.locator("input[type='submit'][value*='Log' i]"),
-                frame.locator("input[type='submit'][value*='Sign' i]"),
-                frame.get_by_role("button", name=re.compile(r"log\s*in|sign\s*on|submit", re.I)),
-            ]:
-                try:
-                    if btn.count() == 0:
-                        continue
-                    first = btn.first
-                    first.wait_for(state="visible", timeout=400)
-                    first.click(timeout=12000)
-                    return True
-                except Exception:
-                    continue
-
-            p.press("Enter")
-            return True
-        except Exception:
-            return False
 
     # ------------------------------------------------------------------
     # Generic Oracle frame helpers
@@ -2042,7 +1961,7 @@ class TransactionScraper:
         *,
         keep_browser_on_error: bool = True,
     ) -> list[dict[str, Any]]:
-        """Full scraping flow: launch browser, wait for manual login, navigate, scrape, cancel, close.
+        """Full scraping flow: launch browser, sign in, navigate, scrape, cancel, close.
 
         Returns the list of scraped expense line dicts.
         When *keep_browser_on_error* is True (default), Chromium stays open on
@@ -2062,9 +1981,9 @@ class TransactionScraper:
             self._verify_portal_reachable(portal_url)
 
             self.set_status(
-                "[LOGIN_REQUIRED] Waiting for you to sign in to Oracle…"
+                "[LOGIN_REQUIRED] Signing in to Oracle…"
             )
-            self.wait_for_manual_oracle_login()
+            self.wait_for_oracle_login(portal_url)
             assert self.browser_page is not None
             self.browser_page.wait_for_timeout(500)
 

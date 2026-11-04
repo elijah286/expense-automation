@@ -5,9 +5,10 @@ Extends TransactionScraper with the full submission workflow:
 Step 1  General Information (template, purpose, approver)
 Step 2  Select credit-card transactions belonging to this report
 Step 3  Set expense types per line
-Step 4–5  Click Next (no user action required)
+Step 4  Optionally enter cash and mileage expenses
+Step 5  Click Next (no user action required)
 Step 6  Attach receipt files
-Final   Submit the report
+Final   Leave the report open for the user to review and submit
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Any
 from playwright.sync_api import Frame
 
 from browser.scraper import TransactionScraper, _blob_shows_wizard_step
+from browser.manual_entry import ManualCleanupError, ManualSubmissionLine, OracleManualEntry
 
 APP_DIR = Path.home() / ".expense-automator"
 
@@ -47,6 +49,7 @@ class SubmissionPayload:
     report_name: str
     approver: str
     lines: list[SubmissionLine] = field(default_factory=list)
+    manual_lines: list[ManualSubmissionLine] = field(default_factory=list)
 
 
 class ReportSubmitter(TransactionScraper):
@@ -3063,6 +3066,31 @@ class ReportSubmitter(TransactionScraper):
                 return step
         return None
 
+    def _oracle_validation_errors(self) -> list[str]:
+        assert self.browser_page is not None
+        errors: list[str] = []
+        for frame in self.browser_page.frames:
+            messages = frame.evaluate("""
+() => {
+  const errors = [];
+  for (const heading of document.querySelectorAll('h1,h2,[role=heading]')) {
+    if (!/^error$/i.test(heading.innerText.trim()) || !heading.getClientRects().length) continue;
+    let found = false;
+    for (let parent = heading.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+      const messages = Array.from(parent.querySelectorAll('div.x47,[role=alert]'))
+        .filter(e => e.getClientRects().length).map(e => e.innerText.trim()).filter(Boolean);
+      if (messages.length) { errors.push(...messages); found = true; break; }
+    }
+    if (!found) errors.push('Oracle displays an Error banner.');
+  }
+  return [...new Set(errors)];
+}
+""")
+            for message in messages:
+                if message not in errors:
+                    errors.append(message)
+        return errors
+
     def _wait_for_step3_business_expenses(self, timeout_ms: int = 120_000) -> None:
         if not self.browser_page:
             raise RuntimeError("Browser page not available.")
@@ -3133,6 +3161,15 @@ class ReportSubmitter(TransactionScraper):
         caller can retry from the detected step.
         """
         assert self.browser_page is not None
+        if start_from_step > 4 and payload.manual_lines and "manual_expenses" not in summary:
+            warning = (
+                "Resumed beyond Step 4; optional cash/mileage entries were not verified. "
+                "Review Cash and Other Expenses in Oracle before submitting."
+            )
+            summary["manual_expenses"] = {
+                "entered": [], "warnings": [warning], "oracle_amounts": {},
+            }
+            self.set_status(warning)
 
         # --- Step 1: General Information ---
         if start_from_step <= 1:
@@ -3257,13 +3294,54 @@ class ReportSubmitter(TransactionScraper):
         # --- Step 4 → 5 transition ---
         if start_from_step <= 4:
             self._wait_for_oracle_page_stable()
-            self.set_status("Clicking Next through Step 5…")
-            if not self.wait_for_wizard_next_enabled_and_click(
-                self._STEP_ADVANCE_TIMEOUT_MS, wizard_step=4,
-            ):
-                raise RuntimeError(
-                    "Could not advance from Step 4 to Step 5."
+            manual_entry = None
+            if payload.manual_lines:
+                manual_entry = OracleManualEntry(
+                    self.browser_page,
+                    settle=self._wait_for_oracle_page_stable,
+                    save=lambda: self.click_save_button_wizard_in_any_frame(wizard_step=4),
+                    status=self.set_status,
                 )
+                summary["manual_expenses"] = manual_entry.enter(payload.manual_lines)
+            self.set_status("Clicking Next through Step 5…")
+            advanced = self.wait_for_wizard_next_enabled_and_click(
+                self._STEP_ADVANCE_TIMEOUT_MS, wizard_step=4,
+            )
+            if manual_entry:
+                self._wait_for_oracle_page_stable()
+                actual_step = self._detect_wizard_step()
+                advanced = actual_step in (5, 6)
+                if actual_step == 6:
+                    start_from_step = 6
+            if not advanced:
+                if not manual_entry or not manual_entry.created or self._detect_wizard_step() != 4:
+                    raise RuntimeError("Could not advance from Step 4 to Step 5.")
+                reason = "; ".join(self._oracle_validation_errors()) or "Oracle did not advance to the next step"
+                for line in list(manual_entry.created):
+                    try:
+                        manual_entry.remove(line)
+                    except Exception as exc:
+                        raise ManualCleanupError(
+                            "Oracle rejected Step 4 and optional expense cleanup failed. "
+                            "Review the open report before continuing."
+                        ) from exc
+                    summary["manual_expenses"]["entered"].remove(line.id)
+                    summary["manual_expenses"]["oracle_amounts"].pop(line.id, None)
+                    warning = (
+                        f"Optional {line.kind} expense {line.id} removed after Oracle rejected Step 4: {reason}"
+                    )
+                    summary["manual_expenses"]["warnings"].append(warning)
+                    self.set_status(warning)
+                if not self.wait_for_wizard_next_enabled_and_click(
+                    self._STEP_ADVANCE_TIMEOUT_MS, wizard_step=4,
+                ):
+                    raise RuntimeError("Could not advance Step 4 after removing optional expenses.")
+                self._wait_for_oracle_page_stable()
+                actual_step = self._detect_wizard_step()
+                if actual_step not in (5, 6):
+                    raise RuntimeError("Oracle still rejected Step 4 after optional expense cleanup.")
+                if actual_step == 6:
+                    start_from_step = 6
             self._wait_for_oracle_page_stable()
 
         # --- Step 5 → 6 transition ---
@@ -3286,6 +3364,16 @@ class ReportSubmitter(TransactionScraper):
         n_attached = self._attach_receipts_step6(payload.lines)
         summary["receipts_attached"] = n_attached
         self.set_status(f"Step 6: attached {n_attached} receipt(s).")
+        if payload.manual_lines:
+            review_errors = self._oracle_validation_errors()
+            manual_result = summary.setdefault(
+                "manual_expenses", {"entered": [], "warnings": [], "oracle_amounts": {}},
+            )
+            for error in review_errors:
+                warning = f"Oracle Review requires attention: {error}"
+                if warning not in manual_result["warnings"]:
+                    manual_result["warnings"].append(warning)
+                self.set_status(f"REVIEW REQUIRED: {warning}")
 
         # --- Done — leave final submission to the user ---
         self.set_status(
@@ -3308,7 +3396,7 @@ class ReportSubmitter(TransactionScraper):
         resume_cdp_url: str | None = None,
         keep_browser_on_error: bool = True,
     ) -> dict[str, Any]:
-        """Full submission flow: launch → manual login → wizard → submit → close.
+        """Prepare the report via saved/manual login, leaving final submission to the user.
 
         When *resume_cdp_url* is provided, attempts to reconnect to an
         existing Chromium instance and resume from the detected wizard step.
@@ -3359,7 +3447,7 @@ class ReportSubmitter(TransactionScraper):
                 self.set_status(f"Launching Chromium → {portal_url}")
                 self.open_browser(portal_url)
 
-                self.wait_for_manual_oracle_login()
+                self.wait_for_oracle_login(portal_url)
                 assert self.browser_page is not None
                 self.browser_page.wait_for_timeout(500)
 
@@ -3399,6 +3487,8 @@ class ReportSubmitter(TransactionScraper):
                     )
                     break  # wizard completed successfully
                 except Exception as exc:
+                    if isinstance(exc, ManualCleanupError):
+                        raise
                     if attempt >= self._MAX_RECOVERY_ATTEMPTS:
                         raise
                     if not self.browser_page:

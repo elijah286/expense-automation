@@ -1,9 +1,11 @@
-"""Settings tab: URL, Oracle approver, OpenAI, Photos, TLS."""
+"""Settings tab: portal, optional secure sign-in, approver, OpenAI, Photos, TLS."""
 
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+
+import keychain_credentials
 
 
 def build_settings_tab(app, parent: ttk.Frame) -> None:
@@ -30,6 +32,14 @@ def build_settings_tab(app, parent: ttk.Frame) -> None:
     app._settings_export_var = tk.StringVar(value=app.settings.photos_export_dir)
     app._settings_api_var = tk.StringVar(value=app.get_openai_key())
     app._settings_tls_var = tk.StringVar(value=app.settings.openai_http_verify)
+    try:
+        oracle = keychain_credentials.get_oracle_credentials()
+        oracle_error = ""
+    except RuntimeError as exc:
+        oracle = {}
+        oracle_error = str(exc)
+    app._settings_oracle_user_var = tk.StringVar(value=oracle.get("username", ""))
+    app._settings_oracle_password_var = tk.StringVar()
 
     r = 0
     ttk.Label(frame, text="Legacy URL").grid(row=r, column=0, sticky="w", pady=6)
@@ -48,9 +58,37 @@ def build_settings_tab(app, parent: ttk.Frame) -> None:
     r += 1
     ttk.Label(
         frame,
-        text="Oracle login is manual in the browser; credentials are not stored.",
+        text=oracle_error or (
+            "Saved sign-in rejected: enter your current password to re-enable login."
+            if oracle.get("rejected") == "true"
+            else "Optional Oracle sign-in is stored only in the system keychain. MFA remains manual."
+        ),
         foreground="#666",
     ).grid(row=r, column=1, sticky="w", pady=(0, 8))
+    r += 1
+    ttk.Label(frame, text="Oracle username (optional)").grid(row=r, column=0, sticky="w", pady=6)
+    ttk.Entry(frame, textvariable=app._settings_oracle_user_var, width=58).grid(row=r, column=1, sticky="we")
+    r += 1
+    ttk.Label(frame, text="Oracle password").grid(row=r, column=0, sticky="w", pady=6)
+    ttk.Entry(frame, textvariable=app._settings_oracle_password_var, width=58, show="*").grid(
+        row=r, column=1, sticky="we"
+    )
+    r += 1
+    ttk.Label(frame, text="Leave blank to keep saved password. HTTPS portal only.").grid(
+        row=r, column=1, sticky="w"
+    )
+    r += 1
+
+    def forget_oracle() -> None:
+        error = keychain_credentials.delete_oracle_credentials()
+        if error:
+            app.set_status(error)
+            return
+        app._settings_oracle_user_var.set("")
+        app._settings_oracle_password_var.set("")
+        app.set_status("Saved Oracle sign-in removed.")
+
+    ttk.Button(frame, text="Forget saved sign-in", command=forget_oracle).grid(row=r, column=1, sticky="w")
     r += 1
     ttk.Label(frame, text="OpenAI model").grid(row=r, column=0, sticky="w", pady=6)
     ttk.Entry(frame, textvariable=app._settings_model_var, width=58).grid(row=r, column=1, sticky="we", pady=6)
@@ -113,18 +151,20 @@ def _save(app) -> None:
     app.save_settings(new_settings)
     app._openai_client = None
     key_warning = app.set_openai_key(app._settings_api_var.get())
-    try:
-        import keychain_credentials
-
-        keychain_credentials.delete_keychain_expense_password()
-    except Exception:
-        pass
-    try:
-        payload = app._read_settings_payload()
-        payload.pop("expense_username", None)
-        app._write_settings_payload(payload)
-    except Exception:
-        pass
+    oracle_warning = None
+    if app._settings_oracle_user_var.get().strip() or app._settings_oracle_password_var.get():
+        try:
+            oracle_warning = keychain_credentials.save_oracle_credentials(
+                new_settings.legacy_url, app._settings_oracle_user_var.get(),
+                app._settings_oracle_password_var.get() or None,
+            )
+        except (ValueError, RuntimeError) as exc:
+            oracle_warning = str(exc)
+    app._settings_oracle_password_var.set("")
+    if oracle_warning:
+        app.set_status("Other settings saved. " + oracle_warning)
+        app.refresh_all_tabs()
+        return
     if key_warning:
         app.set_status("Settings saved. " + key_warning)
     else:

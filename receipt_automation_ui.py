@@ -4356,15 +4356,21 @@ class ReceiptAutomationUI:
 
     def on_step_login(self) -> None:
         try:
+            has_saved_login = bool(keychain_credentials.get_oracle_credentials().get("password"))
+        except RuntimeError as exc:
+            has_saved_login = False
+            self.set_status(str(exc))
+        try:
             from tkinter import messagebox
 
-            messagebox.showinfo(
-                "Oracle sign-in",
-                "Your Oracle username and password are not stored in this app.\n\n"
-                "Sign in manually in the Chromium window (including 2FA if required). "
-                "When you run scrape or expense-report automation, the app will wait until "
-                "you are logged in, then continue automatically.",
-            )
+            if not has_saved_login:
+                messagebox.showinfo(
+                    "Oracle sign-in",
+                    "You can optionally save Oracle sign-in in Settings using the system keychain.\n\n"
+                    "Otherwise sign in manually in Chromium (including 2FA if required). "
+                    "When you run scrape or expense-report automation, the app will wait until "
+                    "you are logged in, then continue automatically.",
+                )
         except Exception:
             pass
         try:
@@ -4375,7 +4381,7 @@ class ReceiptAutomationUI:
             return
 
         self.set_status(
-            "Opened Chromium to the expense portal. Sign in manually, then continue with the workflow steps."
+            "Opened Chromium to the expense portal. Saved sign-in will be tried if available; complete MFA if prompted."
         )
         self._refresh_activity_panel()
 
@@ -4392,7 +4398,7 @@ class ReceiptAutomationUI:
             self.log_event("err", f"Resume relaunch: could not open browser ({exc}).")
             return
         self.set_status(
-            "Browser relaunched — sign in manually in Chromium, then Continue automation."
+            "Browser relaunched — saved sign-in will be tried if available. Complete MFA, then Continue automation."
         )
         self._refresh_activity_panel()
 
@@ -4407,7 +4413,7 @@ class ReceiptAutomationUI:
             return 600.0
 
     def _expense_portal_shell_visible(self) -> bool:
-        """True when the main iExpenses shell is visible — past the username/password login screen."""
+        """True when the iExpenses shell or an existing wizard is visible, past login."""
         if not self.browser_page:
             return False
         markers = [
@@ -4420,7 +4426,10 @@ class ReceiptAutomationUI:
         nav_label = getattr(self.settings, "nav_menu_label", "") or ""
         if nav_label:
             markers.append(nav_label)
-        return any(self._body_contains_text(m) for m in markers)
+        return (
+            any(self._body_contains_text(m) for m in markers)
+            or any(self._wizard_any_frame_on_step(step) for step in range(1, 7))
+        )
 
     def _wait_for_expense_portal_logged_in(self, *, context: str = "resume") -> None:
         """After relaunch, block until login/SSO finishes and the expenses UI appears (then automation can open in-progress reports)."""
@@ -4440,7 +4449,7 @@ class ReceiptAutomationUI:
                 self.log_event("browser", f"{context}: expense portal home detected (past login).")
                 return
             now = time.monotonic()
-            if legacy and not did_retry_goto and (now - started) >= 40.0:
+            if context == "resume_after_crash" and legacy and not did_retry_goto and (now - started) >= 40.0:
                 did_retry_goto = True
                 try:
                     self.browser_page.goto(legacy, wait_until="domcontentloaded", timeout=90000)
@@ -5114,6 +5123,7 @@ class ReceiptAutomationUI:
         if self._controlled_browser_usable():
             self._close_other_pages(self.browser_page)
             self.browser_page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            self._start_saved_oracle_login(url)
             return
 
         if (
@@ -5123,6 +5133,7 @@ class ReceiptAutomationUI:
             and not self.browser
         ):
             self._attach_playwright_to_cdp(self._cdp_http_url, url)
+            self._start_saved_oracle_login(url)
             return
 
         self.close_controlled_browser()
@@ -5130,6 +5141,34 @@ class ReceiptAutomationUI:
         http_base, proc = self._spawn_chromium_cdp_subprocess()
         self._chromium_proc = proc
         self._attach_playwright_to_cdp(http_base, url)
+        self._start_saved_oracle_login(url)
+
+    def _start_saved_oracle_login(self, portal_url: str) -> None:
+        from browser.oracle_login import SavedOracleLogin
+
+        def status(message: str) -> None:
+            self.set_status(message)
+            if "[CREDENTIALS_REJECTED]" in message:
+                from tkinter import messagebox
+
+                messagebox.showwarning("Update Oracle sign-in", message, parent=self.root)
+
+        login = SavedOracleLogin(portal_url, status)
+        self._saved_oracle_login = login
+        page = self.browser_page
+        deadline = time.monotonic() + 1200
+
+        def poll() -> None:
+            if (self._saved_oracle_login is not login or page is not self.browser_page
+                    or page is None or page.is_closed() or time.monotonic() >= deadline):
+                return
+            if self._expense_portal_shell_visible():
+                return
+            login.poll(page)
+            if not login.finished:
+                self.root.after(400, poll)
+
+        self.root.after(0, poll)
 
     def _close_chromium_stderr_log(self) -> None:
         fp = self._chromium_stderr_log_fp
@@ -10707,6 +10746,8 @@ class ReceiptAutomationUI:
                         crash_first = False
                         current = crash_resume_continue
                     else:
+                        if current == "nic_iexpenses" and not self._expense_portal_shell_visible():
+                            self._wait_for_expense_portal_logged_in(context="workflow")
                         self._execute_populate_from(current)
                     self._populate_flow_completed = True
                     self._populate_ui_current = None

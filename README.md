@@ -131,7 +131,11 @@ python -m web
 
 When you run from source (`python -m web`), the UI opens in your **default browser** by default. On the **macOS `.app` build**, the UI opens in an **embedded window** (not Safari): one Dock icon and the window is driven by the app’s main thread so Activity Monitor should stay responsive. To use Safari with the installed app instead, set `EXPENSE_AUTOMATOR_USE_BROWSER=1`. For an alternate embedded mode from source, set `EXPENSE_AUTOMATOR_EMBEDDED=1`. `EXPENSE_AUTOMATOR_NATIVE=1` uses NiceGUI’s built-in pywebview path (an extra process and often duplicate Dock icons).
 
-**On first launch the app will ask you to enter your credentials** — Oracle portal URL, username, password, and your OpenAI API key. The rest of the tool stays locked until you do this. Fill them in on the Settings page, click **Save Settings**, and you're ready to go.
+**On first launch, fill in Settings** — Oracle portal URL, approver display name, and your OpenAI API key are required. Oracle username and password are optional: save them to your local system keychain to sign in automatically for transaction scraping and report submission. Enable **Secure storage** first if prompted, then click **Save Settings**. Oracle credentials are never saved in a plain-text settings file; a keychain failure is reported rather than falling back to a file.
+
+Saved sign-in is tried **once per browser launch**, only on the saved HTTPS portal origin. Redirected SSO on a different origin, unsupported login forms, and MFA still require you to sign in in Chromium; automation continues once the Oracle session is detected. No stored sign-in is required to use the workflow.
+
+If Oracle rejects the saved login, reports an expired password, or locks the account, the app notifies you and pauses automatic sign-in across launches to avoid repeated bad-password attempts. You can finish signing in manually for the current run. After corporate password rotation, enter the current password in **Settings** and save to re-enable automatic login. A blank password keeps the existing one for the same account and portal; changing either requires a new password. **Forget saved sign-in** removes the Oracle credentials without affecting your API key. Factory reset removes both.
 
 > **Every time you come back later**, open a terminal, `cd` into the project folder, activate the environment, and run `python -m web`:
 >
@@ -166,10 +170,13 @@ counts without navigating away, advancing selection, or resetting the receipt pr
 Use **Unapprove** to undo acceptance. Rejecting clears the match and shows **Rejected**
 while keeping the transaction selected. The **A** / **R** shortcuts use the same behavior.
 
-### Cash and mileage drafts (UI preview)
+### Optional cash and mileage expenses
 
 - Use **Cash** in the left sidebar to add, edit, or delete a manual expense with its
   date, merchant/payee, amount, currency, expense type, and description/business purpose.
+  Non-USD cash also requires the actual exchange rate in **USD per 1 receipt
+  currency**. Oracle does not always supply a rate; the app never invents one.
+  Existing non-USD drafts without a rate must be edited before inclusion.
 - Use **Mileage** for a trip date, miles (up to three decimal places), and business
   purpose. The app automatically calculates a USD estimate using the
   [US IRS business mileage rate](https://www.irs.gov/tax-professionals/standard-mileage-rates)
@@ -180,11 +187,43 @@ while keeping the transaction selected. The **A** / **R** shortcuts use the same
   report from Transactions if needed. Drafts persist locally in
   `~/.expense-automator/manual_expenses.json`, separate from scraped transactions,
   receipt matching, and credit-card submission data.
-- **Cash and mileage are not yet sent to Oracle.** The Submit screen lists assigned
-  drafts separately and asks for confirmation before submitting credit-card items
-  only. Oracle field mapping will be added after the relevant dialogs are supplied.
+- The Submit screen lets you independently opt into **cash** and **mileage** for
+  the report. Both default to off; **Submit credit-card items only** preserves the
+  existing workflow without reading or entering manual drafts.
+  Selected drafts are added to Step 4's Receipt-Based Expenses / Mileage Expenses
+  tables, saved, and read back for verification. Cash uses an exact Oracle expense
+  type and receipt currency; merchant/payee is saved in Details' Merchant Name
+  field and included in the justification. Mileage sends the trip distance in
+  Miles and uses **Details → Calculate Amount → Return** before saving, leaving
+  the rate and reimbursement to Oracle rather than copying the local IRS estimate.
+  Saved cash conversion and mileage reimbursement are checked against the amount/
+  distance and rate, including USD cent rounding.
+  Justifications include a stable `[EA:...]` draft identifier to prevent duplicate
+  entry on retries. Existing identified rows are verified, not overwritten.
+  If you edit a draft already entered in Oracle, reconcile the existing Oracle row
+  before retrying; automation will not silently overwrite it.
+- Optional-entry errors are logged and returned in the submission result, which is
+  retained in the local submission state. Newly entered failing rows are removed
+  and cleanup is verified so credit-card processing can continue. If cleanup cannot
+  be verified, automation pauses with the browser open rather than risking a partial
+  or incorrect claim. Final submission always remains a user action in Oracle.
   Drafts remain saved even when their report is removed or marked submitted; use
   their Cash/Mileage screen to reassign or delete them.
+- Cash save/read-back (including Merchant Name), mileage calculation/save, and
+  removal/save cleanup have been verified against the live Step 4 page.
+  Required-field layouts were inspected for all 18 available cash expense types,
+  and temporary cash/mileage entries reached Allocations and Review. Foreign-currency
+  entry was verified with an explicit exchange rate. Step 4 recovery checks the
+  actual destination, not just whether Next was clicked.
+  Oracle Review errors are surfaced as warnings, not hidden by a successful
+  navigation. Employer policy can still block final submission: for example,
+  Oracle rejects cash-only reports while older credit-card transactions remain
+  outstanding. Cash/mileage automation supplements a ready credit-card report;
+  final approval and policy acceptance cannot be guaranteed by field entry.
+  Field discovery uses rendered table headers and dropdown labels, not Oracle's
+  session-encoded option values. A portal with
+  different fields or mandatory Details data will produce an explicit warning
+  instead of guessing. Cash/mileage currently supplement a ready credit-card report.
 - Both screens are optional. Skipping them leaves the existing credit-card scraping,
   matching, and submission workflow unchanged.
 
